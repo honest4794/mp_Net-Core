@@ -239,6 +239,14 @@ class NetworkManager:
         """啟動 AP 模式並開啟 WebREPL"""
         try:
             ap = network.WLAN(network.AP_IF)
+            slave_id = getattr(self.bus, "slave_id", "") or ""
+            if slave_id in ("", "UNKNOWN"):
+                try:
+                    import machine
+                    slave_id = "".join("{:02X}".format(b) for b in machine.unique_id())
+                    self.bus.slave_id = slave_id
+                except Exception:
+                    slave_id = "UNKNOWN"
             
             # Reset AP state first
             ap.active(False)
@@ -247,7 +255,7 @@ class NetworkManager:
             ap.active(True)
             
             # 讀取 AP 配置，如果沒有則使用默認值
-            ap_ssid = config.get('ap_ssid', f"NetLight-{self.bus.slave_id}")
+            ap_ssid = config.get('ap_ssid', f"NetLight-{slave_id}")
             ap_password = config.get('ap_password', '12345678')
             
             ap.config(essid=ap_ssid, password=ap_password, authmode=network.AUTH_WPA_WPA2_PSK)
@@ -259,7 +267,7 @@ class NetworkManager:
                     # 如果配置中明確要求加後綴，或名稱以 '-' 結尾
                     if config.get('mdns_suffix', False) or mdns_val.endswith("-"):
                         if not mdns_val.endswith("-"): mdns_val += "-"
-                        mdns_val += str(self.bus.slave_id)
+                        mdns_val += str(slave_id)
                     
                     ap.config(mdns_name=mdns_val)
                     dprint(f"   mDNS configured: {mdns_val}.local")

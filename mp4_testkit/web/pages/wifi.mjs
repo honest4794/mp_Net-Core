@@ -165,11 +165,15 @@ export const init = async (ctx) => {
     setMsg("info", "正在掃描附近 Wi‑Fi");
     try {
       const res = await ctx.fetchJson("/api/wifi/scan", { timeoutMs: 12000 });
-      const list = res?.networks || [];
+      const list = Array.isArray(res?.networks) ? res.networks : (Array.isArray(res?.results) ? res.results : []);
       renderNetworks(list);
       state.lastScanAt = Date.now();
       scanMeta.textContent = Array.isArray(list) ? `${list.length} 個 · ${new Date().toLocaleTimeString()}` : "—";
-      setMsg("good", "掃描完成");
+      if (list.length === 0 && res?.error) {
+        setMsg("warn", "掃描完成，但裝置回報：" + res.error);
+      } else {
+        setMsg("good", "掃描完成");
+      }
     } catch (e) {
       scanMeta.textContent = "掃描失敗";
       setMsg("bad", "掃描失敗，稍後再試");

@@ -465,25 +465,64 @@ class WebUIService:
     def _handle_wifi_scan(self, cl):
         try:
             import network
+            try:
+                import binascii
+            except Exception:
+                binascii = None
             sta = network.WLAN(network.STA_IF)
-            if not sta.active():
-                sta.active(True)
-                self._sleep_ms(200)
-            res = sta.scan()
+            try:
+                if not sta.active():
+                    sta.active(True)
+                    self._sleep_ms(600)
+                else:
+                    self._sleep_ms(150)
+            except Exception:
+                pass
+
+            res = []
+            last_err = None
+            for _ in range(3):
+                try:
+                    cur = sta.scan()
+                    if cur:
+                        res = cur
+                        break
+                except Exception as e:
+                    last_err = e
+                self._sleep_ms(350)
+
             if res:
                 res.sort(key=lambda x: x[3], reverse=True)
             out = []
             for info in (res or []):
                 try:
-                    ssid = info[0].decode("utf-8")
+                    ssid = info[0].decode("utf-8") if info[0] else ""
                     if not ssid:
                         ssid = "<Hidden>"
                 except Exception:
                     ssid = "<Unknown>"
-                out.append({"ssid": ssid, "rssi": int(info[3]), "auth": int(info[4]), "channel": int(info[2])})
-            self._send_json(cl, 200, {"status": "ok", "results": out})
+                bssid = ""
+                if binascii and info[1]:
+                    try:
+                        bssid = binascii.hexlify(info[1]).decode()
+                    except Exception:
+                        bssid = ""
+                out.append({
+                    "ssid": ssid,
+                    "bssid": bssid,
+                    "rssi": int(info[3]),
+                    "auth": int(info[4]),
+                    "channel": int(info[2]),
+                    "hidden": int(info[5]) if len(info) > 5 else 0,
+                })
+            self._send_json(cl, 200, {
+                "status": "ok",
+                "networks": out,
+                "results": out,
+                "error": "" if last_err is None else str(last_err),
+            })
         except Exception as e:
-            self._send_json(cl, 500, {"status": "error", "error": str(e)})
+            self._send_json(cl, 500, {"status": "error", "error": str(e), "networks": []})
 
     def _handle_wifi_connect(self, cl, body):
         try:
@@ -519,4 +558,3 @@ class WebUIService:
             self._send_json(cl, 200, {"status": "ok", "queued": True})
         except Exception as e:
             self._send_json(cl, 500, {"status": "error", "error": str(e)})
-

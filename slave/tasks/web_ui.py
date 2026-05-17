@@ -466,13 +466,25 @@ class WebUITask(Task):
             try:
                 if not sta.active():
                     sta.active(True)
-                    time.sleep(0.5)
+                    time.sleep(0.6)
+                else:
+                    time.sleep(0.15)
             except:
                 pass
 
             nets = []
+            last_err = None
             try:
-                res = sta.scan()
+                res = []
+                for _ in range(3):
+                    try:
+                        cur = sta.scan()
+                        if cur:
+                            res = cur
+                            break
+                    except Exception as e:
+                        last_err = e
+                    time.sleep(0.35)
                 res.sort(key=lambda x: x[3], reverse=True)
                 for info in res:
                     ssid_b = info[0]
@@ -503,7 +515,12 @@ class WebUITask(Task):
                 self._send_json(cl, 500, {"status": "error", "error": str(e), "networks": []})
                 return
 
-            self._send_json(cl, 200, {"status": "ok", "networks": nets})
+            self._send_json(cl, 200, {
+                "status": "ok",
+                "networks": nets,
+                "results": nets,
+                "error": "" if last_err is None else str(last_err),
+            })
         except Exception as e:
             self._send_json(cl, 500, {"status": "error", "error": str(e)})
 
