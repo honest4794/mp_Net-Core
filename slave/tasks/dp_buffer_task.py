@@ -4,6 +4,7 @@ from lib.task import Task
 from lib.sys_bus import bus
 from lib.log_service import get_log
 from lib.dp_buffer_service import HDR_OUT, ensure_dp_buffer_service
+from lib.buffer_hub import AtomicStreamHub
 
 
 class DpBufferTask(Task):
@@ -56,7 +57,8 @@ class DpBufferTask(Task):
             self._svc["last_ms"] = time.ticks_ms()
             return
 
-        wv[:len(buf)] = buf
+        copy_len = len(buf)
+        out_hub.bounce_into(wv, buf, copy_len)
         out_hub.commit()
 
         self._svc["frames"] = int(self._svc.get("frames", 0) or 0) + 1

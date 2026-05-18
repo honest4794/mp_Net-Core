@@ -94,7 +94,7 @@ def configure_for_layout(bus, layout, *, pixel_format="RGB565_LE", num_buffers=3
     if str(svc["pixel_format"]).startswith("RGB888"):
         svc["out_hub"] = None
     else:
-        svc["out_hub"] = AtomicStreamHub(hub_size, num_buffers=int(num_buffers))
+        svc["out_hub"] = AtomicStreamHub(hub_size, num_buffers=int(num_buffers), try_dma=True, try_bounce=True)
     svc["pending"] = None
     svc["cfg_epoch"] = (int(svc.get("cfg_epoch", 0) or 0) + 1) & 0xFFFF
     return svc

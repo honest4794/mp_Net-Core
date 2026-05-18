@@ -27,6 +27,7 @@ def launcher():
     
     bus.slave_id = ubinascii.hexlify(machine.unique_id()).decode().upper()
     bus.shared["engine_run"] = True
+    bus.shared["spi_busy"] = False
     bus_sys = bus.shared["System"]
     
     hub = AtomicStreamHub(st_LED.total_bytes * bus_sys["buffer_frames"]) 

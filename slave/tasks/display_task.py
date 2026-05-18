@@ -3,6 +3,9 @@ import time
 from lib.task import Task
 from lib.sys_bus import bus
 from lib.dp_buffer_service import HDR_OUT, ensure_dp_buffer_service, unpack_out_header_into
+from lib.buffer_hub import DmaBounceBuf
+
+_SPI_TX_BUF_SIZE = 32 * 1024
 
 
 class DisplayTask(Task):
@@ -18,6 +21,8 @@ class DisplayTask(Task):
         self._last_w = -1
         self._last_h = -1
         self._last_write_ms = 0
+
+        self._spi_tx = DmaBounceBuf(_SPI_TX_BUF_SIZE)
 
         self._fps_window_t0 = 0
         self._fps_window_count = 0
@@ -103,6 +108,13 @@ class DisplayTask(Task):
         if rv is None:
             return
 
+        if bus.shared.get("spi_busy"):
+            try:
+                hub.release_read()
+            except Exception:
+                pass
+            return
+
         try:
             unpack_out_header_into(rv, self._out_hdr)
             payload_len = int(self._out_hdr[0])
@@ -113,20 +125,27 @@ class DisplayTask(Task):
             w = int(self._out_hdr[5])
             h = int(self._out_hdr[6])
             payload = rv[HDR_OUT : HDR_OUT + payload_len]
-            if x != self._last_x or y != self._last_y or w != self._last_w or h != self._last_h:
-                try:
-                    lcd.set_window(x, y, x + w - 1, y + h - 1)
-                except Exception:
-                    try:
-                        lcd.set_window(x, y)
-                    except Exception:
-                        pass
-                self._last_x = x
-                self._last_y = y
-                self._last_w = w
-                self._last_h = h
 
-            lcd.write_data(payload)
+            bus.shared["spi_busy"] = True
+            try:
+                if x != self._last_x or y != self._last_y or w != self._last_w or h != self._last_h:
+                    try:
+                        lcd.set_window(x, y, x + w - 1, y + h - 1)
+                    except Exception:
+                        try:
+                            lcd.set_window(x, y)
+                        except Exception:
+                            pass
+                    self._last_x = x
+                    self._last_y = y
+                    self._last_w = w
+                    self._last_h = h
+
+                tx_payload = self._spi_tx.prep_for_spi(payload, payload_len)
+                lcd.write_data(tx_payload)
+            finally:
+                bus.shared["spi_busy"] = False
+
             self._last_write_ms = time.ticks_ms()
 
             self._buf["last_ms"] = time.ticks_ms()
@@ -134,6 +153,10 @@ class DisplayTask(Task):
             self.success += 1
             self._tick_fps()
         except Exception as e:
+            try:
+                bus.shared["spi_busy"] = False
+            except Exception:
+                pass
             try:
                 self._buf["last_err"] = str(e)
                 self._buf["last_ms"] = time.ticks_ms()
@@ -145,3 +168,7 @@ class DisplayTask(Task):
                 hub.release_read()
             except Exception:
                 pass
+
+    def on_stop(self):
+        super().on_stop()
+        self._spi_tx.close()

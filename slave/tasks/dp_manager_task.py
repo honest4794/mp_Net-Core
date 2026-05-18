@@ -140,6 +140,8 @@ class DpManagerTask(Task):
             pack = job.get("pack_source")
 
             if pack is not None:
+                if bus.shared.get("spi_busy"):
+                    return filled
                 group = int(job.get("frame_group", 0) or 0)
                 label_id = int(job.get("label_id", 0) or 0)
                 x = int(job.get("x", 0) or 0)
@@ -147,10 +149,13 @@ class DpManagerTask(Task):
                 w = int(job.get("w", 0) or 0)
                 h = int(job.get("h", 0) or 0)
                 bpp = int(job.get("bpp", 2) or 2)
+                bus.shared["spi_busy"] = True
                 try:
                     _idx, n, _dt = pack.read_next_into(wv[HDR_IN:], cap)
                 except Exception:
                     _idx, n, _dt = None, 0, 0
+                finally:
+                    bus.shared["spi_busy"] = False
                 if _idx is None:
                     src["enable"] = False
                     bus.shared["jpeg_player"] = {"playing": False, "paused": False}
@@ -223,16 +228,21 @@ class DpManagerTask(Task):
         group = int(job.get("frame_group", 0) or 0)
 
         if pack is not None:
+            if bus.shared.get("spi_busy"):
+                return
             label_id = int(job.get("label_id", 0) or 0)
             x = int(job.get("x", 0) or 0)
             y = int(job.get("y", 0) or 0)
             w = int(job.get("w", 0) or 0)
             h = int(job.get("h", 0) or 0)
             bpp = int(job.get("bpp", 2) or 2)
+            bus.shared["spi_busy"] = True
             try:
                 _idx, n, _dt = pack.read_next_into(wv[HDR_IN:], cap)
             except Exception:
                 _idx, n, _dt = None, 0, 0
+            finally:
+                bus.shared["spi_busy"] = False
             if _idx is None:
                 src["enable"] = False
                 bus.shared["jpeg_player"] = {"playing": False, "paused": False}
@@ -283,6 +293,9 @@ class DpManagerTask(Task):
         path = _join(_join(assets_root, label), filename)
 
         n = 0
+        if bus.shared.get("spi_busy"):
+            return
+        bus.shared["spi_busy"] = True
         try:
             chunk = int(bus.shared.get("dp_io_read_chunk", 2048) or 2048)
             if chunk < 0:
@@ -299,6 +312,8 @@ class DpManagerTask(Task):
                 except Exception:
                     pass
             return
+        finally:
+            bus.shared["spi_busy"] = False
 
         n = int(n or 0)
         if n <= 0:

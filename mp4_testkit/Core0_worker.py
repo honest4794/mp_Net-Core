@@ -1,6 +1,9 @@
 import time
 
 from lib.tail_codec import read_u32_le, write_u32_le
+from lib.buffer_hub import DmaBounceBuf
+
+_SPI_TX_BUF_SIZE = 32 * 1024
 
 
 def _yield():
@@ -159,6 +162,7 @@ def task_loop(bus):
 
     io_hub = bus.get_service("io_hub")
     frame_hub = bus.get_service("frame_hub")
+    spi_tx = DmaBounceBuf(_SPI_TX_BUF_SIZE)
     max_jpeg_bytes = int(bus.shared.get("max_jpeg_bytes", 0) or 0)
     frame_bytes = int(bus.shared.get("frame_bytes", 0) or 0)
     io_prefetch = int(bus.shared.get("io_prefetch", 0) or 0)
@@ -527,7 +531,8 @@ def task_loop(bus):
             read_n = read_u32_le(r, frame_bytes + 12)
             t0 = time.ticks_us()
             try:
-                lcd.write_data(r[:frame_bytes])
+                tx_payload = spi_tx.prep_for_spi(r[:frame_bytes], frame_bytes)
+                lcd.write_data(tx_payload)
                 _backlight_try_on(bus)
             finally:
                 frame_hub.release_read()
