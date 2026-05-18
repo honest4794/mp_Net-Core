@@ -45,17 +45,17 @@
     "height": 320,
     "rotation": 0,
     "color_order": "RGB",
-    "invert": true,
+    "invert": 0,
     "spi": {
       "id": 1,
       "baudrate": 80000000,
-      "sck": 21,
+      "sck": 13,
       "mosi": 14
     },
     "pins": {
-      "dc": 12,
-      "cs": 11,
-      "rst": 13,
+      "dc": 11,
+      "cs": 12,
+      "rst": 21,
       "bl": 10
     },
     "backlight": {
@@ -68,7 +68,7 @@
     "pixel_format": "RGB565_BE",
     "rotation": 0,
     "block": true,
-    "return_bytes": false,
+    "return_bytes": 1,
     "step_blocks": 0,
     "max_jpeg_bytes": 0
   },
