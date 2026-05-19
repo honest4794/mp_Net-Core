@@ -1,9 +1,54 @@
 import time
+import micropython
 
 from lib.tail_codec import read_u32_le, write_u32_le
-from lib.buffer_hub import DmaBounceBuf
 
-_SPI_TX_BUF_SIZE = 32 * 1024
+_SPI_POOL_DEPTH = micropython.const(3)
+
+_HEAP_CAPS_AVAILABLE = False
+_DMA_ALLOC = None
+_DMA_FREE = None
+
+
+def _ensure_heap_caps():
+    global _HEAP_CAPS_AVAILABLE, _DMA_ALLOC, _DMA_FREE
+    if _HEAP_CAPS_AVAILABLE:
+        return True
+    try:
+        import heap_caps
+        _HEAP_CAPS_AVAILABLE = True
+        _DMA_ALLOC = lambda sz: heap_caps.malloc(sz, heap_caps.CAP_DMA)
+        _DMA_FREE = heap_caps.free
+        return True
+    except ImportError:
+        return False
+
+
+def _alloc_dma(size):
+    if _ensure_heap_caps():
+        try:
+            buf = _DMA_ALLOC(size)
+            if buf is not None:
+                return buf
+        except Exception:
+            pass
+    return None
+
+
+def _free_dma(buf):
+    if _DMA_FREE and buf is not None:
+        try:
+            _DMA_FREE(buf)
+        except Exception:
+            pass
+
+
+@micropython.viper
+def _viper_copy(dst, src, n: int):
+    d = ptr8(dst)
+    s = ptr8(src)
+    for i in range(n):
+        d[i] = s[i]
 
 
 def _yield():
@@ -162,15 +207,18 @@ def task_loop(bus):
 
     io_hub = bus.get_service("io_hub")
     frame_hub = bus.get_service("frame_hub")
-    spi_tx = DmaBounceBuf(_SPI_TX_BUF_SIZE)
+    block_hub = bus.get_service("block_hub")
     spi = getattr(lcd, "spi", None)
     use_spi_queue = spi is not None and hasattr(spi, "pending") and hasattr(spi, "is_busy") and hasattr(spi, "wait_all")
-    spi_pool = None
-    spi_pool_buf = None
-    spi_pool_free = None
+    spi_pool_bufs = []
+    spi_pool_free = []
     spi_inflight = []
+    spi_pool_depth = 0
     max_jpeg_bytes = int(bus.shared.get("max_jpeg_bytes", 0) or 0)
     frame_bytes = int(bus.shared.get("frame_bytes", 0) or 0)
+    if frame_bytes <= 0:
+        frame_bytes = 240 * 240 * 2
+    block_buffer_size = int(bus.shared.get("block_buffer_size", 0) or 0)
     io_prefetch = int(bus.shared.get("io_prefetch", 0) or 0)
     io_read_chunk = int(bus.shared.get("io_read_chunk", 0) or 0)
     jpeg_cache = bus.get_service("jpeg_cache")
@@ -189,21 +237,26 @@ def task_loop(bus):
         bus.shared["src_idx"] = 0
 
     if use_spi_queue:
-        depth = int(bus.shared.get("spi_queue_depth", 4) or 4)
+        if block_hub is not None and block_buffer_size > 0:
+            pool_size = 32768
+            depth = 2
+        else:
+            pool_size = frame_bytes
+            depth = int(bus.shared.get("spi_queue_depth", _SPI_POOL_DEPTH) or _SPI_POOL_DEPTH)
         if depth < 2:
             depth = 2
         if depth > 8:
             depth = 8
-        if frame_bytes <= 0:
-            frame_bytes = 240 * 240 * 2
-        spi_pool = [DmaBounceBuf(frame_bytes) for _ in range(depth)]
-        spi_pool_buf = []
-        spi_pool_free = [True] * depth
-        for b in spi_pool:
-            mv = b.get()
-            if mv is None:
-                mv = bytearray(frame_bytes)
-            spi_pool_buf.append(mv)
+        spi_pool_depth = depth
+        for _ in range(depth):
+            dma_buf = _alloc_dma(pool_size)
+            if dma_buf is not None:
+                spi_pool_bufs.append(dma_buf)
+                spi_pool_free.append(True)
+            else:
+                spi_pool_bufs.append(memoryview(bytearray(pool_size)))
+                spi_pool_free.append(True)
+        print("[Core0] SPI DMA pool: {} x {}B".format(depth, pool_size))
 
     def _set_range(total, enable, start, end):
         nonlocal range_enabled, range_start, range_end, idx
@@ -277,7 +330,13 @@ def task_loop(bus):
         except Exception:
             pass
         try:
-            frame_hub.flush()
+            if frame_hub is not None:
+                frame_hub.flush()
+        except Exception:
+            pass
+        try:
+            if block_hub is not None:
+                block_hub.flush()
         except Exception:
             pass
 
@@ -480,7 +539,21 @@ def task_loop(bus):
         write_u32_le(w, tail_off + 4, n)
         write_u32_le(w, tail_off + 8, read_us2)
         io_hub.commit()
-    # 主迴圈：持續餵 JPEG 到 io_hub；同時從 frame_hub 取出已解碼 frame 顯示到 LCD
+    # Block streaming tracking
+    last_batch_end = -1
+    cum_disp_us = 0
+    frame_start_ms = 0
+    width = int(bus.shared.get("width", 240) or 240)
+    height = int(bus.shared.get("height", 240) or 240)
+    accum_buf_idx = -1
+    accum_offset = 0
+    accum_row_start = 0
+    accum_blocks = 0
+    batch_blocks = 32768 // block_buffer_size if block_buffer_size > 0 else 8
+    if batch_blocks < 1:
+        batch_blocks = 1
+
+    # 主迴圈：持續餵 JPEG 到 io_hub；同時從 block_hub/frame_hub 取出已解碼資料顯示到 LCD
     while True:
         did_work = False
         if comm is not None:
@@ -527,6 +600,8 @@ def task_loop(bus):
                 idx = 0 if not paths else (seek % len(paths))
                 bus.shared["src_idx"] = idx
             _flush_hubs()
+            last_batch_end = -1
+            accum_buf_idx = -1
 
         paused = bool(bus.shared.get("mp4_paused", False))
         playing = bool(bus.shared.get("mp4_playing", True))
@@ -545,47 +620,198 @@ def task_loop(bus):
             time.sleep_ms(1)
             continue
 
-        r = frame_hub.get_read_view()
+        # ── BLOCK STREAMING PATH (32KB batch) ──
+        br = None if block_hub is None else block_hub.get_read_view()
+        if br is not None:
+            bi = read_u32_le(br, block_buffer_size + 0)
+            block_len = read_u32_le(br, block_buffer_size + 4)
+            total_blocks = read_u32_le(br, block_buffer_size + 8)
+            bframe_idx = read_u32_le(br, block_buffer_size + 12)
+
+            if frame_start_ms == 0:
+                frame_start_ms = time.ticks_ms()
+
+            t0 = time.ticks_us()
+            bh = int(bus.shared.get("block_height", 8) or 8)
+
+            if accum_buf_idx < 0:
+                accum_buf_idx = -1
+                for i in range(spi_pool_depth):
+                    if i not in spi_inflight:
+                        accum_buf_idx = i
+                        break
+                if accum_buf_idx < 0:
+                    accum_buf_idx = 0
+                    try:
+                        spi.wait_all()
+                    except Exception:
+                        pass
+                    spi_inflight.clear()
+                    for i in range(spi_pool_depth):
+                        spi_pool_free[i] = True
+                accum_offset = 0
+                accum_row_start = bi * bh
+                accum_blocks = 0
+
+            buf = spi_pool_bufs[accum_buf_idx]
+            buf[accum_offset:accum_offset + block_len] = br[:block_len]
+            accum_offset += block_len
+            accum_blocks += 1
+            block_hub.release_read()
+
+            is_last = bi == total_blocks - 1
+            batch_full = accum_blocks >= batch_blocks
+            if batch_full or is_last:
+                pending = 0
+                try:
+                    pending = int(spi.pending() or 0)
+                except Exception:
+                    pending = 0
+                done = len(spi_inflight) - pending
+                if done > 0:
+                    for _ in range(done):
+                        idx2 = spi_inflight.pop(0)
+                        spi_pool_free[idx2] = True
+
+                if pending >= spi_pool_depth:
+                    try:
+                        spi.wait_all()
+                    except Exception:
+                        pass
+                    spi_inflight.clear()
+                    for i in range(spi_pool_depth):
+                        spi_pool_free[i] = True
+
+                row_end = accum_row_start + accum_blocks * bh - 1
+                if row_end >= height:
+                    row_end = height - 1
+
+                if accum_row_start != last_batch_end:
+                    try:
+                        lcd.set_window(0, accum_row_start, width - 1, row_end)
+                    except Exception:
+                        try:
+                            lcd.set_window(0, accum_row_start)
+                        except Exception:
+                            pass
+                    last_batch_end = accum_row_start
+
+                try:
+                    lcd.write_data(buf[:accum_offset])
+                except Exception:
+                    pass
+                spi_pool_free[accum_buf_idx] = False
+                if accum_buf_idx not in spi_inflight:
+                    spi_inflight.append(accum_buf_idx)
+                accum_buf_idx = -1
+
+            t1 = time.ticks_us()
+            cum_disp_us += time.ticks_diff(t1, t0)
+            did_work = True
+
+            if is_last:
+                _backlight_try_on(bus)
+                mp4["frame"] = int(bframe_idx or 0)
+                bus.shared["src_idx"] = mp4["frame"]
+                _stats_on_frame(cum_disp_us, 0)
+                cum_disp_us = 0
+                last_batch_end = -1
+
+                if pace_ms > 0:
+                    while True:
+                        now_ms = time.ticks_ms()
+                        dt_ms = time.ticks_diff(now_ms, frame_start_ms)
+                        if dt_ms >= pace_ms:
+                            break
+                        remain = pace_ms - dt_ms
+                        if remain <= 2:
+                            if comm is not None:
+                                comm.poll()
+                            time.sleep_ms(1)
+                            continue
+
+                        cache_active = bool(bus.shared.get("cache_active", False))
+                        if io_hub.get_fill_level() < io_prefetch:
+                            w = io_hub.get_write_view()
+                            if w is not None:
+                                if pack is not None:
+                                    _pack_fill_step(w, _get_pace_frames())
+                                    continue
+                                if (not cache_active) and paths:
+                                    cur_idx = idx
+                                    p = paths[idx]
+                                    t2 = time.ticks_us()
+                                    n = _read_file_into(p, w, max_jpeg_bytes, io_read_chunk)
+                                    t3 = time.ticks_us()
+                                    read_us2 = time.ticks_diff(t3, t2)
+                                    tail_off = max_jpeg_bytes
+                                    write_u32_le(w, tail_off + 0, idx)
+                                    write_u32_le(w, tail_off + 4, n)
+                                    write_u32_le(w, tail_off + 8, read_us2)
+                                    io_hub.commit()
+                                    idx = _advance_idx(idx, _get_pace_frames())
+                                    bus.shared["src_idx"] = idx
+                                    if range_enabled and (not loop_play) and cur_idx >= range_end:
+                                        bus.shared["mp4_playing"] = False
+                                    if (not loop_play) and (not range_enabled) and paths and cur_idx >= (len(paths) - 1):
+                                        bus.shared["mp4_playing"] = False
+                                    continue
+
+                        time.sleep_ms(remain if remain < 5 else 5)
+                frame_start_ms = 0
+            continue
+
+        # ── FRAME HUB PATH (fallback) ──
+        r = None if frame_hub is None else frame_hub.get_read_view()
         if r is not None:
-            frame_t0_ms = time.ticks_ms()
             frame_t0_ms = time.ticks_ms()
             dec_us = read_u32_le(r, frame_bytes + 4)
             read_us = read_u32_le(r, frame_bytes + 8)
             read_n = read_u32_le(r, frame_bytes + 12)
             t0 = time.ticks_us()
-            try:
-                if use_spi_queue and spi_pool_free is not None:
+            if use_spi_queue and spi_pool_depth > 0:
+                pending = 0
+                try:
+                    pending = int(spi.pending() or 0)
+                except Exception:
                     pending = 0
-                    try:
-                        pending = int(spi.pending() or 0)
-                    except Exception:
-                        pending = 0
-                    done = len(spi_inflight) - pending
-                    if done > 0:
-                        for _ in range(done):
-                            idx2 = spi_inflight.pop(0)
-                            spi_pool_free[idx2] = True
+                done = len(spi_inflight) - pending
+                if done > 0:
+                    for _ in range(done):
+                        idx2 = spi_inflight.pop(0)
+                        spi_pool_free[idx2] = True
 
-                    if pending < len(spi_pool_free):
-                        idx2 = -1
-                        for i, free in enumerate(spi_pool_free):
-                            if free:
-                                idx2 = i
-                                break
-                        if idx2 >= 0:
-                            buf = spi_pool_buf[idx2]
-                            buf[:frame_bytes] = r[:frame_bytes]
-                            tid = lcd.write_data(memoryview(buf)[:frame_bytes])
-                            spi_pool_free[idx2] = False
-                            spi_inflight.append(idx2)
-                            if isinstance(tid, int):
-                                pass
-                else:
-                    tx_payload = spi_tx.prep_for_spi(r[:frame_bytes], frame_bytes)
-                    lcd.write_data(tx_payload)
-                _backlight_try_on(bus)
-            finally:
-                frame_hub.release_read()
+                if pending >= spi_pool_depth:
+                    try:
+                        spi.wait_all()
+                    except Exception:
+                        pass
+                    spi_inflight.clear()
+                    for i in range(spi_pool_depth):
+                        spi_pool_free[i] = True
+                    pending = 0
+
+                idx2 = -1
+                for i, free in enumerate(spi_pool_free):
+                    if free:
+                        idx2 = i
+                        break
+                if idx2 >= 0:
+                    buf = spi_pool_bufs[idx2]
+                    _viper_copy(buf, r, frame_bytes)
+                    try:
+                        lcd.write_data(buf[:frame_bytes])
+                    except Exception:
+                        pass
+                    spi_pool_free[idx2] = False
+                    spi_inflight.append(idx2)
+            else:
+                try:
+                    lcd.write_data(r[:frame_bytes])
+                except Exception:
+                    pass
+            _backlight_try_on(bus)
+            frame_hub.release_read()
             t1 = time.ticks_us()
             disp_us = time.ticks_diff(t1, t0)
             sec_read_us += read_us

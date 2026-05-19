@@ -372,12 +372,23 @@ def build_bus():
 
     tft_spi = None
     try:
-        import lcd_bus
-        tft_spi = lcd_bus.SPIBus(data=(spi_mosi,), clk=spi_sck, freq=spi_baudrate, host=spi_id)
-        print("[LCD] lcd_bus.SPIBus DMA async ready (host={})".format(spi_id))
+        import spi_dma
+        spi_dma.init(data=(spi_mosi,), clk=spi_sck, freq=spi_baudrate, host=spi_id)
+        tft_spi = spi_dma
+        print("[LCD] spi_dma async ready (host={}, {} MHz)".format(spi_id, spi_baudrate // 1_000_000))
     except Exception:
-        tft_spi = SPI(spi_id, baudrate=spi_baudrate, sck=Pin(spi_sck), mosi=Pin(spi_mosi))
-        print("[LCD] fallback machine.SPI (blocking)")
+        try:
+            from lcd_bus import SpiBus
+            tft_spi = SpiBus(data=(spi_mosi,), clk=spi_sck, freq=spi_baudrate)
+            print("[LCD] lcd_bus.SpiBus async ready ({} MHz)".format(spi_baudrate // 1_000_000))
+        except Exception:
+            try:
+                import lcd_bus
+                tft_spi = lcd_bus.SPIBus(data=(spi_mosi,), clk=spi_sck, freq=spi_baudrate, host=spi_id)
+                print("[LCD] lcd_bus.SPIBus (blocking)")
+            except Exception:
+                tft_spi = SPI(spi_id, baudrate=spi_baudrate, sck=Pin(spi_sck), mosi=Pin(spi_mosi))
+                print("[LCD] fallback machine.SPI (blocking)")
 
     driver_name = tft_cfg.get("driver", "GC9A01")
     disp_rotation = int(tft_cfg.get("rotation", 0))
@@ -485,18 +496,46 @@ def build_bus():
         bus.shared["cache_active"] = False
         bus.shared["src_idx"] = int(range_rs)
 
-    frame_tail = 16
     io_tail = 16 + 16
-    bus.shared["frame_tail"] = frame_tail
     bus.shared["io_tail"] = io_tail
 
     frame_hub_buffers = 3 if frame_buffers is None else frame_buffers
     io_hub_buffers = frame_hub_buffers if io_buffers is None else io_buffers
 
-    frame_hub = AtomicStreamHub(bus.shared["frame_bytes"] + frame_tail, num_buffers=frame_hub_buffers)
-    io_hub = AtomicStreamHub(max_jpeg_bytes + io_tail, num_buffers=io_hub_buffers)
+    if block:
+        block_height = 0
+        try:
+            if paths and len(paths) > 0:
+                sz = os.stat(paths[0])[6]
+                probe = bytearray(sz)
+                with open(paths[0], "rb") as f:
+                    f.readinto(probe)
+                info = decoder.get_img_info(probe)
+                if len(info) >= 4:
+                    block_height = int(info[3])
+        except Exception:
+            pass
+        if block_height <= 0:
+            block_height = 8
 
-    bus.set_service("frame_hub", frame_hub)
+        block_buffer_size = width * block_height * bytes_per_pixel
+        block_tail = 16
+        block_hub = AtomicStreamHub(block_buffer_size + block_tail, num_buffers=2, try_dma=True)
+        bus.shared["block_height"] = block_height
+        bus.shared["block_buffer_size"] = block_buffer_size
+        bus.shared["frame_tail"] = 0
+        bus.set_service("block_hub", block_hub)
+        bus.set_service("frame_hub", None)
+        print("[BlockHub] {}B x 2 DMA, block_height={}".format(block_buffer_size, block_height))
+    else:
+        frame_tail = 16
+        bus.shared["frame_tail"] = frame_tail
+
+        frame_hub = AtomicStreamHub(bus.shared["frame_bytes"] + frame_tail, num_buffers=frame_hub_buffers, try_dma=True)
+        bus.set_service("frame_hub", frame_hub)
+        bus.set_service("block_hub", None)
+
+    io_hub = AtomicStreamHub(max_jpeg_bytes + io_tail, num_buffers=io_hub_buffers)
     bus.set_service("io_hub", io_hub)
 
     # Folder I/O jitter is higher than pack; keep queue fuller by default.
