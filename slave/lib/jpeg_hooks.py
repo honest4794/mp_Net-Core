@@ -34,10 +34,6 @@ class JpegHookRunner:
     def set_overlay(self, overlay_id, pixel_data):
         self._overlay_cache[str(overlay_id)] = memoryview(pixel_data)[:]
 
-    def _is_le(self, info):
-        pf = str(info.get("pixel_format") or "RGB565_LE")
-        return pf.endswith("_LE")
-
     def __call__(self, payload, info):
         ops = self._config.get("ops") if isinstance(self._config, dict) else None
         if not ops:
@@ -45,30 +41,25 @@ class JpegHookRunner:
         bpp = int(info.get("bpp", 2) or 2)
         w = int(info.get("w", 0) or 0)
         h = int(info.get("h", 0) or 0)
-        is_le = self._is_le(info)
         for op in ops:
             op_type = str(op.get("type") or "")
             if op_type == "fill_rect":
-                self._op_fill_rect(payload, w, h, bpp, is_le, op)
+                self._op_fill_rect(payload, w, h, bpp, op)
             elif op_type == "text":
-                self._op_text(payload, w, h, bpp, is_le, op)
+                self._op_text(payload, w, h, bpp, op)
             elif op_type == "blend":
-                self._op_blend(payload, w, h, bpp, is_le, op)
+                self._op_blend(payload, w, h, bpp, op)
         return None
 
-    def _write_pixel(self, payload, px, py, w, bpp, is_le, rgb565):
+    def _write_pixel(self, payload, px, py, w, bpp, rgb565):
         if px < 0 or py < 0 or px >= w:
             return
         off = (py * w + px) * bpp
         if off < 0 or off + bpp > len(payload):
             return
         if bpp == 2:
-            if is_le:
-                payload[off] = rgb565 & 0xFF
-                payload[off + 1] = (rgb565 >> 8) & 0xFF
-            else:
-                payload[off] = (rgb565 >> 8) & 0xFF
-                payload[off + 1] = rgb565 & 0xFF
+            payload[off] = rgb565 & 0xFF
+            payload[off + 1] = (rgb565 >> 8) & 0xFF
         elif bpp == 3:
             r = ((rgb565 >> 11) & 0x1F) << 3
             g = ((rgb565 >> 5) & 0x3F) << 2
@@ -77,7 +68,7 @@ class JpegHookRunner:
             payload[off + 1] = g
             payload[off + 2] = b
 
-    def _read_pixel(self, payload, px, py, w, bpp, is_le):
+    def _read_pixel(self, payload, px, py, w, bpp):
         if px < 0 or py < 0 or px >= w:
             return 0
         off = (py * w + px) * bpp
@@ -86,7 +77,7 @@ class JpegHookRunner:
         if bpp == 2:
             lo = payload[off]
             hi = payload[off + 1]
-            return (int(hi) << 8) | int(lo) if is_le else (int(lo) << 8) | int(hi)
+            return (int(hi) << 8) | int(lo)
         elif bpp == 3:
             r = payload[off] >> 3
             g = payload[off + 1] >> 2
@@ -111,7 +102,7 @@ class JpegHookRunner:
         b = (bg_b * (255 - a) + fg_b * a) // 255
         return (int(r) << 11) | (int(g) << 5) | int(b)
 
-    def _op_fill_rect(self, payload, w, h, bpp, is_le, op):
+    def _op_fill_rect(self, payload, w, h, bpp, op):
         rx = int(op.get("x", 0) or 0)
         ry = int(op.get("y", 0) or 0)
         rw = int(op.get("w", w) or w)
@@ -119,9 +110,9 @@ class JpegHookRunner:
         color = _rgb565_from_hex(op.get("color", "#000000"))
         for py in range(max(0, ry), min(h, ry + rh)):
             for px in range(max(0, rx), min(w, rx + rw)):
-                self._write_pixel(payload, px, py, w, bpp, is_le, color)
+                self._write_pixel(payload, px, py, w, bpp, color)
 
-    def _op_text(self, payload, w, h, bpp, is_le, op):
+    def _op_text(self, payload, w, h, bpp, op):
         text = str(op.get("text", "") or "")
         if not text:
             return
@@ -133,9 +124,9 @@ class JpegHookRunner:
         spacing = 1
         for ci, ch in enumerate(text):
             cx = tx + ci * (char_w + spacing)
-            self._draw_char(payload, w, h, bpp, is_le, ch, cx, ty, color, char_w, char_h)
+            self._draw_char(payload, w, h, bpp, ch, cx, ty, color, char_w, char_h)
 
-    def _draw_char(self, payload, buf_w, buf_h, bpp, is_le, ch, cx, cy, color, char_w, char_h):
+    def _draw_char(self, payload, buf_w, buf_h, bpp, ch, cx, cy, color, char_w, char_h):
         idx = ord(ch)
         if idx < 32 or idx > 126:
             return
@@ -144,9 +135,9 @@ class JpegHookRunner:
             row = FONT_5X7[font_idx + fy] if font_idx + fy < len(FONT_5X7) else 0
             for fx in range(char_w):
                 if row & (1 << (char_w - 1 - fx)):
-                    self._write_pixel(payload, cx + fx, cy + fy, buf_w, bpp, is_le, color)
+                    self._write_pixel(payload, cx + fx, cy + fy, buf_w, bpp, color)
 
-    def _op_blend(self, payload, w, h, bpp, is_le, op):
+    def _op_blend(self, payload, w, h, bpp, op):
         overlay_id = str(op.get("src", "") or "")
         overlay = self._overlay_cache.get(overlay_id)
         if overlay is None or not len(overlay):
@@ -162,12 +153,12 @@ class JpegHookRunner:
                 oy = py - dy
                 if ox < 0 or oy < 0 or ox >= ow:
                     continue
-                fg = self._read_pixel(overlay, ox, oy, ow, bpp, is_le)
+                fg = self._read_pixel(overlay, ox, oy, ow, bpp)
                 if fg == 0:
                     continue
-                bg = self._read_pixel(payload, px, py, w, bpp, is_le)
+                bg = self._read_pixel(payload, px, py, w, bpp)
                 blended = self._blend_pixel(bg, fg, alpha)
-                self._write_pixel(payload, px, py, w, bpp, is_le, blended)
+                self._write_pixel(payload, px, py, w, bpp, blended)
 
 
 _jpeg_hook_runner = None
