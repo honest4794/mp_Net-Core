@@ -1,5 +1,11 @@
 # Block Streaming Pipeline 架構說明
 
+> **注意：此架構需要 SPI queue（`pending/is_busy/wait_all`）支援。**
+> 預設 `config.json` 已設定 `jpeg.block: false`，使用全幀解碼（`decode_into`）+
+> 32KB chunked LCD write 路徑。若要啟用 block streaming，需：
+> 1. `jpeg.block: true`
+> 2. SPI bus 需支援 `pending()/is_busy()/wait_all()`
+
 ## 架構總覽
 
 ```
@@ -15,35 +21,46 @@
 │  │ viper_copy         │                  │ set_window (1次/8塊)         ││
 │  │   → block_hub      │                  │ spi_dma.write(32KB)          ││
 │  └───────────────────┘                  │   ↓ fire-and-forget          ││
-│                                         │ ══ SPI DMA ~600us ═══→ LCD  ││
+│                                         │ ══ SPI DMA 3.5ms/6.8ms ═→ LCD││
 │                                         └───────────────────────────────┘│
 │                                                                          │
 │  Block 0-7:  [Core1 decode 8×1.35ms=10.8ms] → [1×set_window+32K DMA]   │
 │  Block 8-15:                                 [Core1 decode 10.8ms]      │
 │                                                     ↓                   │
-│  SPI 成本 = 0（600us DMA 完全隱藏在 10.8ms 解碼時間內）                  │
+│  SPI 成本可大幅隱藏（32KB DMA: 80M≈3.5ms / 40M≈6.8ms < 10.8ms）          │
 │  set_window 呼叫 = 4次/幀 (30 blocks / 8 = 4 batches)                   │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## 為什麼是 32KB Batch？
 
-來自 `mp_heap_caps` 速度測試的數據 (test 8)：
+來自 SPI 1線 DMA throughput 實測（最新版本；`total_us` 含 fire+wait）：
 
-| 測試 | Size | fire | wait (DMA完成) | total | throughput |
-|------|------|------|----------------|-------|-----------|
-| 4KB 1線 40M | 4096B | 18us | 600us | 618us | 6629 KB/s |
-| 16KB 1線 40M | 16384B | 25us | 2300us | 2325us | 7044 KB/s |
-| **32KB 1線 40M** | **32768B** | **42us** | **4500us** | **4542us** | **7215 KB/s** |
-| 32KB 4線 40M | 32768B | 38us | 1150us | 1188us | 27578 KB/s |
-| **32KB 4線 80M** | **32768B** | **35us** | **590us** | **625us** | **52429 KB/s** |
+### 40MHz
+
+| size | total_us | throughput |
+|------|----------|------------|
+| 256B | 112us | 2.2 MB/s |
+| 1024B | 269us | 3.6 MB/s |
+| 4096B | 891us | 4.4 MB/s |
+| 16384B | 3381us | 4.6 MB/s |
+| 32768B | 6812us | 4.6 MB/s |
+
+### 80MHz
+
+| size | total_us | throughput |
+|------|----------|------------|
+| 256B | 73us | 3.3 MB/s |
+| 1024B | 169us | 5.8 MB/s |
+| 4096B | 481us | 8.1 MB/s |
+| 16384B | 1742us | 9.0 MB/s |
+| 32768B | 3527us | 8.9 MB/s |
 
 ### 關鍵觀察
 
-- **32KB 是最大吞吐量的傳輸大小**
-- DMA setup overhead (fire) 基本固定 (~35-42us)，大塊傳輸攤銷更好
-- 32KB @ 80MHz 4線 = **625us**，遠小於 8 blocks 解碼 (10.8ms)
-- 堆疊 4KB × 8 次 DMA = 618us × 8 = 4944us >> 625us（單次 32KB）
+- **4KB 以上吞吐進入平台期，<=1KB 主要被固定開銷吃掉**
+- **16KB/32KB 幾乎同速，選 32KB 主要是減少 set_window 次數（1/8）並攤平 per-transfer overhead**
+- 堆疊 4KB × 8 次 DMA：40M = 891us × 8 = 7128us ≈ 6812us（單次 32KB）；80M = 481us × 8 = 3848us ≈ 3527us（單次 32KB）
 
 ### 積累策略
 

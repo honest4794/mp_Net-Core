@@ -528,11 +528,8 @@ def build_bus():
         bus.set_service("frame_hub", None)
         print("[BlockHub] {}B x 2 DMA, block_height={}".format(block_buffer_size, block_height))
     else:
-        frame_tail = 16
-        bus.shared["frame_tail"] = frame_tail
-
-        frame_hub = AtomicStreamHub(bus.shared["frame_bytes"] + frame_tail, num_buffers=frame_hub_buffers, try_dma=True)
-        bus.set_service("frame_hub", frame_hub)
+        io_hub_buffers = int(io_buffers) if io_buffers is not None else 3
+        bus.set_service("frame_hub", None)
         bus.set_service("block_hub", None)
 
     io_hub = AtomicStreamHub(max_jpeg_bytes + io_tail, num_buffers=io_hub_buffers)

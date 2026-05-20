@@ -67,7 +67,7 @@
   "jpeg": {
     "pixel_format": "RGB565_BE",
     "rotation": 0,
-    "block": true,
+    "block": false,
     "return_bytes": 1,
     "step_blocks": 0,
     "max_jpeg_bytes": 0

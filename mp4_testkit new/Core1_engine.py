@@ -3,6 +3,19 @@ import micropython
 
 from lib.tail_codec import read_u32_le, write_u32_le
 
+_SPI_CHUNK = micropython.const(32768)
+
+
+def _alloc_dma(size):
+    try:
+        import heap_caps
+        buf = heap_caps.malloc(size, heap_caps.CAP_DMA)
+        if buf is not None:
+            return buf
+    except Exception:
+        pass
+    return None
+
 
 @micropython.viper
 def _viper_copy(dst, src, n: int):
@@ -45,6 +58,7 @@ def task_loop(bus):
     block_hub = bus.get_service("block_hub")
     decoder = bus.get_service("decoder")
     jpeg_cache = bus.get_service("jpeg_cache")
+    lcd = bus.get_service("lcd")
     if bool(bus.shared.get("debug", False)):
         if jpeg_cache is None:
             print("[Engine] jpeg_cache: None")
@@ -52,10 +66,20 @@ def task_loop(bus):
             print("[Engine] jpeg_cache:", len(jpeg_cache))
         if block_hub is not None:
             print("[Engine] block streaming mode")
+        else:
+            print("[Engine] full-frame mode, LCD on Core1")
 
     max_jpeg_bytes = int(bus.shared.get("max_jpeg_bytes", 0) or 0)
     frame_bytes = int(bus.shared.get("frame_bytes", 0) or 0)
     block_buffer_size = int(bus.shared.get("block_buffer_size", 0) or 0)
+    width = int(bus.shared.get("width", 240) or 240)
+    height = int(bus.shared.get("height", 240) or 240)
+
+    dma_buf = _alloc_dma(frame_bytes)
+    if dma_buf is not None:
+        decode_buf = dma_buf
+    else:
+        decode_buf = memoryview(bytearray(frame_bytes))
 
     bus.shared["core1_ready"] = True
 
@@ -67,23 +91,23 @@ def task_loop(bus):
                 pace_frames = 1
 
             frame_idx, in_buf, n = jpeg_cache[cache_idx]
-            t0 = time.ticks_us()
             try:
                 if block_hub is not None:
                     _decode_jpeg_blocks(decoder, in_buf[:n], block_hub, block_buffer_size, frame_idx)
                 else:
-                    frame_hub = bus.get_service("frame_hub")
-                    out_view = frame_hub.get_write_view()
-                    while out_view is None:
-                        out_view = frame_hub.get_write_view()
-                        _yield()
-                    decoder.decode_into(in_buf[:n], out_view[:frame_bytes])
-                    hdr_off = frame_bytes
-                    write_u32_le(out_view, hdr_off + 0, frame_idx)
-                    write_u32_le(out_view, hdr_off + 4, 0)
-                    write_u32_le(out_view, hdr_off + 8, 0)
-                    write_u32_le(out_view, hdr_off + 12, n)
-                    frame_hub.commit()
+                    t_dec0 = time.ticks_us()
+                    decoder.decode_into(in_buf[:n], decode_buf[:frame_bytes])
+                    t_dec1 = time.ticks_us()
+                    dec_us = time.ticks_diff(t_dec1, t_dec0)
+
+                    _lcd_write_frame(lcd, decode_buf, frame_bytes, width, height)
+                    bus.shared["core1_dec_us"] = dec_us
+                    bus.shared["core1_read_us"] = 0
+                    bus.shared["core1_read_n"] = n
+                    bus.shared["core1_frame_idx"] = frame_idx
+                    bus.shared["core1_frame_done"] = True
+                    if not bus.shared.get("backlight_on", False):
+                        bus.shared["first_frame_done"] = True
             except Exception:
                 _yield()
                 cache_idx += pace_frames
@@ -91,7 +115,6 @@ def task_loop(bus):
                     cache_idx = 0
                     bus.shared["cache_active"] = False
                 continue
-            t1 = time.ticks_us()
 
             cache_idx += pace_frames
             if cache_idx >= len(jpeg_cache):
@@ -114,26 +137,38 @@ def task_loop(bus):
             _yield()
             continue
 
-        t0 = time.ticks_us()
         try:
             if block_hub is not None:
                 _decode_jpeg_blocks(decoder, in_view[:n], block_hub, block_buffer_size, frame_idx)
             else:
-                frame_hub = bus.get_service("frame_hub")
-                out_view = frame_hub.get_write_view()
-                while out_view is None:
-                    out_view = frame_hub.get_write_view()
-                    _yield()
-                decoder.decode_into(in_view[:n], out_view[:frame_bytes])
-                hdr_off = frame_bytes
-                write_u32_le(out_view, hdr_off + 0, frame_idx)
-                write_u32_le(out_view, hdr_off + 4, 0)
-                write_u32_le(out_view, hdr_off + 8, read_us)
-                write_u32_le(out_view, hdr_off + 12, n)
-                frame_hub.commit()
+                t_dec0 = time.ticks_us()
+                decoder.decode_into(in_view[:n], decode_buf[:frame_bytes])
+                t_dec1 = time.ticks_us()
+                dec_us = time.ticks_diff(t_dec1, t_dec0)
+
+                _lcd_write_frame(lcd, decode_buf, frame_bytes, width, height)
+                bus.shared["core1_dec_us"] = dec_us
+                bus.shared["core1_read_us"] = read_us
+                bus.shared["core1_read_n"] = n
+                bus.shared["core1_frame_idx"] = frame_idx
+                bus.shared["core1_frame_done"] = True
+                if not bus.shared.get("backlight_on", False):
+                    bus.shared["first_frame_done"] = True
         except Exception:
             io_hub.release_read()
             _yield()
             continue
-        t1 = time.ticks_us()
         io_hub.release_read()
+
+
+def _lcd_write_frame(lcd, buf, total, width, height):
+    try:
+        lcd.set_window(0, 0, width - 1, height - 1)
+    except Exception:
+        lcd.set_window(0, 0)
+
+    off = 0
+    while off < total:
+        n = _SPI_CHUNK if off + _SPI_CHUNK <= total else total - off
+        lcd.write_data(buf[off:off + n])
+        off += n
