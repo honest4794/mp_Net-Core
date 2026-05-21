@@ -145,6 +145,36 @@ def build_bus():
         except Exception:
             autoplay = bool(raw_autoplay)
 
+    tft_cfg = cfg.get("tft", {}) or {}
+    jpeg_cfg = cfg.get("jpeg", {}) or {}
+    spi_cfg = tft_cfg.get("spi", {}) or {}
+    pins_cfg = tft_cfg.get("pins", {}) or {}
+
+    spi_id = int(spi_cfg.get("id", 1))
+    spi_baudrate = int(spi_cfg.get("baudrate", 80_000_000))
+    spi_sck = int(spi_cfg.get("sck", 8))
+    spi_mosi = int(spi_cfg.get("mosi", 7))
+
+    tft_spi = None
+    try:
+        import spi_dma
+        spi_dma.init(data=(spi_mosi,), clk=spi_sck, freq=spi_baudrate, host=spi_id)
+        tft_spi = spi_dma
+        print("[LCD] spi_dma async ready (host={}, {} MHz)".format(spi_id, spi_baudrate // 1_000_000))
+    except Exception:
+        try:
+            from lcd_bus import SpiBus
+            tft_spi = SpiBus(data=(spi_mosi,), clk=spi_sck, freq=spi_baudrate)
+            print("[LCD] lcd_bus.SpiBus async ready ({} MHz)".format(spi_baudrate // 1_000_000))
+        except Exception:
+            try:
+                import lcd_bus
+                tft_spi = lcd_bus.SPIBus(data=(spi_mosi,), clk=spi_sck, freq=spi_baudrate, host=spi_id)
+                print("[LCD] lcd_bus.SPIBus (blocking)")
+            except Exception:
+                tft_spi = SPI(spi_id, baudrate=spi_baudrate, sck=Pin(spi_sck), mosi=Pin(spi_mosi))
+                print("[LCD] fallback machine.SPI (blocking)")
+
     sd_mount = mount_from_config(cfg)
     if debug and sd_mount:
         print("[SD]", sd_mount)
@@ -358,37 +388,11 @@ def build_bus():
         if debug:
             print("[Preload] frames:", 0 if cache is None else len(cache), "bytes:", total)
 
-    spi_cfg = tft_cfg.get("spi", {}) or {}
     pins_cfg = tft_cfg.get("pins", {}) or {}
-
-    spi_id = int(spi_cfg.get("id", 1))
-    spi_baudrate = int(spi_cfg.get("baudrate", 80_000_000))
-    spi_sck = int(spi_cfg.get("sck", 8))
-    spi_mosi = int(spi_cfg.get("mosi", 7))
 
     dc_pin = int(pins_cfg.get("dc", 13))
     cs_pin = int(pins_cfg.get("cs", 10))
     rst_pin = int(pins_cfg.get("rst", 14))
-
-    tft_spi = None
-    try:
-        import spi_dma
-        spi_dma.init(data=(spi_mosi,), clk=spi_sck, freq=spi_baudrate, host=spi_id)
-        tft_spi = spi_dma
-        print("[LCD] spi_dma async ready (host={}, {} MHz)".format(spi_id, spi_baudrate // 1_000_000))
-    except Exception:
-        try:
-            from lcd_bus import SpiBus
-            tft_spi = SpiBus(data=(spi_mosi,), clk=spi_sck, freq=spi_baudrate)
-            print("[LCD] lcd_bus.SpiBus async ready ({} MHz)".format(spi_baudrate // 1_000_000))
-        except Exception:
-            try:
-                import lcd_bus
-                tft_spi = lcd_bus.SPIBus(data=(spi_mosi,), clk=spi_sck, freq=spi_baudrate, host=spi_id)
-                print("[LCD] lcd_bus.SPIBus (blocking)")
-            except Exception:
-                tft_spi = SPI(spi_id, baudrate=spi_baudrate, sck=Pin(spi_sck), mosi=Pin(spi_mosi))
-                print("[LCD] fallback machine.SPI (blocking)")
 
     driver_name = tft_cfg.get("driver", "GC9A01")
     disp_rotation = int(tft_cfg.get("rotation", 0))
@@ -535,8 +539,8 @@ def build_bus():
     io_hub = AtomicStreamHub(max_jpeg_bytes + io_tail, num_buffers=io_hub_buffers)
     bus.set_service("io_hub", io_hub)
 
-    # Folder I/O jitter is higher than pack; keep queue fuller by default.
-    default_prefetch = -1 if pack is None else -2
+    # Pack has lower I/O jitter; keep queue at max to overlap read+decode.
+    default_prefetch = 0 if pack is None else -1
     raw_prefetch = default_prefetch if pipeline_io_prefetch is None else int(pipeline_io_prefetch)
     if raw_prefetch < 0:
         io_prefetch = io_hub_buffers + raw_prefetch

@@ -19,7 +19,8 @@
       "ssid": "",
       "ssid_pw": "",
       "mdns_name": "esp32-led-"
-    }
+    },
+    "ESP_now": { "enable": 0, "channel": 1 }
   },
   "Web": {
     "enable": 0,
@@ -109,6 +110,7 @@
       "freq": 40000000
     },
     "GPIO": {
+      "_comment": "sck=CLK/SCK, cmd=CMD/MOSI, [D0/MISO, D1/IRQ, D2/NC, D3/CS]",
       "sck": 7,
       "cmd": 6,
       "data": [15, 16, 4, 5]

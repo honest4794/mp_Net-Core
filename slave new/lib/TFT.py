@@ -148,8 +148,7 @@ class TFT:
             self._spi_q.wait_all()
             self.dc(0)
             self.cs(0)
-            self._spi_q.write(bytearray([int(cmd) & 0xFF]))
-            self._spi_q.wait_all()
+            self.spi.write(bytearray([int(cmd) & 0xFF]))
             self.cs(1)
             return
         if self._lcd_bus is not None:
@@ -187,12 +186,10 @@ class TFT:
             self._spi_q.wait_all()
             self.cs(0)
             self.dc(0)
-            self._spi_q.write(bytearray([int(cmd) & 0xFF]))
-            self._spi_q.wait_all()
+            self.spi.write(bytearray([int(cmd) & 0xFF]))
             if data:
                 self.dc(1)
-                self._spi_q.write(data)
-                self._spi_q.wait_all()
+                self.spi.write(data)
             self.cs(1)
             return
         if self._lcd_bus is not None:
@@ -221,20 +218,19 @@ class TFT:
             self._spi_q.wait_all()
             self.cs(0)
             self.dc(0)
-            self._spi_q.write(bytearray([0x2A]))
+            self.spi.write(bytearray([0x2A]))
             self._spi_q.wait_all()
             self.dc(1)
-            self._spi_q.write(bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
+            self.spi.write(bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
             self._spi_q.wait_all()
             self.dc(0)
-            self._spi_q.write(bytearray([0x2B]))
+            self.spi.write(bytearray([0x2B]))
             self._spi_q.wait_all()
             self.dc(1)
-            self._spi_q.write(bytes([y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF]))
+            self.spi.write(bytes([y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF]))
             self._spi_q.wait_all()
             self.dc(0)
-            self._spi_q.write(bytearray([0x2C]))
-            self._spi_q.wait_all()
+            self.spi.write(bytearray([0x2C]))
             self.dc(1)
             return
         if self._lcd_bus is not None:

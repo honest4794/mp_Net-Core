@@ -36,13 +36,17 @@ class NowBus:
 
         self.stats = {"rx": 0, "tx": 0, "tx_ok": 0, "tx_fail": 0, "rx_drop": 0}
 
-    def init(self):
+    def init(self, channel=None):
         try:
             sta = network.WLAN(network.STA_IF)
             ap = network.WLAN(network.AP_IF)
             if not sta.active() and not ap.active():
-                print(f"❌ [{self.label}] No active Wi-Fi interface")
-                return False
+                if channel is None:
+                    print(f"❌ [{self.label}] No active Wi-Fi interface")
+                    return False
+                sta.active(True)
+                sta.config(channel=channel)
+                time.sleep_ms(100)
 
             self._esp = espnow.ESPNow()
             self._esp.active(True)

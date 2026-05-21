@@ -36,6 +36,31 @@ def init_network_manager(sysBus):
         get_log().error(f"❌ Network Init Error: {e}")
     return
 
+def init_esp_now(sysBus):
+    esp_cfg = sysBus.shared.get('Network', {}).get('ESP_now', {})
+    if not esp_cfg.get('enable', 0):
+        return
+    try:
+        from lib.now_bus import NowBus
+        wifi_cfg = sysBus.shared.get('Network', {}).get('wifi', {})
+        wifi_enable = wifi_cfg.get('enable', 0)
+        channel = esp_cfg.get('channel', 1)
+
+        now = NowBus(label="NOW-Bus")
+        if wifi_enable:
+            ok = now.init()
+        else:
+            ok = now.init(channel=channel)
+
+        if ok:
+            sysBus.register_service("NowBus", now)
+            get_log().info("ESP-NOW ready, ch={}".format(now._channel()))
+        else:
+            get_log().warn("ESP-NOW init failed")
+    except Exception as e:
+        get_log().error("ESP-NOW init error: {}".format(e))
+    return
+
 def init_bus(sysBus):
     
     SPI_config = sysBus.shared['SPI']
@@ -134,6 +159,46 @@ def init_st(sysBus):
     return
 
 
+def init_pwm(sysBus):
+    pwm_cfg = sysBus.shared.get('PWM', {})
+    if not pwm_cfg.get('enable', 0):
+        return
+    try:
+        from machine import Pin, PWM
+        pwm_list = []
+        for item in pwm_cfg.get('list', []):
+            gpio = item.get('GPIO')
+            if gpio is None:
+                continue
+            pwm = PWM(Pin(gpio), freq=1000, duty=0)
+            pwm_list.append(pwm)
+        sysBus.register_service("pwm_list", pwm_list)
+        get_log().info(f"PWM initialized: {len(pwm_list)} channel(s)")
+    except Exception as e:
+        get_log().error(f"❌ PWM init error: {e}")
+    return
+
+
+def _init_sd_spi(config, _phat):
+    sd = machine.SDCard(
+        slot=config['config'].get('slot', 2),
+        sck=config['GPIO']['sck'],
+        mosi=config['GPIO']['cmd'],
+        miso=config['GPIO']['data'][0],
+        cs=config['GPIO']['data'][3],
+        freq=config['config'].get('freq', 20_000_000),
+    )
+    os.mount(sd, _phat)
+
+
+def _init_sd_sdio(config, _phat):
+    sd = machine.SDCard(slot=config['config']['slot'], width=config['config']['width'],
+    sck=config['GPIO']['sck'], cmd=config['GPIO']['cmd'],
+    data=config['GPIO']['data'],
+    freq=config['config']['freq'])
+    os.mount(sd, _phat)
+
+
 def init_sd(sysBus):
     config = sysBus.shared['SDcard']
     _phat = ''
@@ -143,27 +208,27 @@ def init_sd(sysBus):
             from esp32 import LDO
             ldo = LDO(config['LDO']['id'], config['LDO']['mv'], adjustable=True)
 
-            
         except Exception as e:
             get_log().error(f"LEO error: {e}")
-            
-            
+
+        slot = config['config'].get('slot', 0)
         try:
-            sd = machine.SDCard(slot=config['config']['slot'], width=config['config']['width'],
-            sck=config['GPIO']['sck'], cmd=config['GPIO']['cmd'],
-            data=config['GPIO']['data'],
-            freq=config['config']['freq'])
-            os.mount(sd, f'{config["phat"]}')
+            if slot >= 2:
+                _init_sd_spi(config, _phat)
+            else:
+                _init_sd_sdio(config, _phat)
         except Exception as e:
             get_log().error(f"❌ SD card init error: {e}")
-            
+
     sysBus.register_service("data_Phat", _phat)
     return
 
 init_network_manager(bus)
+init_esp_now(bus)
 init_bus(bus)
 init_led(bus)
 init_st(bus)
+init_pwm(bus)
 init_sd(bus)
 
 from lib.dp_bootstrap import init_lcd
