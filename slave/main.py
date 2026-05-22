@@ -17,6 +17,7 @@ from tasks.jpeg_decode_task import JpegDecodeTask
 from tasks.dp_buffer_task import DpBufferTask
 from tasks.display_task import DisplayTask
 from tasks.now_task import NowTask
+from tasks.action_task import ActionTask
 from lib.log_service import get_log
 from apa102 import APA102
 
@@ -92,6 +93,7 @@ def launcher():
     tm.register_task("log", LogTask, default_affinity=(1, 0), layer=0)
     tm.register_task("network", NetworkTask, default_affinity=(1, 0), layer=0)
     tm.register_task("now", NowTask, default_affinity=(0, 1), layer=0)
+    tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
     tm.register_task("circuit", CircuitTask, default_affinity=(1, 0), layer=0)
     tm.register_task("bus_decode", BusDecodeTask, default_affinity=(1, 0), layer=0)
     tm.register_task("web_ui",  WebUITask,   default_affinity=(1, 0), layer=0)

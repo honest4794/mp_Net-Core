@@ -804,3 +804,177 @@ class GC9D01(TFT):
         
         # 開始內存寫入
         self.write_cmd(0x2C)
+
+
+class NV3030B(TFT):
+    def __init__(self, spi, dc, cs, rst, width, height, rotation=0, color_order="BGR", invert=True, pixel_format="RGB565_BE", bytes_per_pixel=2):
+        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+        self._rotation = rotation
+        self._color_order = color_order.upper()
+        self._inverted = invert
+        self.init()
+
+    def write_cmd(self, cmd):
+        spi_q = getattr(self, '_spi_q', None)
+        if spi_q is not None:
+            spi_q.wait_all()
+            self.dc(0)
+            self.cs(0)
+            self.spi.write(bytearray([int(cmd) & 0xFF]))
+            self.cs(1)
+            return
+        lcd_bus = getattr(self, '_lcd_bus', None)
+        if lcd_bus is not None:
+            lcd_bus.tx_param(int(cmd), None)
+            return
+        self.dc(0)
+        self.cs(0)
+        self.spi.write(bytearray([int(cmd) & 0xFF]))
+
+    def write_data(self, data):
+        spi_q = getattr(self, '_spi_q', None)
+        if spi_q is not None:
+            self.dc(1)
+            self.cs(0)
+            return spi_q.write(data)
+        lcd_bus = getattr(self, '_lcd_bus', None)
+        if lcd_bus is not None:
+            lcd_bus.tx_color(
+                0x2C, data,
+                int(self._win_x0), int(self._win_y0),
+                int(self._win_x1), int(self._win_y1),
+            )
+            return
+        self.dc(1)
+        self.cs(0)
+        self.spi.write(data)
+        self.cs(1)
+
+    def write_cmd_data(self, cmd, data):
+        self.cs(0)
+        self.dc(0)
+        self.spi.write(bytearray([int(cmd) & 0xFF]))
+        if data:
+            self.dc(1)
+            self.spi.write(data)
+        self.cs(1)
+
+    def set_window(self, x0, y0, x1=None, y1=None):
+        if x1 is None:
+            x1 = x0 + self.width - 1
+        if y1 is None:
+            y1 = y0 + self.height - 1
+
+        if self._rotation in [90, 270]:
+            x0, y0, x1, y1 = y0, x0, y1, x1
+
+        y0_data = y0 + 20
+        y1_data = y1 + 20
+
+        self._win_x0 = int(x0)
+        self._win_y0 = int(y0_data)
+        self._win_x1 = int(x1)
+        self._win_y1 = int(y1_data)
+
+        spi_q = getattr(self, '_spi_q', None)
+        if spi_q is not None:
+            spi_q.wait_all()
+            self.cs(0)
+            self.dc(0)
+            self.spi.write(bytearray([0x2A]))
+            spi_q.wait_all()
+            self.dc(1)
+            self.spi.write(bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
+            spi_q.wait_all()
+            self.dc(0)
+            self.spi.write(bytearray([0x2B]))
+            spi_q.wait_all()
+            self.dc(1)
+            self.spi.write(bytes([y0_data >> 8, y0_data & 0xFF, y1_data >> 8, y1_data & 0xFF]))
+            spi_q.wait_all()
+            self.dc(0)
+            self.spi.write(bytearray([0x2C]))
+            self.dc(1)
+            return
+        lcd_bus = getattr(self, '_lcd_bus', None)
+        if lcd_bus is not None:
+            lcd_bus.tx_param(0x2A, bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
+            lcd_bus.tx_param(0x2B, bytes([y0_data >> 8, y0_data & 0xFF, y1_data >> 8, y1_data & 0xFF]))
+            return
+
+        self.write_cmd_data(0x2A, bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
+        self.write_cmd_data(0x2B, bytes([y0_data >> 8, y0_data & 0xFF, y1_data >> 8, y1_data & 0xFF]))
+        self.write_cmd(0x2C)
+
+    def init(self):
+        self.cs(0)
+        time.sleep_ms(20)
+        self.rst(0)
+        time.sleep_ms(20)
+        self.rst(1)
+        time.sleep_ms(20)
+
+        self.write_cmd_data(0x36, b'\x00')
+
+        self.write_cmd_data(0xFD, b'\x06\x08')
+        self.write_cmd_data(0x61, b'\x07\x04')
+        self.write_cmd_data(0x62, b'\x00\x44\x45')
+        self.write_cmd_data(0x63, b'\x41\x07\x12\x12')
+        self.write_cmd_data(0x64, b'\x37')
+        self.write_cmd_data(0x65, b'\x09\x10\x21')
+        self.write_cmd_data(0x66, b'\x09\x10\x21')
+        self.write_cmd_data(0x67, b'\x21\x40')
+        self.write_cmd_data(0x68, b'\x90\x4C\x50\x70')
+        self.write_cmd_data(0xB1, b'\x0F\x02\x01')
+        self.write_cmd_data(0xB4, b'\x01')
+        self.write_cmd_data(0xB5, b'\x02\x02\x0A\x14')
+        self.write_cmd_data(0xB6, b'\x04\x01\x9F\x00\x02')
+        self.write_cmd_data(0xDF, b'\x11')
+        self.write_cmd_data(0xE2, b'\x03\x00\x00\x30\x33\x3F')
+        self.write_cmd_data(0xE5, b'\x3F\x33\x30\x00\x00\x03')
+        self.write_cmd_data(0xE1, b'\x05\x67')
+        self.write_cmd_data(0xE4, b'\x67\x06')
+        self.write_cmd_data(0xE0, b'\x05\x06\x0A\x0C\x0B\x0B\x13\x19')
+        self.write_cmd_data(0xE3, b'\x18\x13\x0D\x09\x0B\x0B\x05\x06')
+        self.write_cmd_data(0xE6, b'\x00\xFF')
+        self.write_cmd_data(0xE7, b'\x01\x04\x03\x03\x00\x12')
+        self.write_cmd_data(0xE8, b'\x00\x70\x00')
+        self.write_cmd_data(0xEC, b'\x52')
+        self.write_cmd_data(0xF1, b'\x01\x01\x02')
+        self.write_cmd_data(0xF6, b'\x01\x30\x00\x00')
+        self.write_cmd_data(0xFD, b'\xFA\xFC')
+
+        self.write_cmd_data(0x3A, b'\x55')
+        self.write_cmd_data(0x35, b'\x00')
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+        self.write_cmd(self._get_inversion_cmd())
+        self.write_cmd(0x11)
+        self.write_cmd(0x29)
+
+        self.set_window(0, 0)
+
+    def _get_madctl_cmd(self):
+        rotation_settings = {
+            0: 0x00,
+            90: 0x60,
+            180: 0xC0,
+            270: 0xA0
+        }
+
+        base = rotation_settings.get(self._rotation, 0x00)
+        if self._color_order == "BGR":
+            base |= 0x08
+
+        return bytes([base])
+
+    def _get_inversion_cmd(self):
+        return 0x21 if self._inverted else 0x20
+
+    def _update_rotation(self):
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+
+    def _update_color_order(self):
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+
+    def _update_inversion(self):
+        self.write_cmd(self._get_inversion_cmd())
