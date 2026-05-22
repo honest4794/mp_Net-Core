@@ -814,51 +814,6 @@ class NV3030B(TFT):
         self._inverted = invert
         self.init()
 
-    def write_cmd(self, cmd):
-        spi_q = getattr(self, '_spi_q', None)
-        if spi_q is not None:
-            spi_q.wait_all()
-            self.dc(0)
-            self.cs(0)
-            self.spi.write(bytearray([int(cmd) & 0xFF]))
-            self.cs(1)
-            return
-        lcd_bus = getattr(self, '_lcd_bus', None)
-        if lcd_bus is not None:
-            lcd_bus.tx_param(int(cmd), None)
-            return
-        self.dc(0)
-        self.cs(0)
-        self.spi.write(bytearray([int(cmd) & 0xFF]))
-
-    def write_data(self, data):
-        spi_q = getattr(self, '_spi_q', None)
-        if spi_q is not None:
-            self.dc(1)
-            self.cs(0)
-            return spi_q.write(data)
-        lcd_bus = getattr(self, '_lcd_bus', None)
-        if lcd_bus is not None:
-            lcd_bus.tx_color(
-                0x2C, data,
-                int(self._win_x0), int(self._win_y0),
-                int(self._win_x1), int(self._win_y1),
-            )
-            return
-        self.dc(1)
-        self.cs(0)
-        self.spi.write(data)
-        self.cs(1)
-
-    def write_cmd_data(self, cmd, data):
-        self.cs(0)
-        self.dc(0)
-        self.spi.write(bytearray([int(cmd) & 0xFF]))
-        if data:
-            self.dc(1)
-            self.spi.write(data)
-        self.cs(1)
-
     def set_window(self, x0, y0, x1=None, y1=None):
         if x1 is None:
             x1 = x0 + self.width - 1
@@ -902,19 +857,21 @@ class NV3030B(TFT):
             lcd_bus.tx_param(0x2B, bytes([y0_data >> 8, y0_data & 0xFF, y1_data >> 8, y1_data & 0xFF]))
             return
 
-        self.write_cmd_data(0x2A, bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
-        self.write_cmd_data(0x2B, bytes([y0_data >> 8, y0_data & 0xFF, y1_data >> 8, y1_data & 0xFF]))
+        self.write_cmd(0x2A)
+        self.write_data(bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
+        self.write_cmd(0x2B)
+        self.write_data(bytes([y0_data >> 8, y0_data & 0xFF, y1_data >> 8, y1_data & 0xFF]))
         self.write_cmd(0x2C)
 
     def init(self):
-        self.cs(0)
-        time.sleep_ms(20)
-        self.rst(0)
-        time.sleep_ms(20)
         self.rst(1)
-        time.sleep_ms(20)
+        time.sleep_ms(10)
+        self.rst(0)
+        time.sleep_ms(10)
+        self.rst(1)
+        time.sleep_ms(50)
 
-        self.write_cmd_data(0x36, b'\x00')
+        self.write_cmd_data(0x36, b'\x08')
 
         self.write_cmd_data(0xFD, b'\x06\x08')
         self.write_cmd_data(0x61, b'\x07\x04')
@@ -923,33 +880,35 @@ class NV3030B(TFT):
         self.write_cmd_data(0x64, b'\x37')
         self.write_cmd_data(0x65, b'\x09\x10\x21')
         self.write_cmd_data(0x66, b'\x09\x10\x21')
-        self.write_cmd_data(0x67, b'\x21\x40')
-        self.write_cmd_data(0x68, b'\x90\x4C\x50\x70')
+        self.write_cmd_data(0x67, b'\x20\x40')
+        self.write_cmd_data(0x68, b'\x90\x4C\x7C\x66')
         self.write_cmd_data(0xB1, b'\x0F\x02\x01')
         self.write_cmd_data(0xB4, b'\x01')
         self.write_cmd_data(0xB5, b'\x02\x02\x0A\x14')
         self.write_cmd_data(0xB6, b'\x04\x01\x9F\x00\x02')
         self.write_cmd_data(0xDF, b'\x11')
-        self.write_cmd_data(0xE2, b'\x03\x00\x00\x30\x33\x3F')
-        self.write_cmd_data(0xE5, b'\x3F\x33\x30\x00\x00\x03')
-        self.write_cmd_data(0xE1, b'\x05\x67')
-        self.write_cmd_data(0xE4, b'\x67\x06')
-        self.write_cmd_data(0xE0, b'\x05\x06\x0A\x0C\x0B\x0B\x13\x19')
-        self.write_cmd_data(0xE3, b'\x18\x13\x0D\x09\x0B\x0B\x05\x06')
+        self.write_cmd_data(0xE2, b'\x13\x00\x00\x30\x33\x3F')
+        self.write_cmd_data(0xE5, b'\x3F\x33\x30\x00\x00\x13')
+        self.write_cmd_data(0xE1, b'\x00\x57')
+        self.write_cmd_data(0xE4, b'\x58\x00')
+        self.write_cmd_data(0xE0, b'\x01\x03\x0E\x0E\x0C\x15\x19')
+        self.write_cmd_data(0xE3, b'\x1A\x16\x0C\x0F\x0E\x0D\x02\x01')
         self.write_cmd_data(0xE6, b'\x00\xFF')
         self.write_cmd_data(0xE7, b'\x01\x04\x03\x03\x00\x12')
         self.write_cmd_data(0xE8, b'\x00\x70\x00')
         self.write_cmd_data(0xEC, b'\x52')
         self.write_cmd_data(0xF1, b'\x01\x01\x02')
-        self.write_cmd_data(0xF6, b'\x01\x30\x00\x00')
+        self.write_cmd_data(0xF6, b'\x09\x10\x00\x00')
         self.write_cmd_data(0xFD, b'\xFA\xFC')
 
-        self.write_cmd_data(0x3A, b'\x55')
+        self.write_cmd_data(0x3A, b'\x05')
         self.write_cmd_data(0x35, b'\x00')
         self.write_cmd_data(0x36, self._get_madctl_cmd())
         self.write_cmd(self._get_inversion_cmd())
         self.write_cmd(0x11)
+        time.sleep_ms(200)
         self.write_cmd(0x29)
+        time.sleep_ms(10)
 
         self.set_window(0, 0)
 
