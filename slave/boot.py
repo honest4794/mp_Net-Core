@@ -2,7 +2,6 @@ from lib.ESP_Boot import *
 from lib.LEDController import *
 from lib.ConfigManager import *
 from lib.sys_bus import bus
-from lib.network_manager import NetworkManager
 from lib.log_service import get_log
 import machine, os, ubinascii
 
@@ -22,44 +21,6 @@ def exists(path):
         return False
     return True
 
-
-def init_network_manager(sysBus):
-    try:
-        nm = NetworkManager(sysBus)
-        nm.init_from_config()
-        sysBus.register_service("network_manager", nm)
-        
-        if 'lan' in nm.interfaces:
-            sysBus.register_service("lan", nm.interfaces['lan'])
-            
-    except Exception as e:
-        get_log().error(f"❌ Network Init Error: {e}")
-    return
-
-def init_esp_now(sysBus):
-    esp_cfg = sysBus.shared.get('Network', {}).get('ESP_now', {})
-    if not esp_cfg.get('enable', 0):
-        return
-    try:
-        from lib.now_bus import NowBus
-        wifi_cfg = sysBus.shared.get('Network', {}).get('wifi', {})
-        wifi_enable = wifi_cfg.get('enable', 0)
-        channel = esp_cfg.get('channel', 1)
-
-        now = NowBus(label="NOW-Bus")
-        if wifi_enable:
-            ok = now.init()
-        else:
-            ok = now.init(channel=channel)
-
-        if ok:
-            sysBus.register_service("NowBus", now)
-            get_log().info("ESP-NOW ready, ch={}".format(now._channel()))
-        else:
-            get_log().warn("ESP-NOW init failed")
-    except Exception as e:
-        get_log().error("ESP-NOW init error: {}".format(e))
-    return
 
 def init_bus(sysBus):
     
@@ -179,6 +140,39 @@ def init_pwm(sysBus):
     return
 
 
+def init_pin(sysBus):
+    pin_cfg = sysBus.shared.get('PIN', {})
+    if not pin_cfg.get('enable', 0):
+        return
+    try:
+        from machine import Pin
+        pin_list = []
+        for item in pin_cfg.get('list', []):
+            gpio = item.get('GPIO')
+            if gpio is None:
+                continue
+            mode = item.get('mode', 'OUT')
+            initial = item.get('initial', 0)
+            pull = item.get('pull')
+            if mode == 'IN':
+                pull_mode = None
+                if pull == 'UP':
+                    pull_mode = Pin.PULL_UP
+                elif pull == 'DOWN':
+                    pull_mode = Pin.PULL_DOWN
+                p = Pin(gpio, Pin.IN, pull=pull_mode)
+            else:
+                p = Pin(gpio, Pin.OUT, value=1 if initial else 0)
+            pin_list.append(p)
+        sysBus.register_service("pin_list", pin_list)
+        from lib.hw_manager import _init_pin_from_list
+        _init_pin_from_list()
+        get_log().info("PIN initialized: {} pin(s)".format(len(pin_list)))
+    except Exception as e:
+        get_log().error("PIN init error: {}".format(e))
+    return
+
+
 def _init_sd_spi(config, _phat):
     sd = machine.SDCard(
         slot=config['config'].get('slot', 2),
@@ -223,13 +217,12 @@ def init_sd(sysBus):
     sysBus.register_service("data_Phat", _phat)
     return
 
-init_network_manager(bus)
-init_esp_now(bus)
+# 網路初始化已移至 NetworkTask.on_start()
 init_bus(bus)
 init_led(bus)
 init_st(bus)
 init_pwm(bus)
+init_pin(bus)
 init_sd(bus)
 
-from lib.dp_bootstrap import init_lcd
-init_lcd()
+# LCD 初始化已移至 DisplayTask.on_start()

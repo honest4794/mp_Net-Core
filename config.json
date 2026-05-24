@@ -48,7 +48,12 @@
       "timeout": 300,
       "ssid": "Home_WiFi",
       "ssid_pw": "",
-      "mdns_name": "esp32-led-"
+      "mdns_name": "esp32-led-",
+      "credentials": []
+    },
+    "ESP_now": {
+      "enable": 0,
+      "channel": 1
     }
   },
   "SDcard": {
@@ -97,6 +102,36 @@
           "scl": 20,
           "sda": 21
         }
+      }
+    ]
+  },
+  "PIN": {
+    "enable": 1,
+    "list": [
+      {
+        "GPIO": 0,
+        "label": "btn",
+        "mode": "IN",
+        "initial": 0,
+        "pull": "UP"
+      },
+      {
+        "GPIO": 8,
+        "mode": "OUT",
+        "initial": 0,
+        "pull": null
+      },
+      {
+        "GPIO": 9,
+        "mode": "OUT",
+        "initial": 0,
+        "pull": null
+      },
+      {
+        "GPIO": 10,
+        "mode": "OUT",
+        "initial": 0,
+        "pull": null
       }
     ]
   },

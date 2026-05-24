@@ -27,9 +27,15 @@ class FsScanTask(Task):
             return
 
         if self._phase == 2:
-            fs.scan_step()
-            if self.fcache_get("fs_scan_done"):
+            done = fs.scan_step()
+            total = bus.shared.get("fs_scan_total", 0)
+            progress = bus.shared.get("fs_scan_progress", 0)
+            if done:
+                get_log().info("FS Scan:完成 {} 個檔案".format(total))
                 self._phase = 3
+            elif progress > 0 and progress % max(1, total // 10) == 0:
+                pct = progress * 100 // total if total > 0 else 0
+                get_log().info("FS Scan: {}/{} ({})".format(progress, total, pct))
             return
 
         if self._phase == 3:

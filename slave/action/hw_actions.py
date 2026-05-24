@@ -1,16 +1,8 @@
 from lib.sys_bus import bus
+from lib.hw_manager import HW, _get_pin
 
 HW_TYPE_PIN = 0
 HW_TYPE_PWM = 1
-
-_PIN_CACHE = {}
-
-
-def _get_pin_out(gpio_num):
-    from machine import Pin
-    if gpio_num not in _PIN_CACHE:
-        _PIN_CACHE[gpio_num] = Pin(gpio_num, Pin.OUT)
-    return _PIN_CACHE[gpio_num]
 
 
 def on_hw_ctl(ctx, args):
@@ -20,8 +12,7 @@ def on_hw_ctl(ctx, args):
 
     if hw_type == HW_TYPE_PIN:
         try:
-            p = _get_pin_out(hw_id)
-            p.value(value)
+            _get_pin(hw_id).value(value)
             print("[HW] pin {} = {}".format(hw_id, value))
         except Exception as e:
             print("[HW] pin err: {}".format(e))

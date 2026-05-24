@@ -12,6 +12,10 @@ MODE_OFF = 0
 MODE_ALWAYS_ON = 1
 MODE_BOOT_ONLY = 2
 
+CRED_MAX = 10
+CRED_BTREE_KEY = b"wifi_credentials"
+
+
 class NetworkManager:
     """
     統一網絡接口管理器
@@ -197,31 +201,71 @@ class NetworkManager:
                     dprint(f"   mDNS configured: {mdns_val}.local")
                 except: pass
             
-            # 連接 STA
-            ssid = config.get('ssid')
-            password = config.get('password') or config.get('password_pw') or config.get('ssid_pw') 
-            
+            # ─ 連接 STA (優先走儲存的憑證列表) ─
+            connected_ssid = None
             connected_success = False
-            if ssid:
-                if not wlan.isconnected():
-                    dprint(f"   連接到: {ssid}")
+
+            creds = self._load_credentials()
+
+            # 建立可用 SSID 集合 (從 scan result)
+            known_ssids = set()
+            try:
+                for info in (scan_res or []):
                     try:
-                        wlan.connect(ssid, password)
-                        # 簡單的連接等待與重試邏輯
-                        for _ in range(5):
-                            if wlan.isconnected(): break
-                            time.sleep(1)
-                        
-                        if not wlan.isconnected():
-                            dprint("   ⚠️ WiFi 連接超時/失敗")
-                        else:
-                            dprint(f"   已連接到 WiFi")
+                        known_ssids.add(info[0].decode("utf-8"))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # 預設 ssid / pw
+            default_ssid = config.get("ssid") or ""
+            default_pw = (
+                config.get("password")
+                or config.get("password_pw")
+                or config.get("ssid_pw")
+                or ""
+            )
+
+            # 逐筆試連接
+            if not wlan.isconnected():
+                # 先試儲存的憑證
+                for c in creds:
+                    ssid = c.get("ssid", "")
+                    pw = c.get("pw", "")
+                    if ssid and ssid in known_ssids:
+                        dprint("   憑證連線: {}".format(ssid))
+                        connected_ssid = self._try_connect(wlan, ssid, pw)
+                        if connected_ssid:
                             connected_success = True
-                    except Exception as connect_err:
-                        dprint(f"   ⚠️ WiFi 連接過程異常: {connect_err}")
-                else:
-                    dprint(f"   已連接到 WiFi")
-                    connected_success = True
+                            self.save_wifi_credential(ssid, pw)
+                            break
+
+                # 再試預設 ssid
+                if not connected_success and default_ssid and default_ssid in known_ssids:
+                    dprint("   預設連線: {}".format(default_ssid))
+                    connected_ssid = self._try_connect(wlan, default_ssid, default_pw)
+                    if connected_ssid:
+                        connected_success = True
+                        self.save_wifi_credential(default_ssid, default_pw)
+
+                # 最後試任何已知 SSID (就算不在 scan 中)
+                if not connected_success:
+                    for c in creds:
+                        ssid = c.get("ssid", "")
+                        pw = c.get("pw", "")
+                        if ssid:
+                            dprint("   盲連: {}".format(ssid))
+                            connected_ssid = self._try_connect(wlan, ssid, pw)
+                            if connected_ssid:
+                                connected_success = True
+                                self.save_wifi_credential(ssid, pw)
+                                break
+
+            else:
+                # 已經連線了
+                dprint("   已連接到 WiFi")
+                connected_success = True
             
             if connected_success:
                 self.interfaces['wifi'] = wlan
@@ -321,6 +365,83 @@ class NetworkManager:
         dprint(f"🔒 Manual Keep-Alive set to: {state}")
         # 同步更新 app_connected 以立即生效 (雖然 Core0 會在下一輪循環覆蓋，但我們也修改 Core0)
         self.bus.shared["app_connected"] = state
+
+    # ── Wi-Fi 憑證管理 (最多 10 組，以加入順序取代) ──
+
+    def _get_db(self):
+        """從 ConfigManager 取得 btree db"""
+        try:
+            from lib.ConfigManager import cfg_manager
+            return cfg_manager._db if cfg_manager else None
+        except Exception:
+            return None
+
+    def _load_credentials(self):
+        """從 secrets.db (btree) 載入憑證列表"""
+        try:
+            db = self._get_db()
+            if db is not None:
+                raw = db.get(CRED_BTREE_KEY)
+                if raw is not None:
+                    import ujson as json
+                    creds = json.loads(raw.decode())
+                    if isinstance(creds, list):
+                        return creds
+        except Exception:
+            pass
+        cfg = self.bus.shared.get("Network", {}).get("wifi", {}) or {}
+        return cfg.get("credentials", []) or []
+
+    def _save_credentials(self, creds):
+        """寫入憑證到 secrets.db (btree)"""
+        try:
+            db = self._get_db()
+            if db is not None:
+                import ujson as json
+                db[CRED_BTREE_KEY] = json.dumps(creds).encode()
+                db.flush()
+        except Exception:
+            pass
+
+    def save_wifi_credential(self, ssid, password):
+        """新增/更新 WiFi 憑證 (自動維護最多 10 組)
+
+        規則:
+          - 已存在 → 移至最末 (最近使用)
+          - 不存在 + 未滿 10 → 附加到最末
+          - 不存在 + 已滿 10 → 移除最舊 (index 0)，附加到最末
+        """
+        creds = self._load_credentials()
+
+        # 查找是否已存在
+        for i, c in enumerate(creds):
+            if c.get("ssid") == ssid:
+                c["pw"] = password
+                creds.pop(i)
+                creds.append(c)
+                self._save_credentials(creds)
+                return
+
+        # 滿了就移除最舊的
+        if len(creds) >= CRED_MAX:
+            creds.pop(0)
+
+        creds.append({"ssid": ssid, "pw": password})
+        self._save_credentials(creds)
+
+    def _try_connect(self, wlan, ssid, password):
+        """嘗試連接到指定 SSID，回傳成功連上的 SSID 或 None"""
+        try:
+            wlan.connect(ssid, password)
+            for _ in range(5):
+                if wlan.isconnected():
+                    dprint("   ✓ 已連接到 {}".format(ssid))
+                    return ssid
+                time.sleep(1)
+            wlan.disconnect()
+        except Exception as e:
+            dprint("   ✗ {}: {}".format(ssid, e))
+        return None
 
     def check_network(self, force=False):
         """

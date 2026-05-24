@@ -15,6 +15,16 @@ class DisplayTask(Task):
         super().on_start()
         self._buf = ensure_dp_buffer_service(bus)
         self._lcd = None
+
+        # LCD 初始化 (原 boot.py，移至任務內以加速開機)
+        lcd = bus.get_service("lcd")
+        if lcd is None:
+            try:
+                from lib.dp_bootstrap import init_lcd
+                lcd = init_lcd()
+            except Exception as e:
+                print("[DisplayTask] LCD init error: {}".format(e))
+        self._lcd = lcd
         self._out_hdr = [0] * 9
         self._last_x = -1
         self._last_y = -1

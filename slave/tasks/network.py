@@ -1,4 +1,4 @@
-import time, gc
+import time
 from lib.task import Task
 from lib.sys_bus import bus
 from lib.net_bus import NetBus
@@ -6,8 +6,6 @@ from lib.bus_sources import BusSources
 from action.sys_actions import on_connect_request
 from lib.network_manager import NetworkManager
 from action.stream_actions import handle_supply_chain
-from action.heartbeat_actions import send_heartbeat
-from action.status_actions import on_status_get
 from lib.log_service import get_log
 
 class NetworkTask(Task):
@@ -22,15 +20,72 @@ class NetworkTask(Task):
         self.last_report = time.ticks_ms()
         self.s = {"f_local": None, "last_hb": time.ticks_ms()}
         self.hub = None
+        self.now_bus = None
+        self._last_discv_poll = 0
 
     def on_start(self):
         super().on_start()
+
+        get_log().info("🌐 [NetworkTask] 開始初始化網路...")
         
         self.nm = bus.get_service("network_manager")
         if not self.nm:
-            get_log().warn("⚠️ NetworkManager not found in bus, creating new instance...")
+            get_log().info("🌐 [NetworkTask] 建立 NetworkManager...")
             self.nm = NetworkManager(bus)
             self.nm.init_from_config()
+            bus.register_service("network_manager", self.nm)
+
+            for name, iface in self.nm.interfaces.items():
+                ip = "?"
+                try:
+                    cfg = iface.ifconfig()
+                    ip = cfg[0]
+                except Exception:
+                    pass
+                get_log().info("🌐 {} 就緒 | IP: {}".format(name.upper(), ip))
+
+            if self.nm.interfaces:
+                get_log().info("🌐 [NetworkTask] 網路連線完成")
+            else:
+                get_log().warn("🌐 [NetworkTask] 沒有可用網路介面")
+        
+        # ── ESP-NOW ────────────────────────────────────
+        #   wifi.enable=1  → ESP-NOW 跟隨 WiFi channel
+        #   wifi.enable=0  → ESP-NOW 獨立啟動 STA，用 config 的 channel
+        #   兩者共用同一射頻，AP 模式自然 channel 一致
+        esp_cfg = bus.shared.get('Network', {}).get('ESP_now', {})
+        if esp_cfg.get('enable', 0):
+            try:
+                from lib.now_bus import NowBus
+                wifi_cfg = bus.shared.get('Network', {}).get('wifi', {})
+                wifi_enable = wifi_cfg.get('enable', 0)
+                esp_ch = esp_cfg.get('channel', 1)
+
+                now = NowBus(label="NOW-Bus")
+
+                if wifi_enable:
+                    # WiFi 主控，ESP-NOW 不指定 channel
+                    ok = now.init()
+                    if not ok:
+                        # WiFi 射頻可能尚未就緒，fallback 到 ESP_now channel
+                        get_log().warn("ESP-NOW: WiFi radio not ready, fallback ch={}".format(esp_ch))
+                        ok = now.init(channel=esp_ch)
+                else:
+                    # WiFi 關閉，ESP-NOW 獨佔射頻
+                    get_log().info("ESP-NOW: standalone mode, ch={}".format(esp_ch))
+                    ok = now.init(channel=esp_ch)
+
+                if ok:
+                    self.now_bus = now
+                    bus.register_service("NowBus", self.now_bus)
+                    sources = bus.get_service("bus_sources")
+                    if sources:
+                        sources.add(self.now_bus)
+                    get_log().info("ESP-NOW ready, ch={}".format(self.now_bus._channel()))
+                else:
+                    get_log().warn("ESP-NOW init failed")
+            except Exception as e:
+                get_log().error("ESP-NOW init error: {}".format(e))
 
         bus_sys = bus.shared["System"]
 
@@ -54,14 +109,29 @@ class NetworkTask(Task):
         return on_connect_request(self.ctrl_bus, url)
 
     def loop(self):
-        if not self.running: return
+        if not self.running:
+            return
 
+        now = time.ticks_ms()
         bus.shared["app_connected"] = self.ctrl_bus.connected or bus.shared.get("manual_keep_alive", False)
-        
-        network_ok = self.nm.check_network()
-        if network_ok:
+
+        # ═════════════════════════════════════════════════
+        # P0 — ESP-NOW (最高優先，獨立於 WiFi/LAN)
+        # ═════════════════════════════════════════════════
+        if self.now_bus:
+            self.now_bus.poll()
             self.success += 1
+
+        # ═════════════════════════════════════════════════
+        # P1 — 網路狀態檢查 + WiFi polling
+        #       check_network() 內部已限頻 1Hz
+        # ═════════════════════════════════════════════════
+        network_ok = self.nm.check_network()
+
+        if network_ok:
             bus_sys = bus.shared["System"]
+
+            # ── 自動連線 (僅一次) ──
             if not self.tried_config_connect and not self.ctrl_bus.connected:
                 self.tried_config_connect = True
                 m_ip = bus_sys.get("master_IP", "")
@@ -74,33 +144,39 @@ class NetworkTask(Task):
                     else:
                         get_log().warn("⚠️ Auto-Connect Failed, waiting for discovery...")
 
-            try:
-                ctx_extra = {
-                    "app": self.app, 
-                    "ctrl_bus": self.ctrl_bus,
-                    "on_connect": self._on_connect_wrapper
-                }
-                self.discovery_bus.poll(**ctx_extra)
-                if self.ctrl_bus.connected: 
+            # ── P2: WiFi polling ──
+            ctx_extra = {
+                "app": self.app,
+                "ctrl_bus": self.ctrl_bus,
+                "on_connect": self._on_connect_wrapper,
+            }
+            if self.ctrl_bus.connected:
+                try:
                     self.ctrl_bus.poll()
-            except Exception as e:
-                get_log().error("📡 Network Poll Error: {}".format(e))
-        
-        worker_ctx = {"app": self.app, "send": self.ctrl_bus.write}
-        handle_supply_chain(self.hub, self.s, worker_ctx)
+                    self.success += 1
+                except Exception as e:
+                    get_log().error("Ctrl Bus Poll Error: {}".format(e))
+            else:
+                if time.ticks_diff(now, self._last_discv_poll) > 250:
+                    self._last_discv_poll = now
+                    try:
+                        self.discovery_bus.poll(**ctx_extra)
+                        self.success += 1
+                    except Exception as e:
+                        get_log().error("Discovery Poll Error: {}".format(e))
 
-        bus_sys = bus.shared["System"]
-        now = time.ticks_ms()
-        if time.ticks_diff(now, self.s["last_hb"]) > bus_sys["heartbeat_interval"]:
-            is_streaming = self.fcache_get("is_streaming")
-            if is_streaming and self.ctrl_bus.connected:
-                send_heartbeat(worker_ctx)
-                on_status_get(worker_ctx, {"query_type": 1})
-            self.s["last_hb"] = now
-            self.last_report = now
+        # ═════════════════════════════════════════════════
+        # P3 — 數據路由 (WS 自帶 ping/pong，此處不需額外心跳)
+        # ═════════════════════════════════════════════════
+        worker_ctx = {"app": self.app, "send": self.ctrl_bus.write}
+        if self.hub is not None:
+            handle_supply_chain(self.hub, self.s, worker_ctx)
 
     def on_stop(self):
         super().on_stop()
         if self.ctrl_bus:
             self.ctrl_bus.disconnect()
+        if self.now_bus:
+            self.now_bus.deinit()
+            self.now_bus = None
         get_log().info("NetworkTask Stopped")

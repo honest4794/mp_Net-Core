@@ -40,7 +40,7 @@
             "ssid_pw": "",
             "mdns_name": "esp32-led-"
         },
-        "ESP_now": { "enable": 0, "channel": 1 }
+        "ESP_now": { "enable": 0, "channel": 6 }
     },
     "SDcard": {
         "enable": 1,
@@ -110,6 +110,15 @@
         "list": [
             {"GPIO":0,"dArc":0,"type":0}
         ]
+    },
+    "PIN": {
+      "enable": 1,
+      "list": [
+            { "GPIO": 40, "label": "btn",  "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 18, "label": "encA", "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 8,  "label": "encB", "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 17, "label": "encC", "mode": "IN", "initial": 0, "pull": "UP" }
+      ]
     },
     "WS2812": {
         "enable": 0,

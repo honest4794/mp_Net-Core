@@ -286,10 +286,18 @@ class TaskManager:
 
             self._update_tasks(core_id)
 
+            # ── 每個 runner 週期都計數 ──
+            if _need_core_metrics:
+                loop_count += 1
+                duration = time.ticks_diff(now_ms, start_time)
+                if duration >= _perf_interval_ms:
+                    off = core_id * 12
+                    _viper_write_i32(self._core_buf, off, loop_count)
+                    loop_count = 0
+                    start_time = now_ms
+
             if not self.active_tasks[core_id]:
-                time.sleep_ms(100)
-                loop_count = 0
-                start_time = time.ticks_ms()
+                time.sleep_ms(0)
                 continue
 
             current_tasks = list(self.active_tasks[core_id].items())
@@ -323,16 +331,6 @@ class TaskManager:
                     time.sleep_ms(1000)
 
             time.sleep_ms(0)
-            if _need_core_metrics:
-                loop_count += 1
-                duration = time.ticks_diff(now_ms, start_time)
-
-                if duration >= _perf_interval_ms and loop_count > 0:
-                    off = core_id * 12
-                    _viper_write_i32(self._core_buf, off, loop_count)
-
-                    loop_count = 0
-                    start_time = now_ms
 
             if time.ticks_diff(now_ms, self._perf_snapshot_ms[core_id]) >= _perf_interval_ms:
                 self._perf_snapshot_ms[core_id] = now_ms
