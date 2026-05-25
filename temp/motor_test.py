@@ -26,9 +26,9 @@ PWM_FREQ = 1000
 DUTY     = 512
 
 # -- GPIO --
-in1 = Pin(8,  Pin.OUT, value=0)
-in2 = Pin(9,  Pin.OUT, value=0)
-en  = PWM(Pin(10), freq=PWM_FREQ, duty=0)
+in1 = Pin(21,  Pin.OUT, value=0)
+in2 = Pin(14,  Pin.OUT, value=0)
+en  = PWM(Pin(13), freq=PWM_FREQ, duty=0)
 
 # -- 函數 --
 def stop():

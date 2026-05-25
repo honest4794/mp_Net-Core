@@ -117,7 +117,10 @@
             { "GPIO": 40, "label": "btn",  "mode": "IN",  "initial": 0, "pull": "UP" },
             { "GPIO": 18, "label": "encA", "mode": "IN",  "initial": 0, "pull": "UP" },
             { "GPIO": 8,  "label": "encB", "mode": "IN",  "initial": 0, "pull": "UP" },
-            { "GPIO": 17, "label": "encC", "mode": "IN", "initial": 0, "pull": "UP" }
+            { "GPIO": 17, "label": "encC", "mode": "IN", "initial": 0, "pull": "UP" },
+            { "GPIO": 10, "label": "m1",   "mode": "OUT", "initial": 0 },
+            { "GPIO": 11, "label": "m2",   "mode": "OUT", "initial": 0 },
+            { "GPIO": 12, "label": "m_en", "mode": "OUT", "initial": 0 }
       ]
     },
     "WS2812": {

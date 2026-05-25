@@ -5,7 +5,7 @@ exec(open("esp_rx.py").read())
 
 import network, espnow, time
 
-CHANNEL = 1
+CHANNEL = 6
 
 sta = network.WLAN(network.STA_IF)
 sta.active(True)

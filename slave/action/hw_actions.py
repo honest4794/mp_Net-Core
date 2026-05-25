@@ -1,9 +1,6 @@
 from lib.sys_bus import bus
 from lib.hw_manager import HW
 
-HW_TYPE_PIN = 0
-HW_TYPE_PWM = 1
-
 
 def _pin_by_id(hw_id):
     plist = bus.get_service("pin_list")
@@ -22,28 +19,35 @@ def _pin_label(hw_id):
 
 def on_hw_ctl(ctx, args):
     hw_type = int(args.get("type", 0) or 0)
-    hw_id = int(args.get("id", 0) or 0)
-    value = int(args.get("value", 0) or 0)
-    label = args.get("label") or ""
+    hw_id   = int(args.get("id", 0) or 0)
+    value   = int(args.get("value", 0) or 0)
+    label   = args.get("label") or ""
 
-    if label:
-        print("[HW] {}={}".format(label, value))
-        bus.shared["hw_events"] = {"label": label, "value": value}
+    # ── VBTN: 虛擬按鈕 ──
+    if hw_type == HW.VBTN:
+        HW.set(HW.VBTN, hw_id, value)
+        # 專用高速旗標，供 action_task_1 直接讀取
+        if hw_id == 1:
+            bus.shared["_vbtn1_event"] = value
+        print("[HW] vbtn {}={}".format(hw_id, value))
         return
 
-    if hw_type == HW_TYPE_PIN:
+    # ── PIN: 實體 GPIO ──
+    if hw_type == HW.PIN:
         try:
             p = _pin_by_id(hw_id)
             if p is not None:
                 p.value(value)
-                label = _pin_label(hw_id)
-                print("[HW] {}={}".format(label, value))
+                lbl = _pin_label(hw_id)
+                print("[HW] {}={}".format(lbl, value))
             else:
                 print("[HW] pin id {} out of range".format(hw_id))
         except Exception as e:
             print("[HW] pin err: {}".format(e))
+        return
 
-    elif hw_type == HW_TYPE_PWM:
+    # ── PWM ──
+    if hw_type == HW.PWM:
         pwm_list = bus.get_service("pwm_list")
         if not pwm_list or hw_id >= len(pwm_list):
             print("[HW] pwm idx {} out of range".format(hw_id))
@@ -53,16 +57,22 @@ def on_hw_ctl(ctx, args):
             print("[HW] pwm {} duty={}".format(hw_id, value))
         except Exception as e:
             print("[HW] pwm err: {}".format(e))
+        return
 
-    else:
-        print("[HW] unknown type=0x{:02X}".format(hw_type))
+    # ── 舊式兼容：type 無意義時依 label 分派 ──
+    if label:
+        print("[HW] {}={}".format(label, value))
+        bus.shared["hw_events"] = {"label": label, "value": value}
+        return
+
+    print("[HW] unknown type=0x{:02X}".format(hw_type))
 
 
 def on_hw_query(ctx, args):
     hw_type = int(args.get("type", 0) or 0)
-    hw_id = int(args.get("id", 0) or 0)
+    hw_id   = int(args.get("id", 0) or 0)
 
-    if hw_type == HW_TYPE_PIN:
+    if hw_type == HW.PIN:
         from machine import Pin
         try:
             p = Pin(hw_id, Pin.IN)
@@ -71,7 +81,7 @@ def on_hw_query(ctx, args):
         except Exception as e:
             print("[HW] pin query err: {}".format(e))
 
-    elif hw_type == HW_TYPE_PWM:
+    elif hw_type == HW.PWM:
         pwm_list = bus.get_service("pwm_list")
         if not pwm_list or hw_id >= len(pwm_list):
             print("[HW] pwm idx {} out of range".format(hw_id))

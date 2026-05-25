@@ -18,7 +18,7 @@ from tasks.dp_buffer_task import DpBufferTask
 from tasks.display_task import DisplayTask
 
 from tasks.control_panel import ControlPanelTask
-from tasks.motor_task import MotorTask
+from tasks.action_task_1 import ActionTask1
 from tasks.action_task import ActionTask
 from lib.log_service import get_log
 from apa102 import APA102
@@ -98,7 +98,7 @@ def launcher():
     tm.register_task("network", NetworkTask, default_affinity=(1, 0), layer=0)
     # NowTask 已整合至 NetworkTask
     tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
-    tm.register_task("motor", MotorTask, default_affinity=(1, 0), layer=0)
+    tm.register_task("motor", ActionTask1, default_affinity=(1, 0), layer=0)
     tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
     tm.register_task("circuit", CircuitTask, default_affinity=(1, 0), layer=0)
     tm.register_task("bus_decode", BusDecodeTask, default_affinity=(1, 0), layer=0)

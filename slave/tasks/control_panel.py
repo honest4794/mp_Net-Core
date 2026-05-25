@@ -1,19 +1,28 @@
 """
-控制面板 Task — 編碼器 + 按鈕 → ESP-NOW
+控制面板 Task — 編碼器 + 按鈕 → ESP-NOW + 虛擬按鈕
 
-Payload: type(1) + id(1) + value(2) + str_u16len(label)
-  按鈕按下: type=0xFF, id=0, value=state, label="btn" | "encC"
+每組按鈕事件連續發送兩次 ESP-NOW:
+  1. 真實按鈕: type=HW.PIN(0), id=0, label="btn"|"encC",  value=state
+  2. 虛擬按鈕: type=HW.VBTN(8), id=vbtn_id, label="vbtn", value=state
+
+同時寫入本地 HW.VBTN 緩衝。
 """
 
 import time, struct
 from machine import Encoder
 from lib.task import Task
 from lib.sys_bus import bus
-from lib.hw_manager import _PIN_CACHE
+from lib.hw_manager import HW, _PIN_CACHE
 from lib.proto import Proto
 from lib.log_service import get_log
 
 CMD_HW = 0x1401
+
+# 需要同步的實體按鈕: [(label, vbtn_id), ...]
+_VBTN_SYNC = [
+    ("btn",  0),
+    ("encC", 1),
+]
 
 
 def _find_pin_obj(label, fallback=0):
@@ -90,11 +99,22 @@ class ControlPanelTask(Task):
         return triggered
 
     def _send(self, label, state):
+        """ESP-NOW 發送真實按鈕 (type=PIN, id=0, label="btn"|"encC")"""
         if self._now_bus is None:
             return
         lb = label.encode()
-        payload = struct.pack("<BB", 0xFF, 0)
+        payload = struct.pack("<BB", HW.PIN, 0)
         payload += struct.pack("<H", len(lb)) + lb
+        payload += struct.pack("<H", state)
+        self._now_bus.broadcast(Proto.pack(CMD_HW, payload))
+
+    def _send_vbtn(self, vbtn_id, state):
+        """ESP-NOW 發送虛擬按鈕 (type=VBTN, id=vbtn_id, label="vbtn")"""
+        if self._now_bus is None:
+            return
+        label = b"vbtn"
+        payload = struct.pack("<BB", HW.VBTN, vbtn_id)
+        payload += struct.pack("<H", len(label)) + label
         payload += struct.pack("<H", state)
         self._now_bus.broadcast(Proto.pack(CMD_HW, payload))
 
@@ -111,6 +131,18 @@ class ControlPanelTask(Task):
             self.success += 1
 
         for label, raw in self._read_buttons(now):
+            # ── 第 1 次 ESP-NOW: 真實按鈕 ──
             self._send(label, raw)
+
+            # ── 第 2 次 ESP-NOW + 本地緩衝: 虛擬按鈕 ──
+            for sync_label, vbtn_id in _VBTN_SYNC:
+                if label == sync_label:
+                    self._send_vbtn(vbtn_id, raw)
+                    HW.set(HW.VBTN, vbtn_id, raw)
+                    # 同核旗標，供 action_task_1 即時讀取
+                    if vbtn_id == 1:
+                        bus.shared["_vbtn1_event"] = raw
+                    break
+
             get_log().immediate("[CP] {}={}".format(label, raw))
             self.success += 1
