@@ -300,7 +300,7 @@ class TaskManager:
                 time.sleep_ms(0)
                 continue
 
-            current_tasks = list(self.active_tasks[core_id].items())
+            current_tasks = tuple(self.active_tasks[core_id].items())
 
             for name, task in current_tasks:
                 try:

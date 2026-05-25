@@ -50,6 +50,7 @@ class NowBus:
 
             self._esp = espnow.ESPNow()
             self._esp.active(True)
+            self._esp.add_peer(BCAST_MAC)
             self.connected = True
             print(f"✅ [{self.label}] ESP-NOW active, channel={self._channel()}")
             return True

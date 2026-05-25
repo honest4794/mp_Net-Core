@@ -1,22 +1,23 @@
 """
-控制面板 Task — 編碼器 + 按鈕 → ESP-NOW  v3
+控制面板 Task — 編碼器 + 按鈕 → ESP-NOW (HW_CTL)
 
-硬體 (config.json PIN.list, boot 時 init_pin() 建立):
-  btn  = GPIO 40
-  encC = GPIO 17 (編碼器按鈕)
-  encA = GPIO 18
-  encB = GPIO  8
+只報告用戶操作 (id = config PIN.list 索引):
+  btn  按下 → broadcast HW_CTL(0x1401) type=PIN id=0    value=0
+  encC 按下 → broadcast HW_CTL(0x1401) type=0xFF id=0  value=encoder
 """
 
-import time
+import time, struct
 from machine import Encoder
 from lib.task import Task
 from lib.sys_bus import bus
 from lib.hw_manager import _PIN_CACHE
+from lib.proto import Proto
 from lib.log_service import get_log
 
+CMD_HW = 0x1401
 
-def _find_pin_obj(label, gpio_fallback=0):
+
+def _find_pin_obj(label, fallback=0):
     plist = bus.get_service("pin_list")
     if plist:
         cfg = bus.shared.get("PIN") or {}
@@ -25,12 +26,12 @@ def _find_pin_obj(label, gpio_fallback=0):
             if isinstance(item, dict) and item.get("label") == label:
                 if i < len(plist):
                     return plist[i]
-    gpio = gpio_fallback
+    gpio = fallback
     cfg = bus.shared.get("PIN") or {}
     lst = cfg.get("list") or []
     for item in lst:
         if isinstance(item, dict) and item.get("label") == label:
-            gpio = int(item.get("GPIO", gpio_fallback))
+            gpio = int(item.get("GPIO", fallback))
             break
     if gpio in _PIN_CACHE:
         return _PIN_CACHE[gpio]
@@ -56,7 +57,6 @@ class ControlPanelTask(Task):
         self._btns = []
         self._enc = None
         self._enc_last = 0
-        self._diag_ts = 0
 
     def on_start(self):
         super().on_start()
@@ -72,7 +72,7 @@ class ControlPanelTask(Task):
         self._enc_last = self._enc.value()
 
         self._now_bus = bus.get_service("NowBus")
-        get_log().info("[CP v3] enc={},{} btn={} encC={}".format(
+        get_log().info("[CP] encA={} encB={} btn={} encC={}".format(
             _label_gpio("encA"), _label_gpio("encB"),
             _label_gpio("btn"), _label_gpio("encC")))
 
@@ -91,18 +91,17 @@ class ControlPanelTask(Task):
                 entry[3] = now
         return triggered
 
+    def _hwctl(self, hw_type, hw_id, value):
+        if self._now_bus is None:
+            return
+        payload = struct.pack("<BBH", hw_type, hw_id, value)
+        self._now_bus.broadcast(Proto.pack(CMD_HW, payload))
+
     def loop(self):
         if not self.running:
             return
 
         now = time.ticks_ms()
-
-        if time.ticks_diff(now, self._diag_ts) > 500:
-            self._diag_ts = now
-            raw1 = self._btns[0][0].value() if self._btns else -1
-            raw2 = self._btns[1][0].value() if len(self._btns) > 1 else -1
-            get_log().info("[CP] enc={} btn={} encC={}".format(
-                self._enc.value(), raw1, raw2))
 
         pos = self._enc.value()
         if pos != self._enc_last:
@@ -111,8 +110,11 @@ class ControlPanelTask(Task):
             self.success += 1
 
         for label in self._read_buttons(now):
-            get_log().immediate("[CP] {} PRESS enc={}".format(
-                label, self._enc.value()))
-            if self._now_bus:
-                self._now_bus.broadcast(bytes([self._enc.value() & 0xFF]))
+            if label == "btn":
+                self._hwctl(0, 0, 0)    # type=PIN, id=0 (btn = list[0])
+                get_log().immediate("[CP] btn")
+            elif label == "encC":
+                val = self._enc.value() & 0xFFFF
+                self._hwctl(0xFF, 0, val)
+                get_log().immediate("[CP] encC {}".format(self._enc.value()))
             self.success += 1

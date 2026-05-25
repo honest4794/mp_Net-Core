@@ -67,7 +67,7 @@ def launcher():
     # ══════════════════════════════════════════════════════
     
     bus.shared["log_subscribe"] = [
-        "cpanel"
+#         "cpanel"
 #                 "cpu0",
 #                 "cpu1",
 #                 "disp_src_fill",

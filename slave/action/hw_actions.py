@@ -1,8 +1,15 @@
 from lib.sys_bus import bus
-from lib.hw_manager import HW, _get_pin
+from lib.hw_manager import HW
 
 HW_TYPE_PIN = 0
 HW_TYPE_PWM = 1
+
+
+def _pin_by_id(hw_id):
+    plist = bus.get_service("pin_list")
+    if plist and 0 <= hw_id < len(plist):
+        return plist[hw_id]
+    return None
 
 
 def on_hw_ctl(ctx, args):
@@ -12,8 +19,12 @@ def on_hw_ctl(ctx, args):
 
     if hw_type == HW_TYPE_PIN:
         try:
-            _get_pin(hw_id).value(value)
-            print("[HW] pin {} = {}".format(hw_id, value))
+            p = _pin_by_id(hw_id)
+            if p is not None:
+                p.value(value)
+                print("[HW] pin[{}] = {}".format(hw_id, value))
+            else:
+                print("[HW] pin id {} out of range".format(hw_id))
         except Exception as e:
             print("[HW] pin err: {}".format(e))
 
