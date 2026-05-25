@@ -1,9 +1,8 @@
 """
-控制面板 Task — 編碼器 + 按鈕 → ESP-NOW (HW_CTL)
+控制面板 Task — 編碼器 + 按鈕 → ESP-NOW
 
-只報告用戶操作 (id = config PIN.list 索引):
-  btn  按下 → broadcast HW_CTL(0x1401) type=PIN id=0    value=0
-  encC 按下 → broadcast HW_CTL(0x1401) type=0xFF id=0  value=encoder
+Payload: type(1) + id(1) + value(2) + str_u16len(label)
+  按鈕按下: type=0xFF, id=0, value=state, label="btn" | "encC"
 """
 
 import time, struct
@@ -85,16 +84,18 @@ class ControlPanelTask(Task):
                 if time.ticks_diff(now, ts) >= 30:
                     entry[1] = raw
                     entry[3] = now
-                    if raw == 0:
-                        triggered.append(label)
+                    triggered.append((label, raw))
             else:
                 entry[3] = now
         return triggered
 
-    def _hwctl(self, hw_type, hw_id, value):
+    def _send(self, label, state):
         if self._now_bus is None:
             return
-        payload = struct.pack("<BBH", hw_type, hw_id, value)
+        lb = label.encode()
+        payload = struct.pack("<BB", 0xFF, 0)
+        payload += struct.pack("<H", len(lb)) + lb
+        payload += struct.pack("<H", state)
         self._now_bus.broadcast(Proto.pack(CMD_HW, payload))
 
     def loop(self):
@@ -109,12 +110,7 @@ class ControlPanelTask(Task):
             self._lw_ex(0, pos)
             self.success += 1
 
-        for label in self._read_buttons(now):
-            if label == "btn":
-                self._hwctl(0, 0, 0)    # type=PIN, id=0 (btn = list[0])
-                get_log().immediate("[CP] btn")
-            elif label == "encC":
-                val = self._enc.value() & 0xFFFF
-                self._hwctl(0xFF, 0, val)
-                get_log().immediate("[CP] encC {}".format(self._enc.value()))
+        for label, raw in self._read_buttons(now):
+            self._send(label, raw)
+            get_log().immediate("[CP] {}={}".format(label, raw))
             self.success += 1

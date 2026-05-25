@@ -12,17 +12,32 @@ def _pin_by_id(hw_id):
     return None
 
 
+def _pin_label(hw_id):
+    cfg = bus.shared.get("PIN") or {}
+    lst = cfg.get("list") or []
+    if 0 <= hw_id < len(lst):
+        return lst[hw_id].get("label", "?")
+    return "?"
+
+
 def on_hw_ctl(ctx, args):
     hw_type = int(args.get("type", 0) or 0)
     hw_id = int(args.get("id", 0) or 0)
     value = int(args.get("value", 0) or 0)
+    label = args.get("label") or ""
+
+    if label:
+        print("[HW] {}={}".format(label, value))
+        bus.shared["hw_events"] = {"label": label, "value": value}
+        return
 
     if hw_type == HW_TYPE_PIN:
         try:
             p = _pin_by_id(hw_id)
             if p is not None:
                 p.value(value)
-                print("[HW] pin[{}] = {}".format(hw_id, value))
+                label = _pin_label(hw_id)
+                print("[HW] {}={}".format(label, value))
             else:
                 print("[HW] pin id {} out of range".format(hw_id))
         except Exception as e:
@@ -38,6 +53,9 @@ def on_hw_ctl(ctx, args):
             print("[HW] pwm {} duty={}".format(hw_id, value))
         except Exception as e:
             print("[HW] pwm err: {}".format(e))
+
+    else:
+        print("[HW] unknown type=0x{:02X}".format(hw_type))
 
 
 def on_hw_query(ctx, args):

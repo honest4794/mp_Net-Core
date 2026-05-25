@@ -78,9 +78,6 @@ class NetworkTask(Task):
                 if ok:
                     self.now_bus = now
                     bus.register_service("NowBus", self.now_bus)
-                    sources = bus.get_service("bus_sources")
-                    if sources:
-                        sources.add(self.now_bus)
                     get_log().info("ESP-NOW ready, ch={}".format(self.now_bus._channel()))
                 else:
                     get_log().warn("ESP-NOW init failed")
@@ -100,6 +97,8 @@ class NetworkTask(Task):
             bus.register_service("bus_sources", sources)
         sources.add(self.discovery_bus)
         sources.add(self.ctrl_bus)
+        if self.now_bus:
+            sources.add(self.now_bus)
         
         self.hub = bus.get_service("pixel_stream")
         
