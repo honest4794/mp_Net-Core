@@ -75,8 +75,8 @@ STATE_FALL      = 3
 STATE_PRE_DELAY = 4   # 進入模式後, 啟動電機前的延遲
 
 _DEFAULT_RISE_MS = 5000
-_DEFAULT_WAIT_MS = 500
-_DEFAULT_FALL_MS = 5000
+_DEFAULT_WAIT_MS = 90000
+_DEFAULT_FALL_MS = 10000
 
 
 def _read_cfg(key, default):
@@ -100,6 +100,16 @@ def _resolve_pin_or(label, fallback_gpio):
     return _resolve_pin(fallback_gpio)
 
 
+# ═══ 模式設定 (硬編碼) ═══
+_MAX_MODE = 9  # 總模式數 (mode 1-9), mode 0=standby 不計入
+
+# 電機觸發列表: (mod, entry_delay_ms, wait_ms)
+# 只放需要觸發電機的模式, 不在列表 = 不觸發
+_MOTOR_MODE_LIST = [
+    (1, 0,  20000),    # mode 1: delay 500ms → RISE → wait 500ms → FALL
+]
+
+
 # ═══ ActionTask1 ═══
 
 class ActionTask1(Task):
@@ -119,10 +129,16 @@ class ActionTask1(Task):
         self._display_mode = 0
         self._display_brightness = 0
         self._display_time = 0
-        self._last_vbtn0 = 1         # PULL_UP: 放開=1
-        self._vbtn0_press_time = 0   # 按下時間戳
-        self._vbtn0_long_triggered = False  # 長按已觸發
+        self._mode_list = _MOTOR_MODE_LIST[:]  # 模式列表拷貝
+        self._max_mode = 0                    # on_start 時設定
+        self._last_vbtn0 = 1        # 初始假設放開（pull-up）
+        self._vbtn0_press_time = 0
+        self._first_click = True    # 第一次點擊用 mode=1 而非 mode+1
+        self._vbtn0_long_triggered = False
         self._mp3 = None
+        self._mp3_state = 0        # 0=未初始化, 1=等待中, 2=完成
+        self._mp3_deadline = 0
+        self._uart_rx_buf = bytearray()  # UART 接收累積 buffer
 
     def on_start(self):
         super().on_start()
@@ -130,6 +146,8 @@ class ActionTask1(Task):
         self._rise_ms = _read_cfg("_motor_rise_ms", _DEFAULT_RISE_MS)
         self._wait_ms = _read_cfg("_motor_wait_ms", _DEFAULT_WAIT_MS)
         self._fall_ms = _read_cfg("_motor_fall_ms", _DEFAULT_FALL_MS)
+
+        self._max_mode = _MAX_MODE  # 總模式數 (從 _MAX_MODE 取得)
 
         self._m1   = _resolve_pin_or("m1",   _MOTOR_DEFAULT_PINS["m1"])
         self._m2   = _resolve_pin_or("m2",   _MOTOR_DEFAULT_PINS["m2"])
@@ -238,25 +256,33 @@ class ActionTask1(Task):
             get_log().error("[UART] send error: {}".format(e))
 
     def _handle_uart_receive(self):
-        """輪詢 UART 接收，解析 5-byte 幀，取第一個"""
+        """輪詢 UART 接收，解析 5-byte 幀（累積 buffer，支援碎片）"""
         if self._uart is None:
             return
         try:
-            if not self._uart.any():
-                return
-            data = self._uart.read()
-            if data is None or len(data) < 5:
-                return
+            # 不依賴 any()，每圈都讀一次，避免 FIFO 漏收
+            chunk = self._uart.read()
+            if chunk:
+                self._uart_rx_buf.extend(chunk)
 
-            for i in range(len(data)):
-                if (data[i] == _UART_SOF
-                        and i + 4 < len(data)
-                        and data[i + 4] == _UART_EOF):
-                    mode = data[i + 1]
-                    brightness = data[i + 2] & _UART_BRIGHTNESS_MAX
-                    time_remaining = data[i + 3]
+            processed = 0
+            i = 0
+            while i + 4 < len(self._uart_rx_buf):
+                if (self._uart_rx_buf[i] == _UART_SOF
+                        and self._uart_rx_buf[i + 4] == _UART_EOF):
+                    mode = self._uart_rx_buf[i + 1]
+                    brightness = self._uart_rx_buf[i + 2] & _UART_BRIGHTNESS_MAX
+                    time_remaining = self._uart_rx_buf[i + 3]
                     self._process_uart_cmd(mode, brightness, time_remaining)
+                    processed = i + 5
                     break  # 只處理第一個幀
+                i += 1
+
+            if processed > 0:
+                self._uart_rx_buf = self._uart_rx_buf[processed:]
+            elif len(self._uart_rx_buf) > 256:
+                # 防止垃圾資料無限累積，溢出時清空
+                self._uart_rx_buf = bytearray()
         except Exception as e:
             get_log().error("[UART] recv error: {}".format(e))
 
@@ -288,9 +314,9 @@ class ActionTask1(Task):
                 timeout_char=0,
             )
             self._mp3 = MP3TF16P(uart)
-            # 上電需等模組初始化完成
-            time.sleep_ms(1500)
-            self._mp3.switch_drive(1)   # SD/TF 卡
+            # 上電需等模組初始化完成，用非阻塞定時器
+            self._mp3_state = 1
+            self._mp3_deadline = time.ticks_add(time.ticks_ms(), 1500)
             get_log().info("[MP3] init UART{} baud={} tx={} rx={}".format(uid, baud, tx, rx))
         except Exception as e:
             get_log().error("[MP3] init failed: {}".format(e))
@@ -298,9 +324,11 @@ class ActionTask1(Task):
     def _process_uart_cmd(self, mode, brightness, time_remaining):
         """處理收到的 UART 幀 — 更新內部狀態，不回傳"""
         changed = False
+        mode_changed = False
         if self._display_mode != mode:
             self._display_mode = mode
             changed = True
+            mode_changed = True
         if self._display_brightness != brightness:
             self._display_brightness = brightness
             changed = True
@@ -315,9 +343,10 @@ class ActionTask1(Task):
             bus.shared["_display_time"] = self._display_time
             get_log().immediate("[UART] rx mode={} bri={} time={}".format(
                 mode, brightness, time_remaining))
-            # UART 收到的 mode 變更也檢查電機映射、音頻
-            self._check_mode_motor()
-            self._check_mode_audio()
+            # 只有 mode 本身變更才觸發電機/音頻，防止 UART 重複同 mode 時重播
+            if mode_changed:
+                self._check_mode_motor()
+                self._check_mode_audio()
 
     def _check_mode_motor(self):
         """
@@ -329,9 +358,7 @@ class ActionTask1(Task):
         RISE/FALL 時間固定 (由 bus.shared["_motor_rise_ms"] / _fall_ms 決定, 預設各 5000ms)
         匹配時自動啟動電機序列, 可提前結束 (VBTN[1])
         """
-        motor_list = bus.shared.get("_mode_motor_list", None)
-        if not motor_list:
-            return
+        motor_list = self._mode_list  # 直接使用硬編碼列表
         for entry in motor_list:
             if not isinstance(entry, (list, tuple)) or len(entry) < 3:
                 continue
@@ -351,11 +378,11 @@ class ActionTask1(Task):
 
     def _check_mode_audio(self):
         """
-        根據當前模式播放 SD 卡音頻 (循環播放)。
+        根據當前模式播放 SD 卡音頻 (每段播一次)。
         映射: bus.shared["_mode_audio_map"] = {mode: track, ...}
-        若未設定映射表, 預設 track = mode + 1
+        若未設定映射表, 預設 track = mode (mode 0=standby 不播音)
         """
-        if self._mp3 is None:
+        if self._mp3 is None or self._mp3_state != 2:
             return
         raw_mode = self._display_mode & MODE_VALUE
         audio_map = bus.shared.get("_mode_audio_map", None)
@@ -365,10 +392,13 @@ class ActionTask1(Task):
                 self._mp3.stop()
                 return
         else:
-            track = raw_mode + 1
+            if raw_mode == 0:          # mode 0 = standby, 不播音
+                self._mp3.stop()
+                return
+            track = raw_mode           # mode 1 → track 1, mode 2 → track 2, ...
         self._mp3.stop()
         time.sleep_ms(30)
-        self._mp3.loop_track(track)
+        self._mp3.play_track(track)
         get_log().info("[Audio] mode={} track={}".format(raw_mode, track))
 
     def set_display_state(self, mode=None, brightness=None):
@@ -379,9 +409,10 @@ class ActionTask1(Task):
         """
         changed = False
         if mode is not None and self._display_mode != mode:
-            max_mode = bus.shared.get("_display_max_mode", 0)
-            if max_mode > 0:
-                mode = mode % max_mode
+            max_mode = self._max_mode
+            val = mode & MODE_VALUE  # 只比對低位元（排除特殊旗標 bit7）
+            if max_mode > 0 and val > max_mode:
+                mode = 1 | (mode & MODE_SPECIAL)  # 9→1 wrap, 保留特殊旗標
             self._display_mode = mode
             changed = True
         if brightness is not None:
@@ -396,6 +427,12 @@ class ActionTask1(Task):
             self._send_uart_state()
             # mode 變更 → 檢查電機映射、音頻
             if mode is not None:
+                special = " (SPECIAL)" if (self._display_mode & MODE_SPECIAL) else ""
+                get_log().info("[Mode] switch to mode={} raw_mode={}{} bri={}".format(
+                    self._display_mode,
+                    self._display_mode & MODE_VALUE,
+                    special,
+                    self._display_brightness))
                 self._check_mode_motor()
                 self._check_mode_audio()
 
@@ -405,6 +442,12 @@ class ActionTask1(Task):
         if not self.running:
             return
         now = time.ticks_ms()
+
+        # ── MP3 初始化後續 (非阻塞等 1.5s) ──
+        if self._mp3_state == 1 and time.ticks_diff(self._mp3_deadline, now) <= 0:
+            self._mp3.switch_drive(1)
+            self._mp3.stop()
+            self._mp3_state = 2
 
         # ── UART 接收 ──
         self._handle_uart_receive()
@@ -416,16 +459,21 @@ class ActionTask1(Task):
             # 剛按下 → 記錄時間
             self._vbtn0_press_time = now_btn
             self._vbtn0_long_triggered = False
-        elif v0 == 0 and not self._vbtn0_long_triggered and self._last_vbtn0 == 0:
+            self._last_vbtn0 = 0
+        elif v0 == 0 and self._vbtn0_press_time > 0 and not self._vbtn0_long_triggered and self._last_vbtn0 == 0:
             # 持續按住 → 檢查 3s 長按
             if time.ticks_diff(now_btn, self._vbtn0_press_time) >= 3000:
                 self._vbtn0_long_triggered = True
-                self.set_display_state(mode=self._display_mode | MODE_SPECIAL)
-        elif v0 == 1 and self._last_vbtn0 == 0:
-            # 放開 → 短按(模式+1) 或 長按已觸發(跳過)
+                self.set_display_state(mode=self._display_mode ^ MODE_SPECIAL)
+        elif v0 == 1 and self._vbtn0_press_time > 0 and self._last_vbtn0 == 0:
+            # 放開 → 短按(模式+1) 或 第一次點擊用 mode=1
             if not self._vbtn0_long_triggered:
-                self.set_display_state(mode=self._display_mode + 1)
-        self._last_vbtn0 = 1 if v0 else 0
+                if self._first_click:
+                    self._first_click = False
+                    self.set_display_state(mode=1)
+                else:
+                    self.set_display_state(mode=self._display_mode + 1)
+            self._last_vbtn0 = 1
 
         # ── 計時: 階段到期 → 下一階段 ──
         if self._state != STATE_IDLE and self._deadline > 0:

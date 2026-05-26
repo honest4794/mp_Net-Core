@@ -1,55 +1,55 @@
 """
-ESP-NOW 接收測試
-exec(open("esp_rx.py").read())
+UART Display 接收測試 (MicroPython ESP32)
+
+用法: exec(open("esp_rx.py").read())
+
+接線: GPIO5=RX, GPIO6=TX
 """
 
-import network, espnow, time
+from machine import UART, Pin
+import time
 
-CHANNEL = 6
+# 5-byte 幀: [0xB4] [mode] [brightness] [time] [0xFF]
+_SOF = 0xB4
+_EOF = 0xFF
+_SPECIAL = 0x80
 
-sta = network.WLAN(network.STA_IF)
-sta.active(True)
-print("STA active:", sta.active())
-sta.config(channel=CHANNEL)
-print("STA channel:", sta.config("channel"))
-time.sleep_ms(200)
+uart = UART(2, baudrate=115200, tx=Pin(6), rx=Pin(5), timeout=0)
+buf = bytearray()
+n = 0
 
-e = espnow.ESPNow()
-e.active(True)
-print("ESPNow active:", e.active())
-print("Listening ch", CHANNEL)
+print("[RX] UART1 tx=6 rx=5 baud=115200")
+print("等待幀...  Ctrl+C 停止")
 print()
 
 try:
-    n = 0
     while True:
-        peer, msg = e.recv(5000)
-        if peer is None:
-            n += 1
-            print("[{}] waiting...".format(n))
-            continue
+        if uart.any():
+            chunk = uart.read()
+#             print(chunk)
+            if chunk:
+                buf.extend(chunk)
 
-        print("---")
-        print("from:", "".join("{:02X}".format(b) for b in peer))
-        print("len:", len(msg))
-        print("hex:", " ".join("{:02X}".format(b) for b in msg))
-        try:
-            print("txt:", msg.decode())
-        except Exception:
-            print("txt: <bin>")
+        i = 0
+        while i + 4 < len(buf):
+            if buf[i] == _SOF and buf[i + 4] == _EOF:
+                mode = buf[i + 1]
+                bri = buf[i + 2] & 0x1F
+                t = buf[i + 3]
+                n += 1
+                special = "(SPECIAL)" if (mode & _SPECIAL) else ""
+                print("[%d] %smode=%d bri=%d time=%d  RAW=0x%02X" %
+                      (n, special, mode & 0x3F, bri, t, mode))
+                i += 5
+            else:
+                i += 1
 
-        if len(msg) >= 9 and msg[:2] == b"NL":
-            v = msg[2]
-            a = msg[3] | (msg[4] << 8)
-            c = msg[5] | (msg[6] << 8)
-            pl = msg[7] | (msg[8] << 8)
-            pay = msg[9:9+pl] if pl > 0 else b""
-            print("Proto v={} a=0x{:04X} c=0x{:04X} pl={}".format(v, a, c, pl))
-            if pay:
-                print("pay:", " ".join("{:02X}".format(b) for b in pay))
-        print()
+        if i > 0:
+            buf = buf[i:]
+
+        time.sleep_ms(10)
+
 except KeyboardInterrupt:
-    print("stop")
+    print("\n[RX] stop (%d frames)" % n)
 finally:
-    e.active(False)
-    sta.active(False)
+    uart.deinit()
