@@ -1,66 +1,59 @@
 from lib.sys_bus import bus
-
-HW_TYPE_PIN = 0
-HW_TYPE_PWM = 1
-
-_PIN_CACHE = {}
-
-
-def _get_pin_out(gpio_num):
-    from machine import Pin
-    if gpio_num not in _PIN_CACHE:
-        _PIN_CACHE[gpio_num] = Pin(gpio_num, Pin.OUT)
-    return _PIN_CACHE[gpio_num]
+from lib.hw_manager import HW
 
 
 def on_hw_ctl(ctx, args):
     hw_type = int(args.get("type", 0) or 0)
-    hw_id = int(args.get("id", 0) or 0)
-    value = int(args.get("value", 0) or 0)
+    hw_id   = int(args.get("id", 0) or 0)
+    value   = int(args.get("value", 0) or 0)
+    label   = args.get("label") or ""
 
-    if hw_type == HW_TYPE_PIN:
+    if hw_type == HW.VBTN:
+        HW.set(HW.VBTN, hw_id, value)
+        if hw_id == 1:
+            bus.shared["_vbtn1_event"] = value
+        print("[HW] vbtn {}={}".format(hw_id, value))
+        return
+
+    if hw_type == HW.PIN:
         try:
-            p = _get_pin_out(hw_id)
+            p = HW.resolve_pin(hw_id)
             p.value(value)
-            print("[HW] pin {} = {}".format(hw_id, value))
+            print("[HW] pin {}={}".format(hw_id, value))
         except Exception as e:
             print("[HW] pin err: {}".format(e))
+        return
 
-    elif hw_type == HW_TYPE_PWM:
-        pwm_list = bus.get_service("pwm_list")
-        if not pwm_list or hw_id >= len(pwm_list):
-            print("[HW] pwm idx {} out of range".format(hw_id))
-            return
+    if hw_type == HW.PWM:
         try:
-            pwm_list[hw_id].duty_u16(value)
+            HW.set(HW.PWM, hw_id, value)
             print("[HW] pwm {} duty={}".format(hw_id, value))
         except Exception as e:
             print("[HW] pwm err: {}".format(e))
+        return
+
+    if label:
+        print("[HW] {}={}".format(label, value))
+        bus.shared["hw_events"] = {"label": label, "value": value}
+        return
+
+    print("[HW] unknown type=0x{:02X}".format(hw_type))
 
 
 def on_hw_query(ctx, args):
     hw_type = int(args.get("type", 0) or 0)
-    hw_id = int(args.get("id", 0) or 0)
+    hw_id   = int(args.get("id", 0) or 0)
 
-    if hw_type == HW_TYPE_PIN:
-        from machine import Pin
+    if hw_type == HW.PIN:
         try:
-            p = Pin(hw_id, Pin.IN)
-            val = p.value()
-            print("[HW] pin {} = {}".format(hw_id, val))
+            p = HW.resolve_pin(hw_id)
+            print("[HW] pin {} = {}".format(hw_id, p.value()))
         except Exception as e:
             print("[HW] pin query err: {}".format(e))
 
-    elif hw_type == HW_TYPE_PWM:
-        pwm_list = bus.get_service("pwm_list")
-        if not pwm_list or hw_id >= len(pwm_list):
-            print("[HW] pwm idx {} out of range".format(hw_id))
-            return
-        try:
-            duty = pwm_list[hw_id].duty_u16()
-            print("[HW] pwm {} duty={}".format(hw_id, duty))
-        except Exception as e:
-            print("[HW] pwm query err: {}".format(e))
+    elif hw_type == HW.PWM:
+        val = HW.get(HW.PWM, hw_id)
+        print("[HW] pwm {} duty={}".format(hw_id, val))
 
 
 def register(app):

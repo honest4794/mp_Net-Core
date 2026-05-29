@@ -16,10 +16,11 @@ from tasks.dp_manager_task import DpManagerTask
 from tasks.jpeg_decode_task import JpegDecodeTask
 from tasks.dp_buffer_task import DpBufferTask
 from tasks.display_task import DisplayTask
-from tasks.now_task import NowTask
+
+from tasks.control_panel import ControlPanelTask
+from tasks.action_task_1 import ActionTask1
 from tasks.action_task import ActionTask
 from lib.log_service import get_log
-from apa102 import APA102
 
 def launcher():
     log = get_log()
@@ -30,7 +31,6 @@ def launcher():
     bus.slave_id = ubinascii.hexlify(machine.unique_id()).decode().upper()
     bus.shared["engine_run"] = True
     bus.shared["spi_busy"] = False
-    bus.shared["dp_bypass_copy"] = False
     bus_sys = bus.shared["System"]
     
     hub = AtomicStreamHub(st_LED.total_bytes * bus_sys["buffer_frames"]) 
@@ -65,8 +65,9 @@ def launcher():
     #   1. bus.shared["log_subscribe"] = "__list__"  → 列出所有可訂閱名稱
     #   2. bus.shared["log_subscribe"] = [...]       → 選擇性訂閱
     # ══════════════════════════════════════════════════════
-    bus.shared["log_subscribe"] = "__list__"
+    
     bus.shared["log_subscribe"] = [
+#         "cpanel"
 #                 "cpu0",
 #                 "cpu1",
 #                 "disp_src_fill",
@@ -83,17 +84,20 @@ def launcher():
 #                 "dp_buffer",
 #                 "dp_manager",
 #                 "fs_scan",
-                "jpeg_decode",
+#                 "jpeg_decode",
 #                 "log",
 #                 "network",
 #                 "render",
 #                 "web_ui",
             ]
+#     bus.shared["log_subscribe"] = "__list__"
 
     # ── Layer 0: 網路 + 通訊 + FS 掃描，最先啟動 ──
     tm.register_task("log", LogTask, default_affinity=(1, 0), layer=0)
     tm.register_task("network", NetworkTask, default_affinity=(1, 0), layer=0)
-    tm.register_task("now", NowTask, default_affinity=(0, 1), layer=0)
+    # NowTask 已整合至 NetworkTask
+    tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
+    tm.register_task("motor", ActionTask1, default_affinity=(1, 0), layer=0)
     tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
     tm.register_task("circuit", CircuitTask, default_affinity=(1, 0), layer=0)
     tm.register_task("bus_decode", BusDecodeTask, default_affinity=(1, 0), layer=0)
@@ -101,12 +105,12 @@ def launcher():
     tm.register_task("fs_scan", FsScanTask,   default_affinity=(0, 1), layer=0)
     
     # ── Layer 1: display pipeline ──
-    tm.register_task("render",  RenderTask,  default_affinity=(0, 1), layer=-1)
-    
-    tm.register_task("dp_manager", DpManagerTask, default_affinity=(1, 0), layer=1)
-    tm.register_task("jpeg_decode", JpegDecodeTask, default_affinity=(0, 1), layer=1)
-    tm.register_task("dp_buffer", DpBufferTask, default_affinity=(0, 1), layer=1)
-    tm.register_task("display", DisplayTask, default_affinity=(1, 0), layer=1)
+#     tm.register_task("render",  RenderTask,  default_affinity=(0, 1), layer=-1)
+#     
+#     tm.register_task("dp_manager", DpManagerTask, default_affinity=(1, 0), layer=1)
+#     tm.register_task("jpeg_decode", JpegDecodeTask, default_affinity=(0, 1), layer=1)
+#     tm.register_task("dp_buffer", DpBufferTask, default_affinity=(0, 1), layer=1)
+#     tm.register_task("display", DisplayTask, default_affinity=(1, 0), layer=1)
     
     tm.finalize()
 

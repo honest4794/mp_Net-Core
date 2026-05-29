@@ -15,6 +15,11 @@ class BusDecodeTask(Task):
         super().on_start()
         self._buses = []
         self._parsers = {}
+        self._src_ts = 0
+        buf_cfg = bus.shared.get("Buffer") or {}
+        self._max_slots = int(buf_cfg.get("decode_budget_slots", 32) or 0)
+        if self._max_slots <= 0:
+            self._max_slots = 1
 
     def _refresh_sources(self):
         sources = bus.get_service("bus_sources")
@@ -40,14 +45,14 @@ class BusDecodeTask(Task):
     def loop(self):
         if not self.running:
             return
-        self._refresh_sources()
+
+        now = time.ticks_ms()
+        if time.ticks_diff(now, self._src_ts) > 100:
+            self._src_ts = now
+            self._refresh_sources()
         if not self._buses:
             return
 
-        buf_cfg = bus.shared.get("Buffer", {}) or {}
-        max_slots = int(buf_cfg.get("decode_budget_slots", 32) or 0)
-        if max_slots <= 0:
-            max_slots = 1
         used = 0
         for b in self._buses:
             hub = getattr(b, "rx_hub", None)
@@ -59,15 +64,16 @@ class BusDecodeTask(Task):
                 p = self.app.create_parser()
                 self._parsers[id(b)] = p
             ctx_extra = getattr(b, "_decode_ctx", None) or {}
+            mv = memoryview(self._read_buf)
             while True:
-                if used >= max_slots:
+                if used >= self._max_slots:
                     return
                 if not hub.read_into(self._read_buf):
                     break
                 ln = self._read_buf[0] | (self._read_buf[1] << 8)
                 if ln <= 0:
                     continue
-                data = self._read_buf[2:2 + ln]
+                data = mv[2:2 + ln]
                 self.app.handle_stream(
                     p,
                     data,

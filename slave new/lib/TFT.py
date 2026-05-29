@@ -86,40 +86,38 @@ class VideoStreamReader:
 
 # ====== 通用TFT驅動類 ======
 class TFT:
-    def __init__(self, spi, dc, cs, rst, width, height, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        self.spi = spi
-        self.dc = dc
-        self.cs = cs
-        self.rst = rst
+    def __init__(self, spi=None, dc=None, cs=None, rst=None, width=240, height=320,
+                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        if adapter is not None:
+            self._bus = adapter
+            self.spi = getattr(adapter, '_spi', None)
+            self.dc  = getattr(adapter, '_dc', None)
+            self.cs  = getattr(adapter, '_cs', None)
+            self.rst = getattr(adapter, '_rst', None)
+        else:
+            from lib.bus_adapter import SpiBusAdapter
+            self.spi = spi
+            self.dc = dc
+            self.cs = cs
+            self.rst = rst
+            if self.dc is not None:
+                self.dc.init(machine.Pin.OUT, value=0)
+            if self.cs is not None:
+                self.cs.init(machine.Pin.OUT, value=1)
+            if self.rst is not None:
+                self.rst.init(machine.Pin.OUT, value=1)
+            self._bus = SpiBusAdapter(spi, dc, cs, rst)
+
         self.width = width
         self.height = height
         self.pixel_format = pixel_format
         self.bytes_per_pixel = int(bytes_per_pixel)
         self._rotation = 0
-        self._color_order = "RGB"  # 預設顏色順序
-        self._inverted = False     # 顏色反轉狀態
+        self._color_order = "RGB"
+        self._inverted = False
         self.write_chunk = 0
-        self._lcd_bus = spi if hasattr(spi, "tx_param") and hasattr(spi, "tx_color") else None
-        self._spi_q = (
-            spi
-            if hasattr(spi, "pending") and hasattr(spi, "is_busy") and hasattr(spi, "wait_all") and hasattr(spi, "write")
-            else None
-        )
-        self._win_x0 = 0
-        self._win_y0 = 0
-        self._win_x1 = int(width) - 1
-        self._win_y1 = int(height) - 1
-        
-        # 初始化引腳
-        if self._lcd_bus is None:
-            if self.dc is not None:
-                self.dc.init(machine.Pin.OUT, value=0)
-            if self.cs is not None:
-                self.cs.init(machine.Pin.OUT, value=1)
-        if self.rst is not None:
-            self.rst.init(machine.Pin.OUT, value=1)
-        
-        self.reset()
+
+        self._bus.reset()
         _sleep_ms(100)
     
     def _bytes_per_pixel(self):
@@ -136,114 +134,25 @@ class TFT:
         return bytes([self._colmod_value_for_bpp(bpp)])
     
     def reset(self):
-        """硬體重置顯示器"""
-        self.rst(0)
-        _sleep_ms(50)
-        self.rst(1)
-        _sleep_ms(50)
-    
+        self._bus.reset()
+
     def write_cmd(self, cmd):
-        """寫入命令到顯示器"""
-        if self._spi_q is not None:
-            self._spi_q.wait_all()
-            self.dc(0)
-            self.cs(0)
-            self.spi.write(bytearray([int(cmd) & 0xFF]))
-            self.cs(1)
-            return
-        if self._lcd_bus is not None:
-            self._lcd_bus.tx_param(int(cmd), None)
-            return
-        self.dc(0)
-        self.cs(0)
-        self.spi.write(bytearray([cmd]))
-        self.cs(1)
-    
+        self._bus.write_cmd(cmd)
+
     def write_data(self, data):
-        """寫入數據到顯示器"""
-        if self._spi_q is not None:
-            self.dc(1)
-            self.cs(0)
-            return self._spi_q.write(data)
-        if self._lcd_bus is not None:
-            self._lcd_bus.tx_color(
-                0x2C,
-                data,
-                int(self._win_x0),
-                int(self._win_y0),
-                int(self._win_x1),
-                int(self._win_y1),
-            )
-            return
-        self.dc(1)
-        self.cs(0)
-        self.spi.write(data)
-        self.cs(1)
-    
+        self._bus.write_data(data)
+
     def write_cmd_data(self, cmd, data):
-        """同時寫入命令和數據"""
-        if self._spi_q is not None:
-            self._spi_q.wait_all()
-            self.cs(0)
-            self.dc(0)
-            self.spi.write(bytearray([int(cmd) & 0xFF]))
-            if data:
-                self.dc(1)
-                self.spi.write(data)
-            self.cs(1)
-            return
-        if self._lcd_bus is not None:
-            self._lcd_bus.tx_param(int(cmd), data if data else None)
-            return
-        self.write_cmd(cmd)
-        if data:
-            self.write_data(data)
-    
+        self._bus.write_cmd_data(cmd, data)
+
     def set_window(self, x0, y0, x1=None, y1=None):
-        """設置顯示區域窗口"""
         if x1 is None:
             x1 = x0 + self.width - 1
         if y1 is None:
             y1 = y0 + self.height - 1
-        
-        # 根據旋轉調整座標
         if self._rotation in [90, 270]:
             x0, y0, x1, y1 = y0, x0, y1, x1
-        
-        self._win_x0 = int(x0)
-        self._win_y0 = int(y0)
-        self._win_x1 = int(x1)
-        self._win_y1 = int(y1)
-        if self._spi_q is not None:
-            self._spi_q.wait_all()
-            self.cs(0)
-            self.dc(0)
-            self.spi.write(bytearray([0x2A]))
-            self._spi_q.wait_all()
-            self.dc(1)
-            self.spi.write(bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
-            self._spi_q.wait_all()
-            self.dc(0)
-            self.spi.write(bytearray([0x2B]))
-            self._spi_q.wait_all()
-            self.dc(1)
-            self.spi.write(bytes([y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF]))
-            self._spi_q.wait_all()
-            self.dc(0)
-            self.spi.write(bytearray([0x2C]))
-            self.dc(1)
-            return
-        if self._lcd_bus is not None:
-            self._lcd_bus.tx_param(0x2A, bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
-            self._lcd_bus.tx_param(0x2B, bytes([y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF]))
-            return
-        self.write_cmd(0x2A)  # 列地址設置
-        self.write_data(bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
-        
-        self.write_cmd(0x2B)  # 行地址設置
-        self.write_data(bytes([y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF]))
-        
-        self.write_cmd(0x2C)  # 內存寫入
+        self._bus.set_window(x0, y0, x1, y1)
     
     def set_rotation(self, rotation):
         """
@@ -870,40 +779,6 @@ class GC9D01(TFT):
             col_start, col_end = self.height - 1 - y1, self.height - 1 - y0
             row_start, row_end = self.width - 1 - x1, self.width - 1 - x0
         
-        self._win_x0 = int(col_start)
-        self._win_y0 = int(row_start)
-        self._win_x1 = int(col_end)
-        self._win_y1 = int(row_end)
-        if self._spi_q is not None:
-            self._spi_q.wait_all()
-            self.cs(0)
-            self.dc(0)
-            self._spi_q.write(bytearray([0x2A]))
-            self._spi_q.wait_all()
-            self.dc(1)
-            self._spi_q.write(bytes([col_start >> 8, col_start & 0xFF, col_end >> 8, col_end & 0xFF]))
-            self._spi_q.wait_all()
-            self.dc(0)
-            self._spi_q.write(bytearray([0x2B]))
-            self._spi_q.wait_all()
-            self.dc(1)
-            self._spi_q.write(bytes([row_start >> 8, row_start & 0xFF, row_end >> 8, row_end & 0xFF]))
-            self._spi_q.wait_all()
-            self.dc(0)
-            self._spi_q.write(bytearray([0x2C]))
-            self._spi_q.wait_all()
-            self.dc(1)
-            return
-        if self._lcd_bus is not None:
-            self._lcd_bus.tx_param(
-                0x2A,
-                bytes([col_start >> 8, col_start & 0xFF, col_end >> 8, col_end & 0xFF]),
-            )
-            self._lcd_bus.tx_param(
-                0x2B,
-                bytes([row_start >> 8, row_start & 0xFF, row_end >> 8, row_end & 0xFF]),
-            )
-            return
         # 發送列地址設置
         self.write_cmd(0x2A)
         self.write_data(bytes([col_start >> 8, col_start & 0xFF, 
@@ -1049,3 +924,65 @@ class NV3030B(TFT):
 
     def _update_inversion(self):
         self.write_cmd(self._get_inversion_cmd())
+
+
+class RM67162(TFT):
+    def __init__(self, spi=None, dc=None, cs=None, rst=None, width=240, height=536,
+                 rotation=0, color_order="RGB", invert=False,
+                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi=spi, dc=dc, cs=cs, rst=rst,
+                         width=width, height=height,
+                         pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel,
+                         adapter=adapter)
+        self._rotation = rotation
+        self._color_order = color_order.upper()
+        self._inverted = invert
+        self.init()
+
+    def init(self):
+        if self.rst is not None:
+            self.rst.value(1)
+            _sleep_ms(10)
+            self.rst.value(0)
+            _sleep_ms(300)
+            self.rst.value(1)
+            _sleep_ms(200)
+        self.write_cmd_data(0x11, None)
+        _sleep_ms(120)
+        self.write_cmd_data(0x36, b'\x00')
+        self.write_cmd_data(0x36, b'\x00')
+        self.write_cmd_data(0x3A, b'\x75')
+        self.write_cmd_data(0x29, None)
+        _sleep_ms(20)
+
+
+class SH8601(TFT):
+    """Waveshare AMOLED 1.91" 536x240 QSPI (SH8601)"""
+    def __init__(self, spi=None, dc=None, cs=None, rst=None, width=536, height=240,
+                 rotation=0, color_order="RGB", invert=False,
+                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi=spi, dc=dc, cs=cs, rst=rst,
+                         width=width, height=height,
+                         pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel,
+                         adapter=adapter)
+        self._rotation = rotation
+        self._color_order = color_order.upper()
+        self._inverted = invert
+        self.init()
+
+    def init(self):
+        if self.rst is not None:
+            self.rst.value(1)
+            _sleep_ms(10)
+            self.rst.value(0)
+            _sleep_ms(150)
+            self.rst.value(1)
+            _sleep_ms(200)
+        self.write_cmd_data(0x11, None)
+        _sleep_ms(120)
+        self.write_cmd_data(0x36, b'\xF0')
+        self.write_cmd_data(0x3A, b'\x55')
+        self.write_cmd_data(0x2A, b'\x00\x00\x02\x17')
+        self.write_cmd_data(0x2B, b'\x00\x00\x00\xEF')
+        self.write_cmd_data(0x51, b'\xFF')
+        self.write_cmd_data(0x29, None)

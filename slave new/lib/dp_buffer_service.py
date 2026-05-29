@@ -52,7 +52,6 @@ def ensure_dp_buffer_service(bus, name="dp_buffer"):
         "api": 1,
         "enable": True,
         "pixel_format": "RGB565_BE",
-        "bypass_copy": bool(bus.shared.get("dp_bypass_copy", False)),
         "max_frame_bytes": 0,
         "jpeg_out": None,
         "out_hub": None,
@@ -75,7 +74,6 @@ def ensure_dp_buffer_service(bus, name="dp_buffer"):
 
 def configure_for_layout(bus, layout, *, pixel_format="RGB565_LE", num_buffers=3, name="dp_buffer"):
     svc = ensure_dp_buffer_service(bus, name=name)
-    svc["bypass_copy"] = bool(bus.shared.get("dp_bypass_copy", svc.get("bypass_copy", False)))
     max_frame_bytes = 0
     for it in layout or []:
         try:
@@ -93,7 +91,7 @@ def configure_for_layout(bus, layout, *, pixel_format="RGB565_LE", num_buffers=3
     svc["max_frame_bytes"] = int(max_frame_bytes)
     hub_size = HDR_OUT + int(max_frame_bytes)
     svc["jpeg_out"] = AtomicStreamHub(hub_size, num_buffers=int(num_buffers))
-    if bool(svc.get("bypass_copy")) or str(svc["pixel_format"]).startswith("RGB888"):
+    if str(svc["pixel_format"]).startswith("RGB888"):
         svc["out_hub"] = None
     else:
         svc["out_hub"] = AtomicStreamHub(hub_size, num_buffers=int(num_buffers), try_dma=True, try_bounce=True)

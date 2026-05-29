@@ -64,32 +64,9 @@ class DpManagerTask(Task):
         super().on_start()
         self._svc = ensure_dp_manager_service(bus)
         self._seen_epoch = int(self._svc.get("cfg_epoch", 0) or 0)
-        self._seen_pixel_format = None
         self._last_scan_count = None
         self._last_log_ms = 0
         self._last_group = -1
-
-    def _sync_lcd_pixel_format(self):
-        pf = str((self._svc.get("jpeg") or {}).get("pixel_format") or "")
-        if pf == self._seen_pixel_format:
-            return
-        self._seen_pixel_format = pf
-        lcd = bus.get_service("lcd") or bus.get_service("tft")
-        if lcd is None:
-            return
-        bpp = 3 if pf.startswith("RGB888") else 2
-        try:
-            lcd.pixel_format = pf
-        except Exception:
-            pass
-        try:
-            lcd.bytes_per_pixel = int(bpp)
-        except Exception:
-            pass
-        try:
-            lcd.write_cmd_data(0x3A, lcd._get_colmod_cmd())
-        except Exception:
-            pass
 
     def _ensure_loaded(self):
         cfg_path = str(self._svc.get("dp_config_path") or "/dp_config.json")
@@ -112,7 +89,6 @@ class DpManagerTask(Task):
             self._svc = bus.get_service("dp_manager") or self._svc
             self._seen_epoch = int(self._svc.get("cfg_epoch", 0) or 0)
             self._last_group = -1
-            self._sync_lcd_pixel_format()
             try:
                 self._svc["last_loaded"] = {"path": cfg_path, "ms": now}
             except Exception:

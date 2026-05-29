@@ -40,16 +40,16 @@
             "ssid_pw": "",
             "mdns_name": "esp32-led-"
         },
-        "ESP_now": { "enable": 0, "channel": 1 }
+        "ESP_now": { "enable": 0, "channel": 6 }
     },
     "SDcard": {
         "enable": 1,
         "phat":"/sd",
         "LDO":{"id":4,"mv":3300},
-        "config": { "slot": 0, "width": 4, "freq": 40000000 },
+        "config": { "slot": 1, "width": 1, "freq": 20000000 },
         "GPIO": {
-            "_comment": "sck=CLK/SCK, cmd=CMD/MOSI, [D0/MISO, D1/IRQ, D2/NC, D3/CS]",
-            "sck": 7, "cmd": 6, "data": [15, 16, 4, 5] }
+            "_comment": "SDMMC 1-wire: sck=9, cmd=42, data=[8]",
+            "sck": 9, "cmd": 42, "data": [8] }
     },
     "UART": {
         "enable": 0,
@@ -110,6 +110,18 @@
         "list": [
             {"GPIO":0,"dArc":0,"type":0}
         ]
+    },
+    "PIN": {
+      "enable": 1,
+      "list": [
+            { "GPIO": 40, "label": "btn",  "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 18, "label": "encA", "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 8,  "label": "encB", "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 17, "label": "encC", "mode": "IN", "initial": 0, "pull": "UP" },
+            { "GPIO": 10, "label": "m1",   "mode": "OUT", "initial": 0 },
+            { "GPIO": 11, "label": "m2",   "mode": "OUT", "initial": 0 },
+            { "GPIO": 12, "label": "m_en", "mode": "OUT", "initial": 0 }
+      ]
     },
     "WS2812": {
         "enable": 0,

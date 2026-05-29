@@ -22,13 +22,13 @@ class NowBus:
         self._decode_ctx = {}
 
         buf_cfg = bus.shared.get('Buffer', {}) or {}
-        buf_size = buf_cfg.get('size', 4096)
         self.rx_hub = rx_hub
         self._hub_off = 2
         if self.rx_hub is None:
-            rx_buffers = int(buf_cfg.get("rx_hub_buffers", 0) or 0)
-            if rx_buffers > 0:
-                self.rx_hub = AtomicStreamHub(buf_size + self._hub_off, num_buffers=rx_buffers)
+            slots = int(buf_cfg.get("now_rx_slots", 2) or 0)
+            if slots > 0:
+                slots = min(slots, 4)
+                self.rx_hub = AtomicStreamHub(MAX_PAYLOAD + self._hub_off, num_buffers=slots)
         self._drop_on_full = int(buf_cfg.get("drop_on_full", 0) or 0)
         self._drain_reads = int(buf_cfg.get("drain_reads", 1) or 0)
         if self._drain_reads <= 0:
@@ -50,6 +50,7 @@ class NowBus:
 
             self._esp = espnow.ESPNow()
             self._esp.active(True)
+            self._esp.add_peer(BCAST_MAC)
             self.connected = True
             print(f"✅ [{self.label}] ESP-NOW active, channel={self._channel()}")
             return True

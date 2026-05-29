@@ -15,6 +15,28 @@ class DisplayTask(Task):
         super().on_start()
         self._buf = ensure_dp_buffer_service(bus)
         self._lcd = None
+
+        lcd = bus.get_service("lcd")
+        if lcd is None:
+            lcd = bus.get_service("tft")
+        self._lcd = lcd
+        if self._lcd is not None:
+            print("🖥 [DisplayTask] LCD {} {}x{} ready".format(
+                bus.shared.get("tft_driver", "?"),
+                bus.shared.get("tft_width", 240),
+                bus.shared.get("tft_height", 320)))
+
+        try:
+            from lib.dp_manager_service import configure_from_dp_config, load_dp_config
+            from lib.dp_buffer_service import configure_for_layout
+            cfg = load_dp_config()
+            svc = configure_from_dp_config(bus, cfg)
+            layout = svc.get("layout") or []
+            pixel_format = (svc.get("jpeg") or {}).get("pixel_format", "RGB565_BE")
+            frame_bufs = int(bus.shared.get("pipeline_frame_buffers", 3) or 3)
+            configure_for_layout(bus, layout, pixel_format=pixel_format, num_buffers=frame_bufs)
+        except Exception as e:
+            print("⚠️ [DisplayTask] Pipeline init failed:", e)
         self._out_hdr = [0] * 9
         self._last_x = -1
         self._last_y = -1
@@ -23,10 +45,6 @@ class DisplayTask(Task):
         self._last_write_ms = 0
 
         self._spi_tx = DmaBounceBuf(_SPI_TX_BUF_SIZE)
-        self._spi_pool = None
-        self._spi_pool_buf = None
-        self._spi_pool_free = None
-        self._spi_inflight = []
 
         self._fps_window_t0 = 0
         self._fps_window_count = 0
@@ -94,33 +112,13 @@ class DisplayTask(Task):
         lcd = self._resolve_lcd()
         if lcd is None:
             return
-        spi = getattr(lcd, "spi", None)
-        use_spi_queue = spi is not None and hasattr(spi, "pending") and hasattr(spi, "is_busy") and hasattr(spi, "wait_all")
-        if use_spi_queue and self._spi_pool is None:
-            depth = int(self.fcache_get("spi_queue_depth", 4, ttl_ms=3000) or 4)
-            if depth < 2:
-                depth = 2
-            if depth > 8:
-                depth = 8
-            self._spi_pool = [DmaBounceBuf(_SPI_TX_BUF_SIZE) for _ in range(depth)]
-            self._spi_pool_buf = []
-            self._spi_pool_free = [True] * depth
-            for b in self._spi_pool:
-                mv = b.get()
-                if mv is None:
-                    mv = bytearray(_SPI_TX_BUF_SIZE)
-                self._spi_pool_buf.append(mv)
-
-        if (not use_spi_queue) and bus.shared.get("spi_busy"):
-            return
 
         self._buf = bus.get_service("dp_buffer") or self._buf
         if not self._buf or not self._buf.get("enable", True):
             return
 
-        use_jpeg_out = bool(self._buf.get("bypass_copy")) or str(self._buf.get("pixel_format") or "").startswith("RGB888")
-#         hub = self._buf.get("jpeg_out") if use_jpeg_out else self._buf.get("out_hub")
-        hub = self._buf.get("jpeg_out")
+        use_jpeg_out = str(self._buf.get("pixel_format") or "").startswith("RGB888")
+        hub = self._buf.get("jpeg_out") if use_jpeg_out else self._buf.get("out_hub")
         if hub is None:
             return
         try:
@@ -130,6 +128,13 @@ class DisplayTask(Task):
 
         rv = hub.get_read_view()
         if rv is None:
+            return
+
+        if bus.shared.get("spi_busy"):
+            try:
+                hub.release_read()
+            except Exception:
+                pass
             return
 
         try:
@@ -143,29 +148,9 @@ class DisplayTask(Task):
             h = int(self._out_hdr[6])
             payload = rv[HDR_OUT : HDR_OUT + payload_len]
 
+            bus.shared["spi_busy"] = True
             try:
-                if use_spi_queue:
-                    try:
-                        pending = int(spi.pending() or 0)
-                    except Exception:
-                        pending = 0
-                    done = len(self._spi_inflight) - pending
-                    if done > 0:
-                        for _ in range(done):
-                            idx = self._spi_inflight.pop(0)
-                            if self._spi_pool_free is not None:
-                                self._spi_pool_free[idx] = True
-
                 if x != self._last_x or y != self._last_y or w != self._last_w or h != self._last_h:
-                    if use_spi_queue:
-                        try:
-                            spi.wait_all()
-                        except Exception:
-                            pass
-                        self._spi_inflight = []
-                        if self._spi_pool_free is not None:
-                            for i in range(len(self._spi_pool_free)):
-                                self._spi_pool_free[i] = True
                     try:
                         lcd.set_window(x, y, x + w - 1, y + h - 1)
                     except Exception:
@@ -178,44 +163,10 @@ class DisplayTask(Task):
                     self._last_w = w
                     self._last_h = h
 
-                if use_spi_queue and self._spi_pool_free is not None:
-                    pending = 0
-                    try:
-                        pending = int(spi.pending() or 0)
-                    except Exception:
-                        pending = 0
-                    if pending >= len(self._spi_pool_free):
-                        return
-                    if payload_len > _SPI_TX_BUF_SIZE:
-                        try:
-                            spi.wait_all()
-                        except Exception:
-                            pass
-                        lcd.write_data(payload)
-                        try:
-                            spi.wait_all()
-                        except Exception:
-                            pass
-                        return
-                    idx = -1
-                    for i, free in enumerate(self._spi_pool_free):
-                        if free:
-                            idx = i
-                            break
-                    if idx < 0:
-                        return
-                    buf = self._spi_pool_buf[idx]
-                    buf[:payload_len] = payload[:payload_len]
-                    tid = lcd.write_data(memoryview(buf)[:payload_len])
-                    self._spi_pool_free[idx] = False
-                    self._spi_inflight.append(idx)
-                    if isinstance(tid, int):
-                        pass
-                else:
-                    tx_payload = self._spi_tx.prep_for_spi(payload, payload_len)
-                    lcd.write_data(tx_payload)
+                tx_payload = self._spi_tx.prep_for_spi(payload, payload_len)
+                lcd.write_data(tx_payload)
             finally:
-                pass
+                bus.shared["spi_busy"] = False
 
             self._last_write_ms = time.ticks_ms()
 
@@ -243,13 +194,3 @@ class DisplayTask(Task):
     def on_stop(self):
         super().on_stop()
         self._spi_tx.close()
-        if self._spi_pool:
-            for b in self._spi_pool:
-                try:
-                    b.close()
-                except Exception:
-                    pass
-        self._spi_pool = None
-        self._spi_pool_buf = None
-        self._spi_pool_free = None
-        self._spi_inflight = []

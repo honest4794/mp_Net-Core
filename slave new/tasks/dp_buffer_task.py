@@ -12,11 +12,9 @@ class DpBufferTask(Task):
         super().on_start()
         self._svc = ensure_dp_buffer_service(bus)
         self._disabled = False
-        self._tmp = None
-        self._tmp_size = 0
 
         pf = str(self._svc.get("pixel_format") or "")
-        if bool(self._svc.get("bypass_copy")) or pf.startswith("RGB888"):
+        if pf.startswith("RGB888"):
             tm = bus.get_service("task_manager")
             if tm:
                 tm.set_affinity("dp_buffer", (0, 0))
@@ -31,7 +29,7 @@ class DpBufferTask(Task):
         if not self._svc or not self._svc.get("enable", True):
             return
         pf = str(self._svc.get("pixel_format") or "")
-        if bool(self._svc.get("bypass_copy")) or pf.startswith("RGB888"):
+        if pf.startswith("RGB888"):
             if not self._disabled:
                 tm = bus.get_service("task_manager")
                 if tm:
@@ -47,11 +45,7 @@ class DpBufferTask(Task):
         if out_hub is None:
             return
 
-        need = HDR_OUT + int(self._svc.get("max_frame_bytes", 0) or 0)
-        if self._tmp is None or self._tmp_size != need:
-            self._tmp = bytearray(need)
-            self._tmp_size = need
-        buf = self._tmp
+        buf = bytearray(HDR_OUT + int(self._svc.get("max_frame_bytes", 0) or 0))
         if not jpeg_out.read_into(buf):
             return
 

@@ -30,11 +30,10 @@ class LogTask(Task):
             print('    "cpu0",')
             print('    "cpu1",')
             for n in custom:
-                print('    "{}",'.format(n))
+                print('    "' + n + '",')
             for tn in tnames:
-                print('    "{}",'.format(tn))
+                print('    "' + tn + '",')
             print("]")
-            print("[LOG] {} custom + {} task slots total".format(len(custom), len(tnames)))
             return
 
         task_bufs = bus.shared.get("_task_bufs", {})
@@ -59,24 +58,20 @@ class LogTask(Task):
 
         if sub_tasks:
             self._rows = tuple((tn, b) for tn, b in sorted(task_bufs.items()) if tn in sub_tasks)
-        elif sub_names:
-            self._rows = ()
         else:
             self._rows = ()
 
-        if not sub_names:
-            self._others = ()
-        else:
+        if sub_names:
             slots = log.subscribe(sub_names)
             self._others = tuple((n, b, o) for n, b, o in slots)
+        else:
+            self._others = ()
 
         self._last_print_ms = 0
 
     def loop(self):
         if not self.running:
             return
-        log = get_log()
-        log.flush()
 
         rows = self._rows
         others = self._others
@@ -92,29 +87,46 @@ class LogTask(Task):
             return
         self._last_print_ms = now
 
+        tm = bus.get_service("task_manager")
+        live_names = None
+        if tm is not None:
+            live_names = set()
+            for core in (0, 1):
+                live_names.update(tm.active_tasks.get(core, {}).keys())
+
+        out = []
+
         for (task_name, buf) in rows:
+            if live_names is not None and task_name not in live_names:
+                continue
             avg = _viper_read_i32(buf, 0)
-            max_us = _viper_read_i32(buf, 4)
-            count = _viper_read_i32(buf, 8)
+            mx = _viper_read_i32(buf, 4)
+            cnt = _viper_read_i32(buf, 8)
             touch_v = _viper_read_i32(buf, 12)
             succ_v = _viper_read_i32(buf, 16)
             if avg <= 0 and touch_v <= 0 and succ_v <= 0:
                 continue
-            log.immediate("Task[{}] avg={}us max={}us n={} t={} s={}".format(
-                task_name, avg, max_us, count, touch_v, succ_v))
+            out.append("Task[" + task_name + "] avg=" + str(avg) + "us max=" +
+                       str(mx) + "us n=" + str(cnt) + " t=" + str(touch_v) +
+                       " s=" + str(succ_v))
 
         core_buf = self._core_buf
         if core_buf:
             if self._cpu0:
                 loops = _viper_read_i32(core_buf, 0)
-                if loops > 0:
-                    log.immediate("CPU0 loops={}".format(loops))
+                out.append("CPU0 loops=" + str(loops))
             if self._cpu1:
                 loops = _viper_read_i32(core_buf, 12)
-                if loops > 0:
-                    log.immediate("CPU1 loops={}".format(loops))
+                out.append("CPU1 loops=" + str(loops))
 
         for name, buf, off in others:
             v = _viper_read_i32(buf, off)
             if v > 0:
-                log.immediate("{}={}".format(name, v))
+                out.append(str(name) + "=" + str(v))
+
+        if out:
+            print("[IMMEDIATE]")
+            for line in out:
+                print("  - " + line)
+            log = get_log()
+            log.flush()
