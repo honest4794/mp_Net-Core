@@ -73,8 +73,16 @@ def boot_config(cfg):
     if missing:
         raise ValueError("TFT pins not found: {}".format(", ".join(missing)))
 
-    spi_id = cfg.pop("spi_id", 2)
-    spi = spi_by_id.get(spi_id) or (spi_by_id.get(1) if 1 in spi_by_id else None)
+    # ⚠️ 必須先開電源，RM67162 才能接收 init 命令
+    bl = pin_by_label.get(pins.get("bl", ""))
+    if bl is not None:
+        bl.value(1)
+        print("[tft_drv] power ON (GPIO={})".format(pins.get("bl", "")))
+    else:
+        print("[tft_drv] no power pin — display may not be powered")
+
+    spi_id = cfg.pop("spi_id", 1)
+    spi = spi_by_id.get(spi_id) or (list(spi_by_id.values())[0] if spi_by_id else None)
     if spi is None:
         print("[tft_drv] no SPI bus available, skipping")
         return None
@@ -99,14 +107,6 @@ def boot_config(cfg):
         lcd.set_window(0, y, w - 1, y + rows - 1)
         lcd.write_data(bytearray(row_bytes * rows))
     lcd.set_window(0, 0)
-
-    # 打開背光
-    bl = pin_by_label.get(pins.get("bl", ""))
-    if bl is not None:
-        bl.value(1)
-        print("[tft_drv] backlight ON")
-    else:
-        print("[tft_drv] no backlight pin")
 
     return lcd
 

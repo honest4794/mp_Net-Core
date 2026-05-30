@@ -103,6 +103,23 @@ class SpiBusAdapter(BusAdapter):
             self._spi.wait_all()
             self._cs.value(1)
 
+    def write_frame(self, data):
+        if self._qspi:
+            self._cs.value(0)
+            self._spi.write(b'', cmd=0x32, addr=0x002C00, multiline=False)
+            mv = memoryview(data)
+            off, rem = 0, len(mv)
+            while rem > 0:
+                n = min(rem, 32768)
+                tid = self._spi.write(mv[off:off + n])
+                self.wait(tid)
+                rem -= n; off += n
+            self._cs.value(1)
+        elif self._dma:
+            self._dc.value(1); self._cs.value(0); self._spi.write(data); self._spi.wait_all(); self._cs.value(1)
+        else:
+            self._dc.value(1); self._cs.value(0); self._spi.write(data); self._cs.value(1)
+
     def wait(self, handle):
         if self._qspi and handle is not None:
             self._spi.wait(handle)
@@ -111,15 +128,22 @@ class SpiBusAdapter(BusAdapter):
 
     def set_window(self, x0, y0, x1, y1):
         if self._qspi:
+            # CASET — CS HIGH between commands (RM67162 requires framing)
             self._cs.value(0)
             self._spi.write(
                 bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]),
                 cmd=0x02, addr=0x2A << 8)
             self._spi.wait_all()
+            self._cs.value(1)
+            # RASET
+            self._cs.value(0)
             self._spi.write(
                 bytes([y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF]),
                 cmd=0x02, addr=0x2B << 8)
             self._spi.wait_all()
+            self._cs.value(1)
+            # RAMWR — CS stays low for subsequent pixel data
+            self._cs.value(0)
             self._spi.write(b'', cmd=0x32, addr=0x002C00, multiline=False)
             self._spi.wait_all()
         elif self._dma:

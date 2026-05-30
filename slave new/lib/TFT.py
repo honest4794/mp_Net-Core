@@ -3,7 +3,7 @@ import gc
 import machine ,time
 
 def _sleep_ms(_ms):
-    return
+    time.sleep_ms(_ms)
 
 class VideoStreamReader:
     def __init__(self, filename, frame_size=1024 * 1024):
@@ -153,7 +153,25 @@ class TFT:
         if self._rotation in [90, 270]:
             x0, y0, x1, y1 = y0, x0, y1, x1
         self._bus.set_window(x0, y0, x1, y1)
-    
+
+    def show(self, data, x=0, y=0, w=None, h=None):
+        """顯示 pixel data (chunked async, 無額外分配)"""
+        if w is None: w = self.width
+        if h is None: h = self.height
+        self.set_window(x, y, x + w - 1, y + h - 1)
+        mv = memoryview(data) if isinstance(data, (bytearray, bytes)) else data
+        off, rem = 0, len(mv)
+        cs = 8192
+        while rem > 0:
+            n = min(rem, cs)
+            hnd = self._bus.write_data_async(mv[off:off + n])
+            if hnd is not None: self._bus.wait(hnd)
+            rem -= n; off += n
+        self._bus.flush()
+    def show_frame(self, data):
+        """Send pixel data (window must be set already)"""
+        self._bus.write_frame(data)
+
     def set_rotation(self, rotation):
         """
         設置屏幕旋轉角度
@@ -939,7 +957,24 @@ class RM67162(TFT):
         self._inverted = invert
         self.init()
 
+    def _get_madctl_cmd(self):
+        rotation_settings = {0:0x00, 90:0x60, 180:0xC0, 270:0xA0}
+        base = rotation_settings.get(self._rotation, 0x00)
+        if self._color_order == "BGR":
+            base |= 0x08
+        return bytes([base])
+
+    def _update_rotation(self):
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+
+    def _update_color_order(self):
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+
+    def _update_inversion(self):
+        self.write_cmd(0x21 if self._inverted else 0x20)
+
     def init(self):
+        """RM67162 QSPI init — 參照 Waveshare C rm67162_qspi_init[]"""
         if self.rst is not None:
             self.rst.value(1)
             _sleep_ms(10)
@@ -947,13 +982,16 @@ class RM67162(TFT):
             _sleep_ms(300)
             self.rst.value(1)
             _sleep_ms(200)
-        self.write_cmd_data(0x11, None)
-        _sleep_ms(120)
-        self.write_cmd_data(0x36, b'\x00')
-        self.write_cmd_data(0x36, b'\x00')
-        self.write_cmd_data(0x3A, b'\x75')
-        self.write_cmd_data(0x29, None)
-        _sleep_ms(20)
+        # 重試 3 次 (C: "Initialize multiple times to prevent init failure")
+        for _ in range(3):
+            self.write_cmd_data(0x11, None)      # Sleep Out
+            _sleep_ms(120)
+            self.write_cmd_data(0x36, self._get_madctl_cmd())
+            self.write_cmd_data(0x3A, b'\x55')   # COLMOD 16-bit
+            self.write_cmd_data(0x51, b'\x00')   # Brightness 0
+            self.write_cmd_data(0x29, None)      # Display On
+            _sleep_ms(20)
+            self.write_cmd_data(0x51, b'\xD0')   # Brightness MAX
 
 
 class SH8601(TFT):

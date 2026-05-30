@@ -3,8 +3,8 @@ from lib.sys_bus import bus
 
 CONFIG = [
     {
-        "id": 2,  # SPI3 (ESP32-S3 Octal PSRAM 佔用 SPI2)
-        "baudrate": 40000000,
+        "id": 1,
+        "baudrate": 80000000,
         "phase": 0,
         "polarity": 0,
         "GPIO": {"sck": 47},
