@@ -28,13 +28,24 @@ def config():
         get_log().error("LDO error: {}".format(e))
 
     slot = CONFIG.get("config", {}).get("slot", 0)
+    sd_ok = False
     try:
         if slot >= 2:
             _init_sd_spi(phat)
         else:
             _init_sd_sdio(phat)
+        sd_ok = True
     except Exception as e:
         get_log().error("SD card init error: {}".format(e))
+
+    # Fallback: if SD mount failed, create /sd and /sd/local
+    if not sd_ok or not _exists(phat):
+        try:
+            os.mkdir(phat)
+            open(phat + "/local", "w").close()
+            get_log().info("SD mount failed, created fallback: {} and {}/local".format(phat, phat))
+        except Exception as e:
+            get_log().error("SD fallback error: {}".format(e))
 
     bus.register_service("data_Phat", phat)
     return phat
