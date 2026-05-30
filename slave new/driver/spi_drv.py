@@ -1,14 +1,16 @@
 from machine import Pin, SPI
 from lib.sys_bus import bus
 
+# ESP32-S3-Touch-LCD-2.8
+# ST7789 via lcd_bus: data=(45,), clk=40, host=1
 CONFIG = [
     {
-        "id": 1,
+        "id": 2,
         "baudrate": 80000000,
         "phase": 0,
         "polarity": 0,
-        "GPIO": {"sck": 47},
-        "data_pins": (18, 7, 48, 5),
+        "GPIO": {"sck": 40},
+        "data_pins": (45,),
     },
 ]
 
@@ -20,13 +22,19 @@ except ImportError:
 
 
 def _make_machine_spi(item, gpio, data):
-    """fallback — 用 machine.SPI 建單線 SPI bus"""
+    """fallback — 用 machine.SPI 建單線 SPI bus, 先嘗試釋放舊佔用"""
+    sid = item["id"]
+    # soft reset 後 SPI host 可能殘留, 嘗試 deinit
+    try:
+        old = SPI(sid)
+        old.deinit()
+    except:
+        pass
     sck = gpio.get("sck")
-    mosi = gpio.get("mosi") if gpio.get("mosi") is not None else (
-        data[0] if data else None)
+    mosi = gpio.get("mosi")
     miso = gpio.get("miso")
     return SPI(
-        item["id"],
+        sid,
         baudrate=item.get("baudrate", 80000000),
         polarity=item.get("polarity", 0),
         phase=item.get("phase", 0),
@@ -55,8 +63,12 @@ def config():
                     freq=item.get("baudrate", 80000000),
                     host=item["id"],
                 )
-            except RuntimeError as e:
+            except Exception as e:
                 print("[spi_drv] SPI{} lcd_bus fail: {} → machine.SPI".format(item["id"], e))
+                # 嘗試釋放 lcd_bus 可能殘留的佔用
+                if 'spi' in locals():
+                    try: spi.deinit()
+                    except: pass
                 spi = _make_machine_spi(item, gpio, data)
         else:
             spi = _make_machine_spi(item, gpio, data)

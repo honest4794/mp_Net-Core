@@ -164,8 +164,7 @@ class TFT:
         cs = 8192
         while rem > 0:
             n = min(rem, cs)
-            hnd = self._bus.write_data_async(mv[off:off + n])
-            if hnd is not None: self._bus.wait(hnd)
+            self._bus.write_data_async(mv[off:off + n])
             rem -= n; off += n
         self._bus.flush()
     def show_frame(self, data):
@@ -446,6 +445,34 @@ class ST7789T3(ST7789):
             self.write_cmd_data(cmd, data)
             _sleep_ms(10)
         
+        self.set_window(0, 0)
+
+class ST7789T_Vernon(ST7789):
+    """Vernon ST7789T 面板專用驅動 (ESP32-S3-Touch-LCD-2.8)"""
+    def __init__(self, spi, dc, cs, rst, width=240, height=320, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
+        super().__init__(spi, dc, cs, rst, width, height, rotation, color_order, invert, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+
+    def init(self):
+        _sleep_ms(10)
+        self.write_cmd_data(0x11, None)  # Sleep Out
+        _sleep_ms(120)
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+        self.write_cmd_data(0x3A, self._get_colmod_cmd())
+        self.write_cmd_data(0xB0, b'\x00\xE8')             # Panel timing
+        self.write_cmd_data(0xB2, b'\x0C\x0C\x00\x33\x33') # Porch
+        self.write_cmd_data(0xB7, b'\x75')                 # Gate Control
+        self.write_cmd_data(0xBB, b'\x1A')                 # VCOM
+        self.write_cmd_data(0xC0, b'\x80')                 # LCM Control
+        self.write_cmd_data(0xC2, b'\x01\xFF')             # VDV/VRH Enable
+        self.write_cmd_data(0xC3, b'\x13')                 # VRH Set
+        self.write_cmd_data(0xC4, b'\x20')                 # VDV Set
+        self.write_cmd_data(0xC6, b'\x0F')                 # Frame Rate
+        self.write_cmd_data(0xD0, b'\xA4\xA1')             # Power Control
+        self.write_cmd_data(0xE0, b'\xD0\x0D\x14\x0D\x0D\x09\x38\x44\x4E\x3A\x17\x18\x2F\x30')
+        self.write_cmd_data(0xE1, b'\xD0\x09\x0F\x08\x07\x14\x37\x44\x4D\x38\x15\x16\x2C\x2E')
+        self.write_cmd(self._get_inversion_cmd())
+        self.write_cmd_data(0x29, None)  # Display On
+        _sleep_ms(50)
         self.set_window(0, 0)
 
 

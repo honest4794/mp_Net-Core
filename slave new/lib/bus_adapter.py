@@ -37,7 +37,7 @@ class SpiBusAdapter(BusAdapter):
         self._cs = cs
         self._rst = rst
         self._dma = hasattr(spi, 'wait') and hasattr(spi, 'pending')
-        self._qspi = hasattr(spi, 'lane_count')
+        self._qspi = hasattr(spi, 'lane_count') and spi.lane_count() > 1
 
     def write_cmd(self, cmd):
         if self._qspi:
@@ -71,6 +71,7 @@ class SpiBusAdapter(BusAdapter):
             if data:
                 self._dc.value(1)
                 self._spi.write(data)
+                self._spi.wait_all()
         else:
             self.write_cmd(cmd)
             if data:
@@ -85,6 +86,9 @@ class SpiBusAdapter(BusAdapter):
                 return None
         if self._dma:
             self._dc.value(1)
+            # 等 queue 空出至少一個插槽
+            while self._spi.pending() >= 4:
+                self._spi.wait_all()
             try:
                 return self._spi.write(data)
             except RuntimeError:
@@ -116,7 +120,15 @@ class SpiBusAdapter(BusAdapter):
                 rem -= n; off += n
             self._cs.value(1)
         elif self._dma:
-            self._dc.value(1); self._cs.value(0); self._spi.write(data); self._spi.wait_all(); self._cs.value(1)
+            self._dc.value(1); self._cs.value(0)
+            mv = memoryview(data)
+            off, rem = 0, len(mv)
+            while rem > 0:
+                n = min(rem, 32768)
+                tid = self._spi.write(mv[off:off + n])
+                self.wait(tid)
+                rem -= n; off += n
+            self._cs.value(1)
         else:
             self._dc.value(1); self._cs.value(0); self._spi.write(data); self._cs.value(1)
 
@@ -152,7 +164,7 @@ class SpiBusAdapter(BusAdapter):
             self._dc.value(1); self._spi.write(bytes([x0>>8,x0&0xFF,x1>>8,x1&0xFF])); self._spi.wait_all()
             self._dc.value(0); self._spi.write(bytearray([0x2B])); self._spi.wait_all()
             self._dc.value(1); self._spi.write(bytes([y0>>8,y0&0xFF,y1>>8,y1&0xFF])); self._spi.wait_all()
-            self._dc.value(0); self._spi.write(bytearray([0x2C])); self._dc.value(1)
+            self._dc.value(0); self._spi.write(bytearray([0x2C])); self._spi.wait_all(); self._dc.value(1)
         else:
             super().set_window(x0, y0, x1, y1)
 

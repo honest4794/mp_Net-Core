@@ -10,15 +10,16 @@ def config(spi, dc, cs, rst, driver="ST7789", width=240, height=320,
            rotation=0, color_order="RGB", invert=False,
            pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
     """工廠函式 — 明確傳入 SPI / pin 物件"""
-    from lib.TFT import ST7789, ST7735, GC9A01, GC9D01, ILI9341, NV3030B
+    from lib.TFT import ST7789, ST7789T_Vernon, ST7735, GC9A01, GC9D01, ILI9341, NV3030B
 
     driver_map = {
-        "ST7789":  ST7789,
-        "ST7735":  ST7735,
-        "GC9A01":  GC9A01,
-        "GC9D01":  GC9D01,
-        "ILI9341": ILI9341,
-        "NV3030B": NV3030B,
+        "ST7789":        ST7789,
+        "ST7789T_Vernon": ST7789T_Vernon,
+        "ST7735":        ST7735,
+        "GC9A01":        GC9A01,
+        "GC9D01":        GC9D01,
+        "ILI9341":       ILI9341,
+        "NV3030B":       NV3030B,
     }
 
     for lazy_drv in ("RM67162", "SH8601"):
@@ -99,14 +100,9 @@ def boot_config(cfg):
     bus.shared["tft_height"] = cfg["height"]
     bus.shared["tft_driver"] = cfg["driver"]
 
-    # 全黑畫面
-    w, h = cfg["width"], cfg["height"]
-    row_bytes = w * bpp
-    for y in range(0, h, 20):
-        rows = min(20, h - y)
-        lcd.set_window(0, y, w - 1, y + rows - 1)
-        lcd.write_data(bytearray(row_bytes * rows))
-    lcd.set_window(0, 0)
+    # 全黑畫面 (整幀, TFT.show 含 flush, DMA queue 確保送出)
+    black = bytearray(cfg["width"] * cfg["height"] * bpp)
+    lcd.show(black)
 
     return lcd
 
