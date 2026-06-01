@@ -10,7 +10,7 @@ def config(spi, dc, cs, rst, driver="ST7789", width=240, height=320,
            rotation=0, color_order="RGB", invert=False,
            pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
     """工廠函式 — 明確傳入 SPI / pin 物件"""
-    from lib.TFT import ST7789, ST7789T_Vernon, ST7735, GC9A01, GC9D01, ILI9341, NV3030B
+    from lib.TFT import ST7789, ST7789T_Vernon, ST7735, ST7796, GC9A01, GC9D01, ILI9341, NV3030B
 
     driver_map = {
         "ST7789":        ST7789,
@@ -20,6 +20,8 @@ def config(spi, dc, cs, rst, driver="ST7789", width=240, height=320,
         "GC9D01":        GC9D01,
         "ILI9341":       ILI9341,
         "NV3030B":       NV3030B,
+        "ST7796":        ST7796,
+        "ST7796_I80":    ST7796,   # I80 介面用 ST7796 driver
     }
 
     for lazy_drv in ("RM67162", "SH8601"):
@@ -101,6 +103,57 @@ def boot_config(cfg):
     bus.shared["tft_driver"] = cfg["driver"]
 
     # 全黑畫面 (整幀, TFT.show 含 flush, DMA queue 確保送出)
+    black = bytearray(cfg["width"] * cfg["height"] * bpp)
+    lcd.show(black)
+
+    return lcd
+
+def boot_config_i80(cfg):
+    """I80 boot 模式 — 適用 ST7796 + N16R8 (XL9555 控制 RST/背光)"""
+    cfg = dict(cfg)
+    from lib.sys_bus import bus
+    from lib.bus_adapter import I80BusAdapter
+
+    i80 = bus.get_service("i80_bus")
+    if i80 is None:
+        print("[tft_drv] no I80 bus available, skipping")
+        return None
+
+    pin_by_label = bus.get_service("pin_by_label") or {}
+    pins = cfg.pop("pins", {})
+
+    dcx = pin_by_label.get(pins.get("dcx", ""))
+
+    # ── XL9555: LCD 復位 + 背光 (從 config 讀腳位) ──
+    xl_cfg = cfg.pop("xl9555", {})
+    xl = bus.get_service("xl9555")
+    if xl and xl_cfg:
+        rst_pin = xl_cfg.get("rst")
+        bl_pin = xl_cfg.get("bl")
+        import time
+        if rst_pin is not None:
+            xl.pin[rst_pin].init(1); xl.pin[rst_pin].value(0)
+            time.sleep_ms(10)
+            xl.pin[rst_pin].value(1)
+            time.sleep_ms(10)
+        if bl_pin is not None:
+            xl.pin[bl_pin].init(1); xl.pin[bl_pin].value(1)
+        print("[tft_drv] XL9555: rst={} bl={}".format(rst_pin, bl_pin))
+    else:
+        print("[tft_drv] XL9555 not available")
+
+    adapter = I80BusAdapter(i80, dcx=dcx, rst=None)  # RST 由 XL9555 管理
+    bpp = 3 if cfg.get("pixel_format", "").startswith("RGB888") else 2
+
+    lcd = config(spi=None, dc=None, cs=None, rst=None,
+                 bytes_per_pixel=bpp, adapter=adapter, **cfg)
+
+    bus.register_service("lcd", lcd)
+    bus.shared["tft_width"] = cfg["width"]
+    bus.shared["tft_height"] = cfg["height"]
+    bus.shared["tft_driver"] = cfg["driver"]
+
+    # 全黑畫面
     black = bytearray(cfg["width"] * cfg["height"] * bpp)
     lcd.show(black)
 

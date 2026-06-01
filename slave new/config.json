@@ -33,7 +33,7 @@
             }
         },
         "wifi": {
-            "enable": 1,
+            "enable": 0,
             "active_mode": 2,
             "timeout": 300,
             "ssid": "Home_WiFi",
@@ -42,23 +42,11 @@
         },
         "ESP_now": { "enable": 0, "channel": 6 }
     },
-    "SDcard": {
-        "enable": 1,
-        "phat":"/sd",
-        "LDO":{"id":4,"mv":3300},
-        "config": { "slot": 1, "width": 1, "freq": 20000000 },
-        "GPIO": {
-            "_comment": "SDMMC 1-wire: sck=9, cmd=42, data=[8]",
-            "sck": 9, "cmd": 42, "data": [8] }
-    },
     "CircuitDecode": {
         "enable": 0,
         "list": [
             { "GPIO": { "uart": 0 } }
         ]
     }
-
-
-
 
 }

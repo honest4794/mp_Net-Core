@@ -476,6 +476,71 @@ class ST7789T_Vernon(ST7789):
         self.set_window(0, 0)
 
 
+class ST7796(TFT):
+    """ST7796 320x480 驅動 (ESP32-S3 N16R8)"""
+    def __init__(self, spi, dc, cs, rst, width=480, height=320, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
+        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+        self._rotation = rotation
+        self._color_order = color_order.upper()
+        self._inverted = invert
+        self.init()
+
+    def init(self):
+        _sleep_ms(10)
+        self.write_cmd_data(0x01, None)  # SWRESET
+        _sleep_ms(120)
+        self.write_cmd_data(0x11, None)  # SLPOUT
+        _sleep_ms(120)
+
+        self.write_cmd_data(0xF0, b'\xC3')  # CSCON
+        self.write_cmd_data(0xF0, b'\x96')  # CSCON
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+        self.write_cmd_data(0x3A, self._get_colmod_cmd())
+
+        self.write_cmd_data(0xB7, b'\xC6')   # EM
+        self.write_cmd_data(0xB4, b'\x01')   # DIC
+        self.write_cmd_data(0xB6, b'\x80\x02\x3B')  # DFC
+        self.write_cmd_data(0xE8, b'\x40\x8A\x00\x00\x29\x19\xA5\x33')  # DOCA
+        self.write_cmd_data(0xC1, b'\x06')   # PWR2
+        self.write_cmd_data(0xC2, b'\xA7')   # PWR3
+        self.write_cmd_data(0xC5, b'\x18')   # VCMPCTL
+        _sleep_ms(120)
+
+        # Positive Gamma
+        self.write_cmd_data(0xE0, b'\xF0\x09\x0B\x06\x04\x15\x2F\x54\x42\x3C\x17\x14\x18\x1B')
+        # Negative Gamma
+        self.write_cmd_data(0xE1, b'\xF0\x09\x0B\x06\x04\x03\x2D\x43\x42\x3B\x16\x14\x17\x1B')
+        _sleep_ms(120)
+
+        self.write_cmd_data(0xF0, b'\x3C')  # CSCON
+        self.write_cmd_data(0xF0, b'\x69')  # CSCON
+        _sleep_ms(120)
+
+        self.write_cmd_data(0x29, None)  # DISPON
+        _sleep_ms(120)
+        self.set_window(0, 0)
+
+    def _get_madctl_cmd(self):
+        rotation_settings = {
+            0: 0x00, 90: 0x60, 180: 0xC0, 270: 0xA0
+        }
+        base = rotation_settings.get(self._rotation, 0x00)
+        if self._color_order == "BGR":
+            base |= 0x08
+        return bytes([base])
+
+    def _get_inversion_cmd(self):
+        return 0x21 if self._inverted else 0x20
+
+    def _update_rotation(self):
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+
+    def _update_color_order(self):
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+
+    def _update_inversion(self):
+        self.write_cmd(self._get_inversion_cmd())
+
 class GC9A01(TFT):
     def __init__(self, spi, dc, cs, rst, width, height, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
         super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)

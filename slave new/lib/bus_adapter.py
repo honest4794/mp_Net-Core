@@ -247,10 +247,14 @@ class I80BusAdapter(BusAdapter):
         if self._dma:
             self._bus.write(bytearray([cmd]))
             self._bus.wait_all()
+        else:
+            self._bus.write(bytearray([cmd]))
         if data:
             if self._dcx:
                 self._dcx.value(1)
-            self.write_data(data)
+            self._bus.write(data)
+            if self._dma:
+                self._bus.wait_all()
 
     def write_data_async(self, data):
         if self._dcx:
@@ -280,7 +284,7 @@ class I80BusAdapter(BusAdapter):
             if self._dcx: self._dcx.value(1)
             self._bus.write(w3); self._bus.wait_all()
             if self._dcx: self._dcx.value(0)
-            self._bus.write(w4)
+            self._bus.write(w4); self._bus.wait_all()
         else:
             self._bus.write(w0)
             if self._dcx: self._dcx.value(1)
