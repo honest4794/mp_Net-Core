@@ -54,6 +54,7 @@ def ensure_dp_buffer_service(bus, name="dp_buffer"):
         "pixel_format": "RGB565_BE",
         "max_frame_bytes": 0,
         "jpeg_out": None,
+        "display_buf": None,
         "out_hub": None,
         "pending": None,
         "hook": None,
@@ -91,6 +92,7 @@ def configure_for_layout(bus, layout, *, pixel_format="RGB565_LE", num_buffers=3
     svc["max_frame_bytes"] = int(max_frame_bytes)
     hub_size = HDR_OUT + int(max_frame_bytes)
     svc["jpeg_out"] = AtomicStreamHub(hub_size, num_buffers=int(num_buffers))
+    svc["display_buf"] = AtomicStreamHub(hub_size, num_buffers=int(num_buffers), try_dma=True, try_bounce=True)
     if str(svc["pixel_format"]).startswith("RGB888"):
         svc["out_hub"] = None
     else:

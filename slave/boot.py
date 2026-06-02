@@ -225,4 +225,17 @@ init_pwm(bus)
 init_pin(bus)
 init_sd(bus)
 
+# 將 dp_config.json 加載到 bus.shared，供各 task 直接讀取
+try:
+    import json
+    for _p in ("/dp_config.json", "/sd/dp_config.json", "./dp_config.json"):
+        try:
+            with open(_p) as _f:
+                bus.shared["dp_config"] = json.loads(_f.read())
+            break
+        except Exception:
+            continue
+except Exception:
+    bus.shared["dp_config"] = {}
+
 # LCD 初始化已移至 DisplayTask.on_start()

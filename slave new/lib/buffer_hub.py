@@ -141,7 +141,7 @@ class AtomicStreamHub:
         ptr = self._w_ptr
         if self._status[ptr] != _IDLE:
             return False
-        _viper_copy(self._views[ptr], source, self.size)
+        self._views[ptr][:] = source
         self._status[ptr] = _READY
         self._w_ptr = (ptr + 1) % self.num_buffers
         return True
@@ -154,7 +154,7 @@ class AtomicStreamHub:
         ptr = self._r_ptr
         if self._status[ptr] != _READY:
             return False
-        _viper_copy(target, self._views[ptr], self.size)
+        target[:] = self._views[ptr]
         self._status[ptr] = _IDLE
         self._r_ptr = (ptr + 1) % self.num_buffers
         return True

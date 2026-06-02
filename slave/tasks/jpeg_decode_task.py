@@ -20,6 +20,13 @@ class JpegDecodeTask(Task):
         self._seen_epoch = None
         self._in_hdr = [0] * 10
 
+        self._use_display_buf = self._detect_888_from_config()
+
+    def _detect_888_from_config(self):
+        dp = bus.shared.get("dp_config") or {}
+        pf = (dp.get("jpeg") or {}).get("pixel_format") or ""
+        return pf.startswith("RGB888")
+
     def _resolve_dp(self):
         if self._dp is not None:
             return self._dp
@@ -62,6 +69,7 @@ class JpegDecodeTask(Task):
                 pass
             configure_for_layout(bus, dp.get("layout") or [], pixel_format=(dp.get("jpeg") or {}).get("pixel_format") or "RGB565_BE", num_buffers=frame_bufs)
             self._buf = bus.get_service("dp_buffer") or self._buf
+            self._use_display_buf = self._detect_888_from_config()
             return True
         except Exception as e:
             self._buf["last_err"] = str(e)
@@ -125,11 +133,14 @@ class JpegDecodeTask(Task):
         if not self._ensure_buf_config(dp):
             return
 
-        jpeg_out = self._buf.get("jpeg_out")
-        if jpeg_out is None:
+        if self._use_display_buf:
+            out_hub = self._buf.get("display_buf")
+        else:
+            out_hub = self._buf.get("jpeg_out")
+        if out_hub is None:
             return
         try:
-            self._lw_ex(0, int(jpeg_out.get_fill_level() or 0) + 1)
+            self._lw_ex(0, int(out_hub.get_fill_level() or 0) + 1)
         except Exception:
             pass
         try:
@@ -153,7 +164,9 @@ class JpegDecodeTask(Task):
         bpp = int(job["bpp"])
         frame_bytes = w * h * bpp
 
-        wv = jpeg_out.get_write_view()
+        wv = out_hub.get_write_view()
+        if self._use_display_buf and wv is not None:
+            print(f"[JPEG] 888 w={w} h={h} bpp={bpp} frame_bytes={frame_bytes} buf_len={len(wv)}")
         if wv is None:
             return
         if int(len(wv)) < HDR_OUT + frame_bytes:
@@ -203,7 +216,7 @@ class JpegDecodeTask(Task):
             flags=int(job.get("flags", 0) or 0),
             fmt_code=int(job.get("fmt_code", 0) or 0),
         )
-        jpeg_out.commit()
+        out_hub.commit()
 
         self._buf["last_ms"] = time.ticks_ms()
         self._buf["last_err"] = ""

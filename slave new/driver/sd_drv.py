@@ -54,6 +54,7 @@ def _init_sd_spi(phat):
         freq=CONFIG["config"].get("freq", 20000000),
     )
     os.mount(sd, phat)
+    bus.register_service("sd_raw", sd)
 
 
 def _init_sd_sdio(phat):
@@ -66,6 +67,7 @@ def _init_sd_sdio(phat):
         freq=CONFIG["config"]["freq"],
     )
     os.mount(sd, phat)
+    bus.register_service("sd_raw", sd)
 
 
 def _exists(path):

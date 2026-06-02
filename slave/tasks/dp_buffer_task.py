@@ -41,15 +41,15 @@ class DpBufferTask(Task):
         if jpeg_out is None:
             return
 
-        out_hub = self._svc.get("out_hub")
-        if out_hub is None:
+        display_buf = self._svc.get("display_buf")
+        if display_buf is None:
             return
 
         buf = bytearray(HDR_OUT + int(self._svc.get("max_frame_bytes", 0) or 0))
         if not jpeg_out.read_into(buf):
             return
 
-        wv = out_hub.get_write_view()
+        wv = display_buf.get_write_view()
         if wv is None:
             return
         if int(len(wv)) < len(buf):
@@ -58,8 +58,8 @@ class DpBufferTask(Task):
             return
 
         copy_len = len(buf)
-        out_hub.bounce_into(wv, buf, copy_len)
-        out_hub.commit()
+        display_buf.bounce_into(wv, buf, copy_len)
+        display_buf.commit()
 
         self._svc["frames"] = int(self._svc.get("frames", 0) or 0) + 1
         self._svc["last_done"] = {"ms": time.ticks_ms()}

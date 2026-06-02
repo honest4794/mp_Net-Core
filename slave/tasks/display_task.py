@@ -105,8 +105,7 @@ class DisplayTask(Task):
         if not self._buf or not self._buf.get("enable", True):
             return
 
-        use_jpeg_out = str(self._buf.get("pixel_format") or "").startswith("RGB888")
-        hub = self._buf.get("jpeg_out") if use_jpeg_out else self._buf.get("out_hub")
+        hub = self._buf.get("display_buf")
         if hub is None:
             return
         try:

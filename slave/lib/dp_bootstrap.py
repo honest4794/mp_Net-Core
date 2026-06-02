@@ -83,7 +83,8 @@ def init_lcd(dp_config_path="/dp_config.json"):
     )
     lcd.set_window(0, 0)
 
-    _fill_black_chunked(lcd, width, height)
+    bpp = 3 if (cfg.get("jpeg") or {}).get("pixel_format", "").startswith("RGB888") else 2
+    _fill_black_chunked(lcd, width, height, bytes_per_pixel=bpp)
 
     bus.register_service("lcd", lcd)
     bus.shared["tft_width"] = width
@@ -112,8 +113,8 @@ def _init_dp_pipeline(cfg, dp_config_path="/dp_config.json"):
         print("⚠️ [DPBoot] Pipeline init failed:", e)
 
 
-def _fill_black_chunked(lcd, width, height, chunk_rows=20):
-    row_bytes = width * 2
+def _fill_black_chunked(lcd, width, height, chunk_rows=20, bytes_per_pixel=2):
+    row_bytes = width * bytes_per_pixel
     for y in range(0, height, chunk_rows):
         rows = min(chunk_rows, height - y)
         chunk = bytearray(row_bytes * rows)
