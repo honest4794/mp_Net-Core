@@ -20,32 +20,32 @@ from lib.hw_manager import init_pins
 
 CONFIG = [
     # ── TFT 控制腳 ──
-    {"GPIO": 42, "label": "tft_cs",    "mode": "OUT", "initial": 1},
-    {"GPIO": 41, "label": "tft_dc",    "mode": "OUT", "initial": 0},
-    {"GPIO": 39, "label": "tft_rst",   "mode": "OUT", "initial": 1},
-    {"GPIO": 5,  "label": "tft_bl",    "mode": "OUT", "initial": 0},
+    {"GPIO": 11, "label": "tft_cs",    "mode": "OUT", "initial": 1},
+    {"GPIO": 12, "label": "tft_dc",    "mode": "OUT", "initial": 0},
+    {"GPIO": 13, "label": "tft_rst",   "mode": "OUT", "initial": 1},
+    {"GPIO": 10,  "label": "tft_bl",    "mode": "OUT", "initial": 0},
 
     # ── Touch (CST328) 控制腳 ──
-    {"GPIO": 2,  "label": "touch_rst", "mode": "OUT", "initial": 1},
-    {"GPIO": 4,  "label": "touch_int", "mode": "IN",  "initial": 0, "pull": "UP"},
+#     {"GPIO": 2,  "label": "touch_rst", "mode": "OUT", "initial": 1},
+#     {"GPIO": 4,  "label": "touch_int", "mode": "IN",  "initial": 0, "pull": "UP"},
 
     # ── 電源鍵 ──
-    {"GPIO": 6,  "label": "pwr_in",    "mode": "IN",  "initial": 0, "pull": "UP"},
-    {"GPIO": 7,  "label": "pwr_ctrl",  "mode": "OUT", "initial": 0},
+#     {"GPIO": 6,  "label": "pwr_in",    "mode": "IN",  "initial": 0, "pull": "UP"},
+#     {"GPIO": 7,  "label": "pwr_ctrl",  "mode": "OUT", "initial": 0},
 
     # ── 電池 ADC ──
-    {"GPIO": 8,  "label": "bat_adc",   "mode": "IN",  "initial": 0},
+#     {"GPIO": 8,  "label": "bat_adc",   "mode": "IN",  "initial": 0},
 
     # ── 剩餘可用 GPIO (未分配、可自由使用) ──
-    {"GPIO": 0,  "label": "gp0",       "mode": "IN",  "initial": 0, "pull": "UP"},
-    {"GPIO": 9,  "label": "gp9",       "mode": "IN",  "initial": 0, "pull": "UP"},
-    {"GPIO": 12, "label": "gp12",      "mode": "IN",  "initial": 0, "pull": "UP"},
-    {"GPIO": 13, "label": "gp13",      "mode": "IN",  "initial": 0, "pull": "UP"},
-    {"GPIO": 15, "label": "gp15",      "mode": "IN",  "initial": 0, "pull": "UP"},
-    {"GPIO": 18, "label": "gp18",      "mode": "IN",  "initial": 0, "pull": "UP"},
-    {"GPIO": 43, "label": "gp43",      "mode": "IN",  "initial": 0, "pull": "UP"},
-    {"GPIO": 44, "label": "gp44",      "mode": "IN",  "initial": 0, "pull": "UP"},
-    {"GPIO": 46, "label": "gp46",      "mode": "IN",  "initial": 0, "pull": "UP"},
+#     {"GPIO": 0,  "label": "gp0",       "mode": "IN",  "initial": 0, "pull": "UP"},
+#     {"GPIO": 9,  "label": "gp9",       "mode": "IN",  "initial": 0, "pull": "UP"},
+#     {"GPIO": 12, "label": "gp12",      "mode": "IN",  "initial": 0, "pull": "UP"},
+#     {"GPIO": 13, "label": "gp13",      "mode": "IN",  "initial": 0, "pull": "UP"},
+#     {"GPIO": 15, "label": "gp15",      "mode": "IN",  "initial": 0, "pull": "UP"},
+#     {"GPIO": 18, "label": "gp18",      "mode": "IN",  "initial": 0, "pull": "UP"},
+#     {"GPIO": 43, "label": "gp43",      "mode": "IN",  "initial": 0, "pull": "UP"},
+#     {"GPIO": 44, "label": "gp44",      "mode": "IN",  "initial": 0, "pull": "UP"},
+#     {"GPIO": 46, "label": "gp46",      "mode": "IN",  "initial": 0, "pull": "UP"},
 ]
 
 

@@ -5,7 +5,7 @@ from lib.sys_bus import bus
 # ST7789 via lcd_bus: data=(45,), clk=40, host=1
 CONFIG = [
     {
-        "id": 2,
+        "id": 1,
         "baudrate": 80000000,
         "phase": 0,
         "polarity": 0,

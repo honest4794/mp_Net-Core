@@ -9,8 +9,8 @@ from lib.log_service import get_log
 CONFIG = {
     "phat": "/sd",
     "LDO": {"id": 4, "mv": 3300},
-    "config": {"slot": 1, "width": 1, "freq": 20000000},
-    "GPIO": {"sck": 14, "cmd": 17, "data": [16]},
+    "config": {"slot": 0, "width": 4, "freq": 40000000},
+    "GPIO": {"sck": 7, "cmd": 6, "data": [15, 16, 4, 5]},
 }
 
 def config():

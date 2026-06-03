@@ -5,16 +5,7 @@ from lib.sys_bus import bus
 # I2C0 — Sensors: QMI8658 (IMU, 0x6B), PCF85063 (RTC, 0x51)
 # I2C1 — Touch:   CST328 (0x1A)
 CONFIG = [
-    {
-        "id": 0,
-        "freq": 400000,
-        "GPIO": {"scl": 10, "sda": 11},
-    },
-    {
-        "id": 1,
-        "freq": 400000,
-        "GPIO": {"scl": 3, "sda": 1},
-    },
+
 ]
 
 

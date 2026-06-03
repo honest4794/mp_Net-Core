@@ -37,7 +37,7 @@ LEVEL1 = [
     ("pwm",      init_pwm,      gpios_pwm),
     ("i2c",      init_i2c,      gpios_i2c),
     ("sd",       init_sd,       gpios_sd),
-    # ("uart",   init_uart,     gpios_uart),
+    ("uart",   init_uart,     gpios_uart),
     # ("i2s",    init_i2s,      gpios_i2s),
 ]
 
@@ -46,18 +46,18 @@ LEVEL1 = [
 #   格式: (name, init_fn, gpios_fn, CONFIG)
 # ══════════════════════════════════════════════════════
 APP_DRV = [
-    ("ws2812",   init_ws2812,   gpios_ws2812,   []),
-    ("apa102",   init_apa102,   gpios_apa102,   []),
-    ("pca9685",  init_pca9685,  gpios_pca9685,  []),
-    ("led",      init_led,      gpios_led,      {}),
+#     ("ws2812",   init_ws2812,   gpios_ws2812,   []),
+#     ("apa102",   init_apa102,   gpios_apa102,   []),
+#     ("pca9685",  init_pca9685,  gpios_pca9685,  []),
+#     ("led",      init_led,      gpios_led,      {}),
     ("tft",      init_tft_boot, gpios_tft,      {
-        "driver": "ST7789T_Vernon",
+        "driver": "ST7789",
         "width": 240,
         "height": 320,
         "rotation": 0,
         "color_order": "BGR",
         "invert": False,
-        "spi_id": 2,
+        "spi_id": 1,
         "pins": {"dc": "tft_dc", "cs": "tft_cs", "rst": "tft_rst", "bl": "tft_bl"},
         "pixel_format": "RGB565_BE",
     }),
