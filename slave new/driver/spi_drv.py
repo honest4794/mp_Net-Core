@@ -9,8 +9,8 @@ CONFIG = [
         "baudrate": 80000000,
         "phase": 0,
         "polarity": 0,
-        "GPIO": {"sck": 40},
-        "data_pins": (45,),
+        "GPIO": {"sck": 21},
+        "data_pins": (14,),
     },
 ]
 

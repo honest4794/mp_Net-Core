@@ -56,10 +56,11 @@ APP_DRV = [
         "height": 320,
         "rotation": 0,
         "color_order": "BGR",
-        "invert": False,
+        "invert": 1,
         "spi_id": 1,
         "pins": {"dc": "tft_dc", "cs": "tft_cs", "rst": "tft_rst", "bl": "tft_bl"},
         "pixel_format": "RGB565_BE",
+        "variant": 3,
     }),
 ]
 

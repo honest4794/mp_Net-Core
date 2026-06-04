@@ -8,13 +8,13 @@ TFT 顯示驅動配置層 — 支援 SPI / QSPI / I80 / RGB / I2C
 
 def config(spi, dc, cs, rst, driver="ST7789", width=240, height=320,
            rotation=0, color_order="RGB", invert=False,
-           pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+           pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None,
+           variant=None):
     """工廠函式 — 明確傳入 SPI / pin 物件"""
-    from lib.TFT import ST7789, ST7789T_Vernon, ST7735, ST7796, GC9A01, GC9D01, ILI9341, NV3030B
+    from lib.TFT import ST7789, ST7735, ST7796, GC9A01, GC9D01, ILI9341, NV3030B
 
     driver_map = {
         "ST7789":        ST7789,
-        "ST7789T_Vernon": ST7789T_Vernon,
         "ST7735":        ST7735,
         "GC9A01":        GC9A01,
         "GC9D01":        GC9D01,
@@ -36,6 +36,10 @@ def config(spi, dc, cs, rst, driver="ST7789", width=240, height=320,
     if driver_cls is None:
         raise ValueError("Unsupported TFT driver: {}".format(driver))
 
+    kwargs = {}
+    if variant is not None:
+        kwargs["variant"] = variant
+
     lcd = driver_cls(
         spi=spi,
         dc=dc,
@@ -48,10 +52,9 @@ def config(spi, dc, cs, rst, driver="ST7789", width=240, height=320,
         invert=invert,
         pixel_format=pixel_format,
         bytes_per_pixel=bytes_per_pixel,
+        adapter=adapter,
+        **kwargs,
     )
-
-    if adapter is not None:
-        lcd._bus = adapter
 
     return lcd
 

@@ -1,18 +1,5 @@
 """
 pin_drv.py — GPIO 腳位管理
-ESP32-S3-Touch-LCD-2.8
-
-已由其他 driver 佔用的腳位不收錄在此:
-  spi_drv:  40, 45
-  i2c_drv:  1, 3 (Touch), 10, 11 (Sensors)
-  sd_drv:   14, 16, 17, 21
-  i2s_drv:  38, 47, 48
-
-正式使用 (控制腳):
-  tft_cs=42, tft_dc=41, tft_rst=39, tft_bl=5
-  touch_rst=2, touch_int=4
-  pwr_in=6, pwr_ctrl=7
-  bat_adc=8
 
 餘下全部可用 GPIO 都列在下方
 """
