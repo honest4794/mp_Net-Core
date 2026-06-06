@@ -3,9 +3,8 @@ import time
 from lib.task import Task
 from lib.sys_bus import bus
 from lib.dp_buffer_service import HDR_OUT, ensure_dp_buffer_service, unpack_out_header_into
-from lib.buffer_hub import DmaBounceBuf
 
-_SPI_TX_BUF_SIZE = 32 * 1024
+_SEND_CHUNK = 32 * 1024  # 每筆 DMA 傳輸最大 32KB
 
 
 class DisplayTask(Task):
@@ -15,16 +14,21 @@ class DisplayTask(Task):
         super().on_start()
         self._buf = ensure_dp_buffer_service(bus)
         self._lcd = None
+        self._bus = None  # lcd._bus adapter 引用
+        self._dma = False  # 是否有 DMA 支援
 
         lcd = bus.get_service("lcd")
         if lcd is None:
             lcd = bus.get_service("tft")
         self._lcd = lcd
         if self._lcd is not None:
-            print("🖥 [DisplayTask] LCD {} {}x{} ready".format(
+            self._bus = getattr(self._lcd, "_bus", None)
+            self._dma = self._bus is not None and hasattr(self._bus, "write_data_async")
+            print("🖥 [DisplayTask] LCD {} {}x{} ready (DMA={})".format(
                 bus.shared.get("tft_driver", "?"),
                 bus.shared.get("tft_width", 240),
-                bus.shared.get("tft_height", 320)))
+                bus.shared.get("tft_height", 320),
+                self._dma))
 
         try:
             from lib.dp_manager_service import configure_from_dp_config, load_dp_config
@@ -37,14 +41,13 @@ class DisplayTask(Task):
             configure_for_layout(bus, layout, pixel_format=pixel_format, num_buffers=frame_bufs)
         except Exception as e:
             print("⚠️ [DisplayTask] Pipeline init failed:", e)
+
         self._out_hdr = [0] * 9
         self._last_x = -1
         self._last_y = -1
         self._last_w = -1
         self._last_h = -1
         self._last_write_ms = 0
-
-        self._spi_tx = DmaBounceBuf(_SPI_TX_BUF_SIZE)
 
         self._fps_window_t0 = 0
         self._fps_window_count = 0
@@ -58,7 +61,34 @@ class DisplayTask(Task):
         if lcd is None:
             lcd = bus.get_service("tft")
         self._lcd = lcd
+        if self._lcd is not None:
+            self._bus = getattr(self._lcd, "_bus", None)
+            self._dma = self._bus is not None and hasattr(self._bus, "write_data_async")
         return lcd
+
+    def _send_pixels(self, data):
+        """以 async DMA 非同步寫入 pixel data
+
+        利用 lcd_bus 的 async write_data_async → wait → flush 模式，
+        支援 SPI DMA / QSPI / I80 等介面。
+        """
+        bus_obj = self._bus
+        mv = memoryview(data) if isinstance(data, (bytearray, bytes)) else data
+        off, rem = 0, len(mv)
+        last_tid = None
+
+        while rem > 0:
+            n = min(rem, _SEND_CHUNK)
+            tid = bus_obj.write_data_async(mv[off:off + n])
+            if tid is not None:
+                last_tid = tid
+            off += n
+            rem -= n
+
+        # 等待最後一筆完成 = 所有前面依序完成的保證
+        if last_tid is not None:
+            bus_obj.wait(last_tid)
+        bus_obj.flush()
 
     def _tick_fps(self):
         self._fps_window_count += 1
@@ -110,7 +140,7 @@ class DisplayTask(Task):
                 return
 
         lcd = self._resolve_lcd()
-        if lcd is None:
+        if lcd is None or self._bus is None:
             return
 
         self._buf = bus.get_service("dp_buffer") or self._buf
@@ -130,13 +160,6 @@ class DisplayTask(Task):
         if rv is None:
             return
 
-        if bus.shared.get("spi_busy"):
-            try:
-                hub.release_read()
-            except Exception:
-                pass
-            return
-
         try:
             unpack_out_header_into(rv, self._out_hdr)
             payload_len = int(self._out_hdr[0])
@@ -146,34 +169,29 @@ class DisplayTask(Task):
             y = int(self._out_hdr[4])
             w = int(self._out_hdr[5])
             h = int(self._out_hdr[6])
-            payload = rv[HDR_OUT : HDR_OUT + payload_len]
+            payload = rv[HDR_OUT: HDR_OUT + payload_len]
 
             bus.shared["spi_busy"] = True
             try:
                 if x != self._last_x or y != self._last_y or w != self._last_w or h != self._last_h:
-                    try:
-                        lcd.set_window(x, y, x + w - 1, y + h - 1)
-                    except Exception:
-                        try:
-                            lcd.set_window(x, y)
-                        except Exception:
-                            pass
+                    lcd.set_window(x, y, x + w - 1, y + h - 1)
                     self._last_x = x
                     self._last_y = y
                     self._last_w = w
                     self._last_h = h
 
-                tx_payload = self._spi_tx.prep_for_spi(payload, payload_len)
-                lcd.write_data(tx_payload)
+                # ── 新 API：async DMA write ──
+                self._send_pixels(payload)
+
             finally:
                 bus.shared["spi_busy"] = False
 
             self._last_write_ms = time.ticks_ms()
-
             self._buf["last_ms"] = time.ticks_ms()
             self._buf["last_err"] = ""
             self.success += 1
             self._tick_fps()
+
         except Exception as e:
             try:
                 bus.shared["spi_busy"] = False
@@ -185,12 +203,9 @@ class DisplayTask(Task):
             except Exception:
                 pass
             self._lcd = None
+            self._bus = None
         finally:
             try:
                 hub.release_read()
             except Exception:
                 pass
-
-    def on_stop(self):
-        super().on_stop()
-        self._spi_tx.close()

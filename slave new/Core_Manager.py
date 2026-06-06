@@ -72,6 +72,30 @@ def launcher():
     tm.register_task("web_ui",  WebUITask,   default_affinity=(1, 0), layer=0)
     tm.register_task("fs_scan", FsScanTask,  default_affinity=(0, 1), layer=0)
 
+    # ── Layer 1: JPEG 播放器 ──
+    from tasks.jpeg_player_task import JpegPlayerTask
+    tm.register_task("jpeg_player", JpegPlayerTask, default_affinity=(0, 1), layer=1)
+
+    # ══════════════════════════════════════════════════════
+    # 臨時播放參數（之後會移到 config.json）
+    # ══════════════════════════════════════════════════════
+    bus_sys["player_width"]  = 240
+    bus_sys["player_height"] = 240
+    bus_sys["player_pixel_format"] = "RGB565_LE"
+    bus.shared["jpeg_loop"] = True
+    bus.shared["jpeg_player"] = {
+        "playing": True,
+        "paused":  False,
+        "frame":   0,
+        "total":   0,
+        "source":  "",
+        "err":     "",
+        "pace_ms": 33,
+    }
+    bus.shared["jpeg_source_req"] = {
+        "source": "/jpeg/background",
+    }
+
     tm.finalize()
 
     try:
