@@ -1,6 +1,7 @@
 {
     "scan_ignore": ["/sd"],
     "System": {
+        "dual_core_mode": "taskmanager",
         "c_lum": 1.0,
         "hostname": "",
         "refresh_rate_ms": 1,
