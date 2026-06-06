@@ -160,21 +160,24 @@ class TFT:
         self._bus.set_window(x0, y0, x1, y1)
 
     def show(self, data, x=0, y=0, w=None, h=None):
-        """顯示 pixel data (chunked async, 無額外分配)"""
+        """顯示 pixel data — 堵塞模式 (set_window → 寫入 → flush)
+        不區分總線類型: 各 adapter 的 set_window 已處理 CASET/PASET/RAMWR 差異
+        """
         if w is None: w = self.width
         if h is None: h = self.height
         self.set_window(x, y, x + w - 1, y + h - 1)
-        mv = memoryview(data) if isinstance(data, (bytearray, bytes)) else data
-        off, rem = 0, len(mv)
-        cs = 8192
-        while rem > 0:
-            n = min(rem, cs)
-            self._bus.write_data_async(mv[off:off + n])
-            rem -= n; off += n
+        self._bus.write_data_async(data)
         self._bus.flush()
     def show_frame(self, data):
         """Send pixel data (window must be set already)"""
         self._bus.write_frame(data)
+
+    def show_async(self, data, x=0, y=0, w=None, h=None):
+        """DMA 異步顯示 — queue 全幀後立即返回, caller 需自行呼叫 flush()"""
+        if w is None: w = self.width
+        if h is None: h = self.height
+        self.set_window(x, y, x + w - 1, y + h - 1)
+        self._bus.write_data_async(data)
 
     def set_rotation(self, rotation):
         """
