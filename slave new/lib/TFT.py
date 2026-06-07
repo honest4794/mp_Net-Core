@@ -87,7 +87,8 @@ class VideoStreamReader:
 # ====== 通用TFT驅動類 ======
 class TFT:
     def __init__(self, spi=None, dc=None, cs=None, rst=None, width=240, height=320,
-                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None, variant=0):
+                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None, variant=0,
+                 chunk_size=0):
         if adapter is not None:
             self._bus = adapter
             self.spi = getattr(adapter, '_spi', None)
@@ -116,7 +117,14 @@ class TFT:
         self._color_order = "RGB"
         self._inverted = False
         self._variant = variant
-        self.write_chunk = 0
+
+        # ── Chunked Display 狀態 ──
+        self.chunk_size = int(chunk_size)          # 每次傳輸塊位元組數 (0=不分塊)
+        self._chunk_total = 0                      # 當前幀總塊數
+        self._chunk_done = 0                       # 已傳輸塊數
+        if self.chunk_size > 0:
+            ppc = max(1, self.chunk_size // self.bytes_per_pixel)
+            self._chunk_total = (self.width * self.height + ppc - 1) // ppc
 
         self._bus.reset()
         _sleep_ms(100)
@@ -178,6 +186,80 @@ class TFT:
         if h is None: h = self.height
         self.set_window(x, y, x + w - 1, y + h - 1)
         self._bus.write_data_async(data)
+
+    # ══════════════════════════════════════════════════════════════
+    #  Classic Write Session API — begin_write / write_pixels / end_write
+    #  (中斷 write_pixels / 非中斷 write_pixels_nonblock)
+    # ══════════════════════════════════════════════════════════════
+
+    def begin_write(self, x=0, y=0, w=None, h=None):
+        """寫入會話開始 — set_window + 重置塊計數。
+
+        類似 Adafruit beginWrite() / TFT_eSPI startWrite()。
+        由 adapter 處理 CASET/PASET/RAMWR 的螢幕差異。
+        """
+        if w is None: w = self.width
+        if h is None: h = self.height
+        self.set_window(x, y, x + w - 1, y + h - 1)
+        self._chunk_done = 0
+        total_pixels = w * h
+        if self.chunk_size > 0:
+            ppc = max(1, self.chunk_size // self.bytes_per_pixel)
+            self._chunk_total = (total_pixels + ppc - 1) // ppc
+        else:
+            self._chunk_total = 1  # 不分塊 → 單塊
+
+    def write_pixels(self, data):
+        """中斷寫入 — 將像素資料送入總線，等待傳輸完成後返回。
+
+        類似 TFT_eSPI pushPixels() / Adafruit writePixels(block=True)。
+        在 DMA 和非 DMA 總線上都可靠阻塞。
+        """
+        self._bus.write_data_async(data)
+        self._bus.flush()
+        self._chunk_done += 1
+
+    def write_pixels_nonblock(self, data):
+        """非中斷 DMA 寫入 — 嘗試將數據塊排入 DMA 隊列。
+
+        返回:
+            True  — 排隊成功，可立即準備下一塊數據
+            False — DMA 隊列已滿，需要重試同一塊數據
+
+        非 DMA 總線上永遠返回 True（write_data_async 同步完成）。
+        """
+        handle = self._bus.write_data_async(data)
+        if handle is not None:
+            self._chunk_done += 1
+            return True
+        return False
+
+    def end_write(self):
+        """寫入會話結束 — flush 剩餘 DMA 數據。
+
+        類似 Adafruit endWrite() / TFT_eSPI endWrite()。
+        """
+        self._bus.flush()
+
+    @property
+    def chunk_total(self):
+        """當前幀總塊數（begin_write 後才有效）"""
+        return self._chunk_total
+
+    @property
+    def chunk_done(self):
+        """已成功傳輸的塊數"""
+        return self._chunk_done
+
+    @property
+    def remaining(self):
+        """剩餘未傳輸的塊數"""
+        return max(0, self._chunk_total - self._chunk_done)
+
+    @property
+    def busy(self):
+        """DMA 是否仍在傳輸中（還有塊未完成）"""
+        return self._chunk_done < self._chunk_total
 
     def set_rotation(self, rotation):
         """
