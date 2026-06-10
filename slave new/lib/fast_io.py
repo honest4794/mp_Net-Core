@@ -197,6 +197,19 @@ class Storage:
         self._r_byte += n_bytes
         return n_bytes
 
+    def seek(self, offset):
+        """設定讀取位置 (會對齊 sector 邊界)"""
+        if not self._r_open: return
+        max_byte = self._r_cnt * self._ss
+        if offset < 0: offset = 0
+        if offset > max_byte: offset = max_byte
+        self._r_byte = (offset // self._ss) * self._ss
+
+    def tell(self):
+        """回傳目前讀取位置 (byte offset)"""
+        if not self._r_open: return 0
+        return self._r_byte
+
     def read_end(self):
         self._r_open = False; self._r_file = None
 
