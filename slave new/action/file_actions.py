@@ -6,8 +6,9 @@ from lib.fs_manager import fs
 import _thread
 
 def on_file_begin(ctx, args):
-    if args.get("path",False):
-        args['path'] = bus.get_service("data_Phat") + args['path']
+    if args.get("path", False):
+        # 統一前綴：永遠落在 /sd (無卡時 /sd 在 flash 上)
+        args['path'] = fs.resolve(args['path'])[1]
 
     ok = fs.begin_write(args)
     if ok: print(f"📂 [File] Start -> {fs.session['path']} (Atomic)")
@@ -82,7 +83,10 @@ def on_file_end(ctx, args):
 def on_file_query(ctx, args):
     app = ctx["app"]
     path = args.get("path")
-    
+    if path:
+        # 與寫入端一致：manifest 鍵為 /sd 完整路徑
+        path = fs.resolve(path)[1]
+
     exists = 0
     sha = b'\x00' * 32
     size = 0
@@ -129,14 +133,19 @@ def on_file_read(ctx, args):
     offset = args.get("offset", 0)
     length = args.get("length", 1024)
     full_path = path
-    
+
     if path:
-        full_path = bus.get_service("data_Phat") + path
+        full_path = fs.resolve(path)[1]
 
     try:
-        with open(full_path, "rb") as f:
+        f = fs.open_read(full_path)
+        if f is None:
+            raise OSError("not found: " + str(full_path))
+        try:
             f.seek(offset)
             data = f.read(length)
+        finally:
+            f.close()
             
         if "send" in ctx:
             rsp_def = app.store.get(0x2002)
@@ -164,14 +173,12 @@ def on_file_delete(ctx, args):
     path = args.get("path")
     
     if not path: return
-    
-    full_path = bus.get_service("data_Phat") + path
-    
-    # 使用 FS Manager 刪除
-    fs.delete_file(full_path)
-    
+
+    # 統一刪除：依前綴路由，同步更新 alloc / manifest table
+    fs.remove(path)
+
     # 操作後查詢狀態並回傳
-    on_file_query(ctx, {"path": path})
+    on_file_query(ctx, {"path": fs.resolve(path)[1]})
 
 def on_file_scan(ctx, args):
     """

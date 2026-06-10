@@ -1,20 +1,54 @@
 # Core1.py
-# Worker/Engine 模式 — Core 1 Engine 迴圈
+# Worker/Engine（極速）模式 — Core 1 渲染引擎核
 #
-# 對應 mp4_testkit new/Core1_engine.py 的 task_loop()
-# 職責：從 io_hub 讀 JPEG → 解碼（block / fullframe）→
-#       DMA 寫 LCD 或寫 block_hub / frame_hub
+# 核心理念：簡單、快速、專注播放（極速模式）。
+# 職責：統一播放引擎 — 透過 media_source 播放三種模式：
+#   - folder : 資料夾多 JPEG（整幀解碼）
+#   - jpk    : JPK1 打包檔（整幀解碼）
+#   - bin    : 定長 raw 像素（免解碼直接 DMA）
+# 讀取 bus.shared['jpeg_player']（play/pause）與 ['jpeg_source_req']（切源），
+# 由 Core0 指令線路寫入。
 #
-# 由 main.py 在 worker_engine 模式下以 _thread 啟動 engine_start()
+# 由 main.py 在 worker_engine 模式下以 _thread 啟動 engine_start()。
 
 from lib.sys_bus import bus
+from lib.log_service import get_log
+from tasks.jpeg_player_task import JpegPlayerTask
 
 
 def engine_start():
-    """Core 1 入口 — Engine 主迴圈（在獨立 thread 執行）
+    """Core 1 入口 — 極速渲染引擎主迴圈（在獨立 thread 執行）"""
+    log = get_log()
+    log.info("⚡ [Core1] Worker/Engine Mode — render engine")
 
-    TODO: 移植 mp4_testkit new/Core1_engine.py task_loop() 的完整邏輯
-          包括 JPEG decode (block/fullframe)、jpeg_cache 快取、
-          DMA 寫 LCD、block_hub 輸出等。
-    """
-    pass
+    # 等待 Core0 初始化播放器共享狀態（避免啟動競態）
+    import time
+    waited = 0
+    while "jpeg_player" not in bus.shared and waited < 3000:
+        time.sleep_ms(10)
+        waited += 10
+
+    st_LED = bus.get_service("st_LED")
+    ctx = {"app": None, "st_LED": st_LED, "bus": bus}
+
+    player = JpegPlayerTask("jpeg_player", ctx)
+    try:
+        player.on_start()
+    except Exception as e:
+        log.error("[Core1] player on_start failed: {}".format(e))
+        return
+
+    log.info("⚡ [Core1] Render engine online")
+
+    try:
+        while bus.shared.get("engine_run", True):
+            try:
+                player.loop()
+            except Exception as e:
+                log.error("[Core1] player loop err: {}".format(e))
+    finally:
+        try:
+            player.on_stop()
+        except Exception:
+            pass
+        print("[Core1]🛑 Render engine stopped.")

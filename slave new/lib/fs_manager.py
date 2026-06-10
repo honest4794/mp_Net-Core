@@ -22,6 +22,13 @@ class FileSystemManager:
         self._scan_files = []
         self._scan_manifest = {}
         self._scan_idx = 0
+
+        # === 統一資料層 (RAM / SD-raw / FAT 自動降級) ===
+        # RAM cache：路徑前綴 /ram 的暫存區 (斷電消失，最快)
+        self._ram = {}
+        # SD-raw 後端 (lib.fast_io.Storage)，延遲初始化；失敗則永久停用
+        self._raw = None
+        self._raw_tried = False
         
         # Session State for File Upload
         self.session = {
@@ -265,6 +272,207 @@ class FileSystemManager:
             try: os.remove(temp_path)
             except: pass
             return False, str(e)
+
+    # ==================== Unified Data Layer ====================
+    # 路徑前綴決定目的地：
+    #   /ram/...  -> RAM cache (暫存，最快)
+    #   /sd/...   -> 永久保存，走降級鏈 (SD-raw -> FAT)
+    #   其他/相對路徑 -> 預設補 /sd
+    # 寫入一律更新對應 table：SD-raw 更新 alloc.json，FAT 更新 manifest.json
+
+    def resolve(self, path):
+        """正規化路徑前綴。回傳 (kind, full_path, raw_name)
+        kind: 'ram' | 'sd'
+        full_path: FAT 用的完整路徑 (/ram/... 或 /sd/...)
+        raw_name : SD-raw alloc 用的鍵名 (去掉 /sd 前綴)
+        """
+        p = str(path)
+        if not p.startswith("/"):
+            p = "/" + p
+        if p == "/ram" or p.startswith("/ram/"):
+            return ("ram", p, p[len("/ram"):].lstrip("/"))
+        if p == "/sd" or p.startswith("/sd/"):
+            return ("sd", p, p[len("/sd"):].lstrip("/"))
+        # 預設視為永久保存區
+        return ("sd", "/sd" + p, p.lstrip("/"))
+
+    def _get_raw(self):
+        """延遲初始化 SD-raw 後端 (fast_io.Storage)。失敗則永久停用 (回 None)。"""
+        if self._raw_tried:
+            return self._raw
+        self._raw_tried = True
+        try:
+            from lib.sys_bus import bus
+            if bus.get_service("sd_raw") is None:
+                self._raw = None
+                return None
+            from lib.fast_io import Storage
+            self._raw = Storage()
+            print("✅ [FS] SD-raw backend ready")
+        except Exception as e:
+            print("⚠️ [FS] SD-raw unavailable, fallback to FAT:", e)
+            self._raw = None
+        return self._raw
+
+    def _ensure_parent(self, full_path):
+        parent = "/".join(full_path.split("/")[:-1])
+        if not parent:
+            return
+        curr = ""
+        for part in parent.split("/"):
+            if not part:
+                continue
+            curr += "/" + part
+            try:
+                os.stat(curr)
+            except Exception:
+                try:
+                    os.mkdir(curr)
+                except Exception:
+                    pass
+
+    def write(self, path, data):
+        """統一寫入：依前綴路由 + 降級鏈，並更新對應 table。
+        回傳 True/False。
+        """
+        kind, full, raw_name = self.resolve(path)
+
+        # /ram -> RAM cache (table = self._ram dict)
+        if kind == "ram":
+            self._ram[full] = bytes(data)
+            return True
+
+        # /sd -> 降級鏈：1) SD-raw  2) FAT
+        raw = self._get_raw()
+        if raw is not None and raw_name:
+            try:
+                raw.write_file(raw_name, data)  # 內部 write_begin/write_end 已更新 alloc.json
+                return True
+            except Exception as e:
+                print("⚠️ [FS] SD-raw write failed, fallback FAT:", e)
+
+        # FAT 落地 (原子寫入 + 更新 manifest)
+        try:
+            self._ensure_parent(full)
+            tmp = full + ".tmp"
+            h = hashlib.sha256()
+            size = 0
+            mv = memoryview(data)
+            with open(tmp, "wb") as f:
+                f.write(mv)
+            size = len(mv)
+            h.update(mv)
+            try:
+                os.stat(full)
+                os.remove(full)
+            except Exception:
+                pass
+            os.rename(tmp, full)
+            self.update_manifest_entry(full, size, ubinascii.hexlify(h.digest()).decode())
+            return True
+        except Exception as e:
+            print("❌ [FS] FAT write failed:", e)
+            try:
+                os.remove(full + ".tmp")
+            except Exception:
+                pass
+            return False
+
+    def read(self, path):
+        """統一讀取：依前綴路由 + 降級鏈。回傳 bytes 或 None。"""
+        kind, full, raw_name = self.resolve(path)
+
+        if kind == "ram":
+            return self._ram.get(full)
+
+        # /sd -> 1) SD-raw  2) FAT
+        raw = self._get_raw()
+        if raw is not None and raw_name:
+            try:
+                return bytes(raw.read_all(raw_name))
+            except Exception:
+                pass  # 降級到 FAT
+        try:
+            with open(full, "rb") as f:
+                return f.read()
+        except Exception:
+            return None
+
+    def open_read(self, path):
+        """回傳可讀的 file-like 物件 (FAT) 供串流讀取；RAM 則回 BytesIO。
+        SD-raw 大檔串流請改用 lib.fast_io.StreamReader。
+        失敗回 None。
+        """
+        kind, full, raw_name = self.resolve(path)
+        if kind == "ram":
+            data = self._ram.get(full)
+            if data is None:
+                return None
+            import io
+            return io.BytesIO(data)
+        try:
+            return open(full, "rb")
+        except Exception:
+            return None
+
+    def exists(self, path):
+        kind, full, raw_name = self.resolve(path)
+        if kind == "ram":
+            return full in self._ram
+        raw = self._get_raw()
+        if raw is not None and raw_name:
+            try:
+                if raw._alloc.find(raw_name) is not None:
+                    return True
+            except Exception:
+                pass
+        try:
+            os.stat(full)
+            return True
+        except Exception:
+            return False
+
+    def list(self, folder="/sd"):
+        kind, full, raw_name = self.resolve(folder)
+        if kind == "ram":
+            prefix = full.rstrip("/") + "/"
+            return [k for k in self._ram if k.startswith(prefix) or k == full]
+        try:
+            return [full.rstrip("/") + "/" + n for n in os.listdir(full)]
+        except Exception:
+            return []
+
+    def list_jpegs(self, folder="/sd"):
+        from lib.media_source import list_jpegs as _lj
+        kind, full, raw_name = self.resolve(folder)
+        if kind == "ram":
+            names = [k for k in self._ram
+                     if k.lower().endswith(".jpg") or k.lower().endswith(".jpeg")]
+            names.sort()
+            return names
+        try:
+            return _lj(full)
+        except Exception:
+            return []
+
+    def remove(self, path):
+        """統一刪除：RAM / SD-raw / FAT 各自更新 table。"""
+        kind, full, raw_name = self.resolve(path)
+        if kind == "ram":
+            self._ram.pop(full, None)
+            return True
+        ok = False
+        raw = self._get_raw()
+        if raw is not None and raw_name:
+            try:
+                if raw._alloc.find(raw_name) is not None:
+                    raw.remove(raw_name)
+                    ok = True
+            except Exception:
+                pass
+        if self.delete_file(full):
+            ok = True
+        return ok
 
     # ==================== Other Operations ====================
 

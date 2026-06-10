@@ -82,3 +82,15 @@ for name, init_fn, _, cfg in APP_DRV:
 
 # ── Network (需排在最末) ──
 init_network()
+
+# ── 統一資料層 (fs)：永遠確保 /sd 存在 + 註冊成 service "data" ──
+import os as _os
+try:
+    _os.stat("/sd")
+except Exception:
+    try:
+        _os.mkdir("/sd")
+    except Exception:
+        pass
+from lib.fs_manager import fs
+bus.register_service("data", fs)

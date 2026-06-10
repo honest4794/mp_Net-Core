@@ -29,16 +29,8 @@ class JpegPlayerTask(Task):
         self._bpp = 2            # bytes per pixel (RGB565)
         self._w = 0
         self._h = 0
-        self._block_h = 0
-        self._block_size = 0
-        self._total_blocks = 0
-        self._current_block = 0
-        self._img_data = None    # 當前幀的 JPEG raw data
-        self._pending_data = None# 下一幀已讀取但未載入（pause 時暫存）
-        self._pending_tid = None # 前一個 block 的 DMA trans_id
-        self._pack = None        # PackSource
-        self._paths = []         # 檔案列表（folder 模式）
-        self._idx = 0
+        self._pending_tid = None # DMA trans_id
+        self._source = None      # 統一媒體來源（folder/jpk/bin）
         self._total_frames = 0
         self._frame = 0
 
@@ -97,6 +89,7 @@ class JpegPlayerTask(Task):
             "frame": 0,
             "total": 0,
             "source": "",
+            "fps": 0,
             "err": "",
         }
 
@@ -117,126 +110,73 @@ class JpegPlayerTask(Task):
             pass
         return bytearray(size)
 
-    # ── 來源管理 ──────────────────────────────────────
-
-    def _load_source_pack(self, path):
-        """載入 pack 檔做為播放來源"""
-        try:
-            from lib.pack_source import PackSource
-            self._pack = PackSource(path, loop=True)
-            self._paths = []
-            self._total_frames = int(self._pack.count)
-            bus.shared["jpeg_player"]["total"] = self._total_frames
-            bus.shared["jpeg_player"]["source"] = path
-            get_log().info("📦 [JpegPlayer] Pack: {} ({} frames)".format(path, self._total_frames))
-            return True
-        except Exception as e:
-            bus.shared["jpeg_player"]["err"] = str(e)
-            return False
-
-    def _load_source_folder(self, folder):
-        """載入 JPEG 檔案資料夾做為播放來源"""
-        try:
-            from lib.media_source import list_jpegs
-            pths = list_jpegs(folder)
-            if not pths:
-                bus.shared["jpeg_player"]["err"] = "no jpegs"
-                return False
-            self._pack = None
-            self._paths = pths
-            self._total_frames = len(pths)
-            bus.shared["jpeg_player"]["total"] = self._total_frames
-            bus.shared["jpeg_player"]["source"] = folder
-            get_log().info("📁 [JpegPlayer] Folder: {} ({} files)".format(folder, self._total_frames))
-            return True
-        except Exception as e:
-            bus.shared["jpeg_player"]["err"] = str(e)
-            return False
+    # ── 來源管理（統一 media_source）──────────────────
 
     def _apply_source_req(self, req):
-        """處理 mp4_source_req 來源切換請求"""
+        """處理來源切換請求，建立統一 MediaSource（folder/jpk/bin 自動判斷）"""
         source = str(req.get("source", "") or "").strip()
         if not source:
             return
-        if source.endswith(".jpk") or source.endswith(".pack"):
-            self._load_source_pack(source)
-        else:
-            self._load_source_folder(source)
-
-    def _read_next_frame(self):
-        """讀取下一幀的 JPEG raw data"""
-        if self._pack is not None:
-            frame_idx, n, _dt = self._pack.read_next_into(self._read_buf, self._max_jpeg)
-            if frame_idx is None:
-                return None
-            self._frame = int(frame_idx or 0)
-            return self._read_buf[:n]
-
-        if self._paths:
-            if self._idx >= len(self._paths):
-                if not bus.shared.get("jpeg_loop", True):
-                    return None
-                self._idx = 0
-            path = self._paths[self._idx]
+        # 關閉舊來源
+        if self._source is not None:
             try:
-                with open(path, "rb") as f:
-                    data = f.read()
-                self._frame = self._idx
-                self._idx += 1
-                return data
+                self._source.close()
             except Exception:
-                self._idx += 1
-                return None
-
-        return None
-
-    def _alloc_read_buf(self, size):
-        self._max_jpeg = int(size or 65536)
+                pass
+            self._source = None
         try:
-            import heap_caps
-            buf = heap_caps.malloc(self._max_jpeg, heap_caps.CAP_SPIRAM)
-            if buf is not None:
-                self._read_buf = buf
-                return
-        except Exception:
-            pass
-        self._read_buf = bytearray(self._max_jpeg)
+            from lib import media_source
+            loop = bool(bus.shared.get("jpeg_loop", True))
+            # bin 模式參數（可由請求覆寫，預設用 player 尺寸）
+            self._source = media_source.open_source(
+                source,
+                decoder=self._decoder,
+                bpp=self._bpp,
+                loop=loop,
+                frame_size=req.get("frame_size"),
+                width=int(req.get("width", self._w) or self._w),
+                height=int(req.get("height", self._h) or self._h),
+                max_jpeg=req.get("max_jpeg"),
+            )
+            self._total_frames = int(self._source.count)
+            bus.shared["jpeg_player"]["total"] = self._total_frames
+            bus.shared["jpeg_player"]["source"] = source
+            # 起始幀（seek）：bin 隨機存取，其他來源忽略
+            start = int(req.get("start_frame", 0) or 0)
+            if start > 0 and hasattr(self._source, "read_frame_into"):
+                try:
+                    self._source.read_frame_into(self._fb, start)
+                    self._frame = start
+                    bus.shared["jpeg_player"]["frame"] = start
+                except Exception:
+                    pass
+            kind = "bin" if self._source.is_raw else "jpeg"
+            get_log().info("🎬 [JpegPlayer] {} source: {} ({} frames)".format(
+                kind, source, self._total_frames))
+        except Exception as e:
+            bus.shared["jpeg_player"]["err"] = str(e)
+            self._source = None
 
-    def _load_first_frame(self):
-        """載入第一幀，初始化解碼資訊"""
-        self._alloc_read_buf(65536)
-        data = self._read_next_frame()
-        if data is None:
+    def _fill_next_frame(self):
+        """把下一幀填入 fb（jpeg 整幀解碼 / bin 直接拷貝）。成功回 True。"""
+        if self._source is None:
             return False
-        return self._load_frame(data)
-
-    def _load_frame(self, data):
-        """載入一幀 JPEG data 到解碼器"""
         try:
-            info = self._decoder.get_img_info(data)
-            w, h = info[0], info[1]
-            if len(info) >= 4:
-                self._total_blocks = int(info[2])
-                self._block_h = int(info[3])
-            else:
-                self._total_blocks = 1
-                self._block_h = h
-            self._block_size = w * self._block_h * self._bpp
-            self._img_data = data
-            self._current_block = 0
-            self._pending_tid = None
-            bus.shared["jpeg_player"]["frame"] = self._frame
-            return True
+            idx, n = self._source.read_into(self._fb)
         except Exception as e:
             bus.shared["jpeg_player"]["err"] = str(e)
             return False
+        if idx is None or not n:
+            return False
+        self._frame = int(idx)
+        bus.shared["jpeg_player"]["frame"] = self._frame
+        return True
 
     # ── DMA 寫入 ──────────────────────────────────────
 
-    def _dma_fire(self, chunk):
-        """async DMA：fire 一個 block 的 pixel data，回傳最後的 trans_id"""
+    def _dma_fire(self, mv):
+        """async DMA：分段送整幀 pixel data，回傳最後的 trans_id"""
         bus_obj = self._bus
-        mv = memoryview(chunk) if isinstance(chunk, (bytearray, bytes)) else chunk
         off, rem = 0, len(mv)
         last_tid = None
         while rem > 0:
@@ -260,7 +200,9 @@ class JpegPlayerTask(Task):
         req = bus.shared.pop("jpeg_source_req", None)
         if req is not None:
             self._apply_source_req(req)
-            self._load_first_frame()
+
+        if self._source is None:
+            return
 
         # ── pace_ms 節奏控制 ──
         pace_ms = int(bus.shared.get("jpeg_player", {}).get("pace_ms", 0) or 0)
@@ -269,93 +211,46 @@ class JpegPlayerTask(Task):
             if time.ticks_diff(now, self._last_frame_ms) < pace_ms:
                 return
 
-        # ── 播放控制（只在幀邊界生效）──
+        # ── 播放控制（幀邊界生效）──
         player = bus.shared.get("jpeg_player", {})
         if not player.get("playing", True):
             return
-
-        # 初次載入或從暫停恢復
-        if self._img_data is None:
-            if self._pending_data is not None:
-                # 暫停時讀好的下一幀，直接載入
-                if self._load_frame(self._pending_data):
-                    self._pending_data = None
-                else:
-                    return
-            else:
-                if not self._load_first_frame():
-                    return
-
-        # ── Decode 一個 block ──
-        try:
-            done = self._decoder.decode_into(self._img_data, self._fb, blocks=1)
-        except Exception as e:
-            bus.shared["jpeg_player"]["err"] = str(e)
-            # 嘗試換下一幀
-            self._img_data = None
+        if player.get("paused", False):
             return
 
-        # ── 寫入 LCD ──
-        y0 = self._current_block * self._block_h
+        # ── 取下一幀填入 fb（jpeg 整幀解碼 / bin 直接拷貝）──
+        if not self._fill_next_frame():
+            bus.shared["jpeg_player"]["playing"] = False
+            return
 
-        # 先設 window（LCD 命令，阻塞但資料量極小）
-        self.lcd.set_window(0, y0, self._w - 1, y0 + self._block_h - 1)
+        # ── 整幀寫入 LCD ──
+        self.lcd.set_window(0, 0, self._w - 1, self._h - 1)
+        mv = memoryview(self._fb)[:self._fb_size]
 
-        # 準備 chunk
-        block_start = y0 * self._w * self._bpp
-        block_len = self._block_h * self._w * self._bpp
-        chunk = memoryview(self._fb)[block_start:block_start + block_len]
-
-        # 等上一 block 的 DMA 完成（防止覆蓋）
         if self._pending_tid is not None:
             self._bus.wait(self._pending_tid)
+        self._pending_tid = self._dma_fire(mv)
+        if self._pending_tid is not None:
+            self._bus.wait(self._pending_tid)
+            self._pending_tid = None
+        self._bus.flush()
 
-        # Fire DMA
-        self._pending_tid = self._dma_fire(chunk)
-
-        self._current_block += 1
-
-        # ── 整幀完成（幀邊界，在此檢查暫停/停止）──
-        if done or self._current_block >= self._total_blocks:
-            # 等最後的 DMA
-            if self._pending_tid is not None:
-                self._bus.wait(self._pending_tid)
-                self._pending_tid = None
-            self._bus.flush()
-
-            # 統計
-            self._fps_count += 1
-            now = time.ticks_ms()
-            if self._fps_t0 == 0:
+        # ── 統計 ──
+        self._fps_count += 1
+        now = time.ticks_ms()
+        if self._fps_t0 == 0:
+            self._fps_t0 = now
+            self._frame_t0 = now
+        else:
+            dt = time.ticks_diff(now, self._fps_t0)
+            if dt >= 1000:
+                fps = self._fps_count * 1000 // dt
+                bus.shared["jpeg_player"]["fps"] = fps
+                self._lw_ex(0, self._fps_count)
                 self._fps_t0 = now
-                self._frame_t0 = now
-            else:
-                dt = time.ticks_diff(now, self._fps_t0)
-                if dt >= 1000:
-                    self._lw_ex(0, self._fps_count)
-                    self._fps_t0 = now
-                    self._fps_count = 0
+                self._fps_count = 0
 
-            self._last_frame_ms = time.ticks_ms()
-
-            # 先在幀邊界檢查暫停（不跳過幀）
-            player = bus.shared.get("jpeg_player", {})
-            if player.get("paused", False):
-                # 停在當前幀，讀取下一幀但不載入
-                data = self._read_next_frame()
-                if data is not None:
-                    self._pending_data = data
-                self._img_data = None
-                return
-
-            # 載入下一幀
-            data = self._read_next_frame()
-            if data is None:
-                bus.shared["jpeg_player"]["playing"] = False
-                self._img_data = None
-                bus.shared["jpeg_player"]["frame"] = self._frame
-            else:
-                self._load_frame(data)
+        self._last_frame_ms = time.ticks_ms()
 
     def on_stop(self):
         super().on_stop()
@@ -366,16 +261,9 @@ class JpegPlayerTask(Task):
             except Exception:
                 pass
             self._fb = None
-        if self._read_buf is not None:
+        if self._source is not None:
             try:
-                import heap_caps
-                heap_caps.free(self._read_buf)
+                self._source.close()
             except Exception:
                 pass
-            self._read_buf = None
-        if self._pack is not None:
-            try:
-                self._pack.close()
-            except Exception:
-                pass
-            self._pack = None
+            self._source = None
