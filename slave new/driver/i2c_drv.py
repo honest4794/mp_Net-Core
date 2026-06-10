@@ -1,19 +1,19 @@
 from machine import Pin, I2C
 from lib.sys_bus import bus
 
-# ESP32-S3-Touch-LCD-2.8
-# I2C0 — Sensors: QMI8658 (IMU, 0x6B), PCF85063 (RTC, 0x51)
-# I2C1 — Touch:   CST328 (0x1A)
+# ESP32-S3 N16R8 V1.0
+# I2C0 — XL9555 IO Expander (SDA=2, SCL=1)
+# I2C1 — GT1151Q Touch (SDA=41, SCL=40)
 CONFIG = [
     {
         "id": 0,
         "freq": 400000,
-        "GPIO": {"scl": 10, "sda": 11},
+        "GPIO": {"scl": 1, "sda": 2},
     },
     {
         "id": 1,
         "freq": 400000,
-        "GPIO": {"scl": 3, "sda": 1},
+        "GPIO": {"scl": 40, "sda": 41},
     },
 ]
 

@@ -86,7 +86,6 @@ class SpiBusAdapter(BusAdapter):
                 return None
         if self._dma:
             self._dc.value(1)
-            # 等 queue 空出至少一個插槽
             while self._spi.pending() >= 4:
                 self._spi.wait_all()
             try:
@@ -140,21 +139,18 @@ class SpiBusAdapter(BusAdapter):
 
     def set_window(self, x0, y0, x1, y1):
         if self._qspi:
-            # CASET — CS HIGH between commands (RM67162 requires framing)
             self._cs.value(0)
             self._spi.write(
                 bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]),
                 cmd=0x02, addr=0x2A << 8)
             self._spi.wait_all()
             self._cs.value(1)
-            # RASET
             self._cs.value(0)
             self._spi.write(
                 bytes([y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF]),
                 cmd=0x02, addr=0x2B << 8)
             self._spi.wait_all()
             self._cs.value(1)
-            # RAMWR — CS stays low for subsequent pixel data
             self._cs.value(0)
             self._spi.write(b'', cmd=0x32, addr=0x002C00, multiline=False)
             self._spi.wait_all()
@@ -169,13 +165,8 @@ class SpiBusAdapter(BusAdapter):
             super().set_window(x0, y0, x1, y1)
 
     def reset(self):
-        if self._rst is None:
-            return
-        self._rst.value(0)
-        import time
-        time.sleep_ms(50)
-        self._rst.value(1)
-        time.sleep_ms(50)
+        # I80 bus C level handles DC/CS; no external RST pin needed
+        pass
 
 
 class I2cBusAdapter(BusAdapter):
@@ -207,14 +198,6 @@ class I2cBusAdapter(BusAdapter):
         self._i2c.writeto(self._addr, buf)
         return True
 
-    def flush(self):
-        if self._dma:
-            self._i2c.wait_all()
-
-    def wait(self, handle):
-        if self._dma and handle is not None:
-            self._i2c.wait(handle)
-
     def reset(self):
         if self._rst is None:
             return
@@ -226,83 +209,59 @@ class I2cBusAdapter(BusAdapter):
 
 
 class I80BusAdapter(BusAdapter):
-    def __init__(self, bus, dcx=None, rst=None):
+    def __init__(self, bus, dc=None, cs=None, rst=None):
         self._bus = bus
-        self._dcx = dcx
+        self._spi = None  # 統一 API：SPI/I2C/I80 都有 _spi
+        self._dc = dc
+        self._cs = cs
         self._rst = rst
-        self._dma = hasattr(bus, 'wait') and hasattr(bus, 'pending')
 
     def write_cmd(self, cmd):
-        if self._dcx:
-            self._dcx.value(0)
-        if self._dma:
-            self._bus.write(bytearray([cmd]))
-            self._bus.wait_all()
-        else:
-            self._bus.write(bytearray([cmd]))
+        self._bus.wait_all()
+        self._bus.write(cmd=cmd)
 
     def write_cmd_data(self, cmd, data=None):
-        if self._dcx:
-            self._dcx.value(0)
-        if self._dma:
-            self._bus.write(bytearray([cmd]))
-            self._bus.wait_all()
-        else:
-            self._bus.write(bytearray([cmd]))
+        self._bus.wait_all()
         if data:
-            if self._dcx:
-                self._dcx.value(1)
-            self._bus.write(data)
-            if self._dma:
-                self._bus.wait_all()
+            self._bus.write(buf=data, cmd=cmd)
+        else:
+            self._bus.write(cmd=cmd)
+        self._bus.wait_all()
 
     def write_data_async(self, data):
-        if self._dcx:
-            self._dcx.value(1)
-        if self._dma:
-            try:
-                return self._bus.write(data)
-            except RuntimeError:
-                return None
-        self._bus.write(data)
-        return True
+        while self._bus.pending() >= 4:
+            self._bus.wait_all()
+        try:
+            return self._bus.write(buf=data)
+        except RuntimeError:
+            return None
 
     def set_window(self, x0, y0, x1, y1):
-        if self._dcx:
-            self._dcx.value(0)
-        w0 = bytearray([0x2A])
-        w1 = bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF])
-        w2 = bytearray([0x2B])
-        w3 = bytes([y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF])
-        w4 = bytearray([0x2C])
-        if self._dma:
-            self._bus.write(w0); self._bus.wait_all()
-            if self._dcx: self._dcx.value(1)
-            self._bus.write(w1); self._bus.wait_all()
-            if self._dcx: self._dcx.value(0)
-            self._bus.write(w2); self._bus.wait_all()
-            if self._dcx: self._dcx.value(1)
-            self._bus.write(w3); self._bus.wait_all()
-            if self._dcx: self._dcx.value(0)
-            self._bus.write(w4); self._bus.wait_all()
-        else:
-            self._bus.write(w0)
-            if self._dcx: self._dcx.value(1)
-            self._bus.write(w1)
-            if self._dcx: self._dcx.value(0)
-            self._bus.write(w2)
-            if self._dcx: self._dcx.value(1)
-            self._bus.write(w3)
-            if self._dcx: self._dcx.value(0)
-            self._bus.write(w4)
+        self._bus.wait_all()
+        self._bus.write(cmd=0x2A)
+        self._bus.write(buf=bytearray([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
+        self._bus.write(cmd=0x2B)
+        self._bus.write(buf=bytearray([y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF]))
+        self._bus.write(cmd=0x2C)
+        self._bus.wait_all()
 
     def flush(self):
-        if self._dma:
-            self._bus.wait_all()
+        self._bus.wait_all()
 
     def wait(self, handle):
-        if self._dma and handle is not None:
-            self._bus.wait(handle)
+        self._bus.wait(handle)
+
+    def write_frame(self, data):
+        # I80: DMA 非同步寫，含 backpressure
+        mv = memoryview(data)
+        off, rem = 0, len(mv)
+        while rem > 0:
+            while self._bus.pending() >= 4:
+                self._bus.wait_all()
+            n = min(rem, 32768)
+            self._bus.write(buf=mv[off:off + n])
+            rem -= n; off += n
+        self._bus.wait_all()
 
     def reset(self):
         if self._rst is None:
@@ -327,7 +286,7 @@ class RgbBusAdapter(BusAdapter):
     def write_data_async(self, data):
         if self._dma:
             try:
-                return self._bus.write(data)
+                return self._bus.write(buf=data)
             except RuntimeError:
                 return None
         self._bus.write(data)

@@ -1,16 +1,15 @@
 from machine import Pin, SPI
 from lib.sys_bus import bus
 
-# ESP32-S3-Touch-LCD-2.8
-# ST7789 via lcd_bus: data=(45,), clk=40, host=1
+# ESP32-S3 N16R8 V1.0 — TF Card SPI
+# SCK=47, MOSI=21, MISO=48
 CONFIG = [
     {
-        "id": 2,
-        "baudrate": 80000000,
+        "id": 1,
+        "baudrate": 20000000,
         "phase": 0,
         "polarity": 0,
-        "GPIO": {"sck": 40},
-        "data_pins": (45,),
+        "GPIO": {"sck": 47, "mosi": 21, "miso": 48},
     },
 ]
 
@@ -22,9 +21,7 @@ except ImportError:
 
 
 def _make_machine_spi(item, gpio, data):
-    """fallback — 用 machine.SPI 建單線 SPI bus, 先嘗試釋放舊佔用"""
     sid = item["id"]
-    # soft reset 後 SPI host 可能殘留, 嘗試 deinit
     try:
         old = SPI(sid)
         old.deinit()
@@ -35,7 +32,7 @@ def _make_machine_spi(item, gpio, data):
     miso = gpio.get("miso")
     return SPI(
         sid,
-        baudrate=item.get("baudrate", 80000000),
+        baudrate=item.get("baudrate", 20000000),
         polarity=item.get("polarity", 0),
         phase=item.get("phase", 0),
         sck=Pin(sck) if sck is not None else None,
@@ -50,22 +47,17 @@ def config():
     for item in CONFIG:
         gpio = item.get("GPIO", {})
         data = item.get("data_pins")
+        is_qspi = data is not None and len(data) > 1
 
-        if _LCD_BUS:
-            if data is not None:
-                d = data
-            else:
-                mosi = gpio.get("mosi")
-                d = (mosi,) if mosi is not None else None
+        if _LCD_BUS and is_qspi:
             try:
                 spi = lcd_bus.SPIBus(
-                    data=d, clk=gpio["sck"],
-                    freq=item.get("baudrate", 80000000),
+                    data=data, clk=gpio["sck"],
+                    freq=item.get("baudrate", 20000000),
                     host=item["id"],
                 )
             except Exception as e:
                 print("[spi_drv] SPI{} lcd_bus fail: {} → machine.SPI".format(item["id"], e))
-                # 嘗試釋放 lcd_bus 可能殘留的佔用
                 if 'spi' in locals():
                     try: spi.deinit()
                     except: pass
@@ -78,6 +70,11 @@ def config():
 
     bus.register_service("spi_list", spi_list)
     bus.register_service("spi_by_id", spi_by_id)
+    # 統一 lcd_bus 池
+    lst = bus.get_service("lcd_bus") or []
+    for s in spi_list:
+        lst.append(s)
+    bus.register_service("lcd_bus", lst)
     return spi_list, spi_by_id
 
 

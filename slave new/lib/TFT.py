@@ -276,8 +276,8 @@ class TFT:
 
 
 class ST7735(TFT):
-    def __init__(self, spi, dc, cs, rst, width, height, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+    def __init__(self, spi, dc, cs, rst, width, height, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel, adapter=adapter)
         self._rotation = rotation
         self._color_order = color_order.upper()
         self._inverted = invert
@@ -349,8 +349,8 @@ class ST7735(TFT):
 
 
 class ST7789(TFT):
-    def __init__(self, spi, dc, cs, rst, width, height, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+    def __init__(self, spi, dc, cs, rst, width, height, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel, adapter=adapter)
         self._rotation = rotation
         self._color_order = color_order.upper()
         self._inverted = invert
@@ -449,8 +449,8 @@ class ST7789T3(ST7789):
 
 class ST7789T_Vernon(ST7789):
     """Vernon ST7789T 面板專用驅動 (ESP32-S3-Touch-LCD-2.8)"""
-    def __init__(self, spi, dc, cs, rst, width=240, height=320, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, rotation, color_order, invert, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+    def __init__(self, spi, dc, cs, rst, width=240, height=320, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi, dc, cs, rst, width, height, rotation, color_order, invert, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel, adapter=adapter)
 
     def init(self):
         _sleep_ms(10)
@@ -478,8 +478,8 @@ class ST7789T_Vernon(ST7789):
 
 class ST7796(TFT):
     """ST7796 320x480 驅動 (ESP32-S3 N16R8)"""
-    def __init__(self, spi, dc, cs, rst, width=480, height=320, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+    def __init__(self, spi, dc, cs, rst, width=480, height=320, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel, adapter=adapter)
         self._rotation = rotation
         self._color_order = color_order.upper()
         self._inverted = invert
@@ -542,8 +542,8 @@ class ST7796(TFT):
         self.write_cmd(self._get_inversion_cmd())
 
 class GC9A01(TFT):
-    def __init__(self, spi, dc, cs, rst, width, height, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+    def __init__(self, spi, dc, cs, rst, width, height, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel, adapter=adapter)
         self._rotation = rotation
         self._color_order = color_order.upper()
         self._inverted = invert
@@ -644,8 +644,8 @@ class GC9A01(TFT):
 
 
 class ILI9341(TFT):
-    def __init__(self, spi, dc, cs, rst, width=240, height=320, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+    def __init__(self, spi, dc, cs, rst, width=240, height=320, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel, adapter=adapter)
         self._rotation = rotation
         self._color_order = color_order.upper()
         self._inverted = invert
@@ -731,8 +731,8 @@ class ILI9341(TFT):
         
         
 class GC9D01(TFT):
-    def __init__(self, spi, dc, cs, rst, width=240, height=240, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+    def __init__(self, spi, dc, cs, rst, width=240, height=240, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel, adapter=adapter)
         self._rotation = rotation
         self._color_order = color_order.upper()
         self._inverted = invert
@@ -904,8 +904,8 @@ class GC9D01(TFT):
 
 
 class NV3030B(TFT):
-    def __init__(self, spi, dc, cs, rst, width, height, rotation=0, color_order="BGR", invert=True, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+    def __init__(self, spi, dc, cs, rst, width, height, rotation=0, color_order="BGR", invert=True, pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel, adapter=adapter)
         self._rotation = rotation
         self._color_order = color_order.upper()
         self._inverted = invert

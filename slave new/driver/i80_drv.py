@@ -2,12 +2,15 @@
 i80_drv.py — 8080 並口總線管理
 ESP32-S3 N16R8 V1.0 — ST7796, 16-bit I80
 """
+from machine import Pin
 from lib.sys_bus import bus
 
-# DB0-DB15, WR=45, CS=39, freq=10MHz
+# DB0-DB15, WR=45, DC=38, CS=39, freq=10MHz
+# 腳位對應: 參閱 ESP32-S3 N16R8 V1.0 用戶手冊 表 1.1
 CONFIG = {
     "data": (13, 12, 11, 10, 9, 46, 3, 8, 18, 17, 16, 15, 7, 6, 5, 4),
     "wr": 45,
+    "dc": 38,   # 必須！ GPIO 38 = LCD_RS, ESP-IDF I2S-I80 驅動強制要求 dc >= 0
     "cs": 39,
     "freq": 10000000,
 }
@@ -17,29 +20,23 @@ def config():
     import lcd_bus
     data = CONFIG["data"]
     wr = CONFIG["wr"]
+    dc = CONFIG["dc"]
     cs = CONFIG["cs"]
     freq = CONFIG["freq"]
 
-    print("[i80_drv] data pins:", data)
-    print("[i80_drv] wr={} cs={} freq={}".format(wr, cs, freq))
-    # 先清理殘留資源 (參考 lcd_bus SPI 模式)
-    try:
-        # 嘗試建立新的 I80 bus (如果先前有用, ESP-IDF 會替我們清理)
-        pass  # lcd_bus.I80Bus 內部已經有 cleanup
-    except:
-        pass
-
-    print("[i80_drv] data pins:", data)
-    print("[i80_drv] wr={} cs={} freq={}".format(wr, cs, freq))
-
-    # 建立 I80 Bus + Panel IO (一步到位, lcd_bus 內部處理 cleanup)
-    i80 = lcd_bus.I80Bus(data=data, wr=wr, cs=cs, freq=freq)
+    # 建立 I80 Bus（C 層配置 dc=38 滿足 ESP-IDF 驗證）
+    i80 = lcd_bus.I80Bus(data=data, wr=wr, dc=dc, cs=cs, freq=freq)
 
     # 統一 lcd_bus 池
     lst = bus.get_service("lcd_bus") or []
     lst.append(i80)
     bus.register_service("lcd_bus", lst)
     bus.register_service("i80_bus", i80)
+
+    # DC/CS 由 C 層 lcd_bus.I80Bus 內部管理（建構時已傳入 dc=38, cs=39）
+    # Python 層不應再建立 Pin 物件操作同一 GPIO，否則造成衝突
+
+    print("[i80_drv] I80 bus ready (dc=GPIO{}, wr=GPIO{})".format(dc, wr))
     return i80
 
 
@@ -48,6 +45,7 @@ def gpios():
     for i, d in enumerate(CONFIG["data"]):
         result[d] = "i80_d{}".format(i)
     result[CONFIG["wr"]] = "i80_wr"
+    result[CONFIG["dc"]] = "i80_dc"
     if CONFIG["cs"] >= 0:
         result[CONFIG["cs"]] = "i80_cs"
     return result

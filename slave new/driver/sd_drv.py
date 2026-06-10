@@ -3,14 +3,13 @@ import os
 from lib.sys_bus import bus
 from lib.log_service import get_log
 
-# ESP32-S3-Touch-LCD-2.8
-# SDMMC 1-bit mode: CLK=14, CMD=17, D0=16
-# D1/D2/D3 are NC (-1 in ESP-IDF config)
+# ESP32-S3 N16R8 V1.0 — TF Card SDMMC 1-bit mode
+# CLK=47, CMD=21, D0=48, width=1
 CONFIG = {
     "phat": "/sd",
     "LDO": {"id": 4, "mv": 3300},
-    "config": {"slot": 1, "width": 1, "freq": 20000000},
-    "GPIO": {"sck": 14, "cmd": 17, "data": [16]},
+    "config": {"slot": 1, "width": 1, "freq": 40000000},
+    "GPIO": {"sck": 47, "cmd": 21, "data": [48]},
 }
 
 def config():
@@ -46,12 +45,12 @@ def config():
 
 def _init_sd_spi(phat):
     sd = machine.SDCard(
-        slot=CONFIG["config"].get("slot", 2),
+        slot=CONFIG["config"]["slot"],
         sck=CONFIG["GPIO"]["sck"],
         mosi=CONFIG["GPIO"]["cmd"],
         miso=CONFIG["GPIO"]["data"][0],
-        cs=CONFIG["GPIO"]["data"][3],
-        freq=CONFIG["config"].get("freq", 20000000),
+        cs=CONFIG["GPIO"]["data"][3] if len(CONFIG["GPIO"]["data"]) > 3 else 22,
+        freq=CONFIG["config"]["freq"],
     )
     os.mount(sd, phat)
 
@@ -77,6 +76,7 @@ def _exists(path):
 
 
 def gpios():
+    # SDMMC 1-bit mode: CLK=47, CMD=21, D0=48
     result = {}
     gpio = CONFIG.get("GPIO", {})
     if gpio.get("sck") is not None:
