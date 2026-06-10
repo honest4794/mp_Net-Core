@@ -14,6 +14,10 @@ CONFIG = {
 }
 
 def config():
+    existing = bus.get_service("data_Phat")
+    if existing is not None:
+        return existing
+
     if not CONFIG:
         bus.register_service("data_Phat", "")
         return ""

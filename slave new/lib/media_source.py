@@ -54,7 +54,7 @@ def compute_max_frame_size(paths, default_bytes=240 * 240, bytes_per_pixel=2):
     max_h = 0
     for p in paths:
         try:
-            with open(p, "rb") as f:
+            with _open_read(p) as f:
                 if f.read(2) == b"\xff\xd8":
                     while True:
                         marker_data = f.read(2)
@@ -281,7 +281,7 @@ class BinSource(MediaSource):
         self.loop = bool(loop)
         self.file_size = os.stat(path)[6]
         self.count = self.file_size // self.frame_size
-        self._f = open(path, "rb")  # 保持檔案開啟避免重複開檔開銷
+        self._f = _open_read(path)  # 經 fs_manager 開檔，保持開啟
         self._idx = 0
 
     def read_into(self, fb):

@@ -39,28 +39,34 @@ def handle_supply_chain(hub, s, ctx):
     if bus.shared.get("is_seeking"):
         try:
             hub.flush()
-            if s.get("f_local"): s["f_local"].close()
-            s["f_local"] = open(bus.shared["active_file"], "rb")
-            
+            fs.end_read()    # 關閉之前的串流
+            s["fs_open"] = False
+
+            file_path = bus.shared["active_file"]
+            total_size = fs.begin_read(file_path)
+            if total_size <= 0:
+                raise RuntimeError("begin_read failed: " + file_path)
+            s["fs_open"] = True
+
             # 處理跳轉
             seek_frame = bus.shared.get("seek_frame", 0)
             if seek_frame > 0:
                 st = bus.get_service("st_LED")
                 if st:
                     offset = seek_frame * st.total_bytes
-                    s["f_local"].seek(offset)
+                    fs.seek(offset)
                     print(f"⏩ Seek to frame {seek_frame} (offset {offset})")
                 bus.shared["seek_frame"] = 0 # Reset
-            
+
             # 預填第一幀
             view = hub.get_write_view()
             if view is not None:
-                if s["f_local"].readinto(view) > 0:
+                if fs.read_into(view) > 0:
                     hub.commit()
-            
+
             bus.shared["is_seeking"] = False
             bus.shared["is_ready"] = True
-            
+
             # --- 主動回報 READY 給 PC ---
             cmd_def = ctx["app"].store.get(0x3008)
             payload = SchemaCodec.encode(cmd_def, {"block_id": bus.shared["cur_block"]})
@@ -69,16 +75,21 @@ def handle_supply_chain(hub, s, ctx):
         except Exception as e:
             print(f"❌ Load Error: {e}")
             bus.shared["is_seeking"] = False
+            fs.end_read()
+            s["fs_open"] = False
 
     # 播放規律預讀
     if bus.shared.get("is_streaming") and not bus.shared.get("is_paused"):
-        # 利用 Hub 自帶 dirty 位檢查供給
-        if not hub.dirty and s.get("f_local"):
+        if not hub.dirty and s.get("fs_open"):
             view = hub.get_write_view()
             if view is not None:
-                if s["f_local"].readinto(view) == 0:
-                    if bus.shared.get("play_mode") == 1: s["f_local"].seek(0)
-                    else: bus.shared["is_streaming"] = False
+                if fs.read_into(view) == 0:
+                    if bus.shared.get("play_mode") == 1:
+                        fs.seek(0)
+                    else:
+                        bus.shared["is_streaming"] = False
+                        fs.end_read()
+                        s["fs_open"] = False
                 else:
                     hub.commit()
 
@@ -87,6 +98,6 @@ def register(app):
     app.disp.on(0x3009, on_stream_state_set) # SET
     app.disp.on(0x300A, on_stream_play) # PLAY
     app.disp.on(0x3005, lambda c,a: bus.shared.update({"is_paused": bool(a["pause"])})) # PAUSE
-    app.disp.on(0x3002, lambda c,a: bus.shared.update({"is_streaming": False, "is_ready": False})) # STOP
+    app.disp.on(0x3002, lambda c,a: (bus.shared.update({"is_streaming": False, "is_ready": False}), fs.end_read())) # STOP
     # 0x3003 Direct Mode
     app.disp.on(0x3003, lambda c,a: bus.get_service("pixel_stream").write_from(a["pixel_data"]))

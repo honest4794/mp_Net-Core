@@ -17,11 +17,25 @@ def _u32_le(b, off):
     return b[off + 0] | (b[off + 1] << 8) | (b[off + 2] << 16) | (b[off + 3] << 24)
 
 
+def _open_fs(path):
+    """透過 fs_manager 開檔；失敗退回原生 open()"""
+    try:
+        from lib.sys_bus import bus
+        fs = bus.get_service("data")
+        if fs is not None:
+            f = fs.open_read(path)
+            if f is not None:
+                return f
+    except Exception:
+        pass
+    return open(path, "rb")
+
+
 class PackSource:
     def __init__(self, path, loop=True):
         self.path = path
         self.loop = bool(loop)
-        self._f = open(path, "rb")
+        self._f = _open_fs(path)
         hdr = self._f.read(16)
         if len(hdr) != 16 or hdr[0:4] != b"JPK1":
             raise ValueError("bad pack header")

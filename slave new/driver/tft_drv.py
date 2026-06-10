@@ -61,9 +61,16 @@ def config(spi, dc, cs, rst, driver="ST7789", width=240, height=320,
 
 def boot_config(cfg):
     """boot 模式 — 接受 cfg dict，從 bus service 解析 SPI / pin"""
-    cfg = dict(cfg)  # 複製，避免 pop 影響 boot.py 原始 dict
     from lib.sys_bus import bus
     from lib.bus_adapter import SpiBusAdapter
+
+    # 已經初始化過 → 直接返回
+    existing = bus.get_service("lcd")
+    if existing is not None:
+        print("[tft_drv] lcd already initialized, skip")
+        return existing
+
+    cfg = dict(cfg)  # 複製，避免 pop 影響 boot.py 原始 dict
 
     spi_by_id = bus.get_service("spi_by_id") or {}
     pin_by_label = bus.get_service("pin_by_label") or {}
@@ -72,6 +79,7 @@ def boot_config(cfg):
     dc  = pin_by_label.get(pins.get("dc", ""))
     cs  = pin_by_label.get(pins["cs"])
     rst = pin_by_label.get(pins["rst"])
+    bl  = pin_by_label.get(pins.get("bl", ""))
 
     missing = []
     if cs  is None: missing.append("cs={}".format(pins["cs"]))
@@ -79,13 +87,9 @@ def boot_config(cfg):
     if missing:
         raise ValueError("TFT pins not found: {}".format(", ".join(missing)))
 
-    # ⚠️ 必須先開電源，RM67162 才能接收 init 命令
-    bl = pin_by_label.get(pins.get("bl", ""))
+    # 1. 熄燈 — 避免初始化過程閃白/閃垃圾
     if bl is not None:
-        bl.value(1)
-        print("[tft_drv] power ON (GPIO={})".format(pins.get("bl", "")))
-    else:
-        print("[tft_drv] no power pin — display may not be powered")
+        bl.value(0)
 
     spi_id = cfg.pop("spi_id", 1)
     spi = spi_by_id.get(spi_id) or (list(spi_by_id.values())[0] if spi_by_id else None)
@@ -96,6 +100,7 @@ def boot_config(cfg):
     fmt = cfg.get("pixel_format", "RGB565_BE")
     bpp = 3 if fmt.startswith("RGB888") else 2
 
+    # 2. 初始化驅動 (發送 init 命令、Display On 等)
     adapter = SpiBusAdapter(spi, dc, cs, rst)
     lcd = config(spi=spi, dc=dc, cs=cs, rst=rst,
                  bytes_per_pixel=bpp, adapter=adapter, **cfg)
@@ -105,17 +110,46 @@ def boot_config(cfg):
     bus.shared["tft_height"] = cfg["height"]
     bus.shared["tft_driver"] = cfg["driver"]
 
-    # 全黑畫面 (整幀, TFT.show 含 flush, DMA queue 確保送出)
-    black = bytearray(cfg["width"] * cfg["height"] * bpp)
-    lcd.show(black)
+    # 3. 根據 565/888 注入全黑畫面 (分塊寫入, 每塊等待 DMA 完成)
+    _fill_black(lcd, cfg["width"], cfg["height"], bpp)
+
+    # 4. 亮燈
+    if bl is not None:
+        bl.value(1)
+        print("[tft_drv] BL ON (GPIO={})".format(pins.get("bl", "")))
+    else:
+        print("[tft_drv] no backlight pin — display may not be powered")
 
     return lcd
 
+def _fill_black(lcd, width, height, bpp):
+    """分塊寫入全黑畫面 — 每塊 8192 bytes, DMA wait + flush"""
+    chunk_bytes = min(8192, width * height * bpp)
+    black = bytearray(chunk_bytes)
+    mv = memoryview(black)
+    total_pixels = width * height
+    pixels_per_chunk = chunk_bytes // bpp
+
+    lcd.set_window(0, 0, width - 1, height - 1)
+    for offset in range(0, total_pixels, pixels_per_chunk):
+        n = min(pixels_per_chunk, total_pixels - offset)
+        hn = lcd._bus.write_data_async(mv[:n * bpp])
+        if hn is not None:
+            lcd._bus.wait(hn)
+    lcd._bus.flush()
+
 def boot_config_i80(cfg):
     """I80 boot 模式 — 適用 ST7796 + N16R8 (XL9555 控制 RST/背光)"""
-    cfg = dict(cfg)
     from lib.sys_bus import bus
     from lib.bus_adapter import I80BusAdapter
+
+    # 已經初始化過 → 直接返回
+    existing = bus.get_service("lcd")
+    if existing is not None:
+        print("[tft_drv] lcd already initialized, skip")
+        return existing
+
+    cfg = dict(cfg)
 
     i80 = bus.get_service("i80_bus")
     if i80 is None:
@@ -127,24 +161,28 @@ def boot_config_i80(cfg):
 
     dcx = pin_by_label.get(pins.get("dcx", ""))
 
-    # ── XL9555: LCD 復位 + 背光 (從 config 讀腳位) ──
+    # ── XL9555: 熄燈 + LCD 復位 ──
     xl_cfg = cfg.pop("xl9555", {})
     xl = bus.get_service("xl9555")
+    xl_bl_pin = None
     if xl and xl_cfg:
         rst_pin = xl_cfg.get("rst")
-        bl_pin = xl_cfg.get("bl")
+        xl_bl_pin = xl_cfg.get("bl")
         import time
+        # 1. 熄燈
+        if xl_bl_pin is not None:
+            xl.pin[xl_bl_pin].init(1); xl.pin[xl_bl_pin].value(0)
+        # RST 復位
         if rst_pin is not None:
             xl.pin[rst_pin].init(1); xl.pin[rst_pin].value(0)
             time.sleep_ms(10)
             xl.pin[rst_pin].value(1)
             time.sleep_ms(10)
-        if bl_pin is not None:
-            xl.pin[bl_pin].init(1); xl.pin[bl_pin].value(1)
-        print("[tft_drv] XL9555: rst={} bl={}".format(rst_pin, bl_pin))
+        print("[tft_drv] XL9555: rst={}".format(rst_pin))
     else:
         print("[tft_drv] XL9555 not available")
 
+    # 2. 初始化驅動
     adapter = I80BusAdapter(i80, dcx=dcx, rst=None)  # RST 由 XL9555 管理
     bpp = 3 if cfg.get("pixel_format", "").startswith("RGB888") else 2
 
@@ -156,9 +194,13 @@ def boot_config_i80(cfg):
     bus.shared["tft_height"] = cfg["height"]
     bus.shared["tft_driver"] = cfg["driver"]
 
-    # 全黑畫面
-    black = bytearray(cfg["width"] * cfg["height"] * bpp)
-    lcd.show(black)
+    # 3. 根據 565/888 注入全黑畫面 (分塊寫入, 每塊等待 DMA 完成)
+    _fill_black(lcd, cfg["width"], cfg["height"], bpp)
+
+    # 4. 亮燈
+    if xl_bl_pin is not None:
+        xl.pin[xl_bl_pin].value(1)
+        print("[tft_drv] XL9555: bl={} ON".format(xl_bl_pin))
 
     return lcd
 

@@ -11,6 +11,10 @@ I2C_ADDR = 0x5D  # 嘗試 0x5D, 若失敗自動掃描
 
 
 def config(_cfg=None):
+    existing = bus.get_service("touch")
+    if existing is not None:
+        return existing
+
     i2c_by_id = bus.get_service("i2c_by_id") or {}
     i2c = i2c_by_id.get(I2C_BUS)
     if i2c is None:

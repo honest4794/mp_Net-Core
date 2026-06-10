@@ -10,12 +10,12 @@ def on_file_begin(ctx, args):
         # 統一前綴：永遠落在 /sd (無卡時 /sd 在 flash 上)
         args['path'] = fs.resolve(args['path'])[1]
 
-    ok = fs.begin_write(args)
+    ok = fs.proto_begin_write(args)
     if ok: print(f"📂 [File] Start -> {fs.session['path']} (Atomic)")
 
 def on_file_chunk(ctx, args):
     app = ctx["app"]
-    if fs.write_chunk(args):
+    if fs.proto_write_chunk(args):
         # 🚀 關鍵：每收到一包就回傳 ACK
         # 讓 PC 知道可以發下一包了
         if "send" in ctx:
@@ -32,7 +32,7 @@ def on_file_chunk(ctx, args):
 def on_file_end(ctx, args):
     app = ctx["app"]
     # 執行校驗 (內部會調用 fs.atomic_write_finalize)
-    ok = fs.end_write(args)
+    ok = fs.proto_end_write(args)
     
     path = fs.session["path"]
     sha = fs.session["last_sha_hex"]

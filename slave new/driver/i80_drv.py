@@ -14,6 +14,10 @@ CONFIG = {
 
 
 def config():
+    existing = bus.get_service("i80_bus")
+    if existing is not None:
+        return existing
+
     import lcd_bus
     data = CONFIG["data"]
     wr = CONFIG["wr"]

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""fs_manager 互動式讀取速度測試
+"""fs_manager 互動式讀寫測速
 
-列出 SD 卡上的所有檔案，選擇後透過 fs_manager 讀取、seek、測速。
+列出 SD 卡上的所有檔案，選擇後透過 fs_manager 讀取/寫入並測速。
 
 用法:
   import test_fs_manager
@@ -47,7 +47,7 @@ def _scan_files(fs):
     except Exception:
         pass
 
-    # ── SD-raw 檔案 (透過 fs._raw 直接列，不另建 Storage) ──
+    # ── SD-raw 檔案 ──
     try:
         if fs._raw_mode and fs._raw is not None:
             raw_files = fs._raw.list_files()
@@ -104,17 +104,15 @@ def _stream_read(fs, path, file_size):
 def _demo_seek(fs, path, file_size):
     """示範 seek / tell 後讀取一小段資料"""
     if file_size < 2048:
-        return  # 檔案太小，跳過
+        return
 
     size = fs.begin_read(path)
     if size <= 0:
         return
 
-    # seek 到檔案中段
     mid = file_size // 2
     fs.seek(mid)
     pos = fs.tell()
-
     buf = bytearray(64)
     n = fs.read_into(buf)
     fs.end_read()
@@ -124,14 +122,47 @@ def _demo_seek(fs, path, file_size):
             _fmt_bytes(mid), pos, n, buf[:min(n, 24)].hex()))
 
 
+def _stream_write(fs, path, total_bytes):
+    """透過 fs_manager 串流寫入，附進度"""
+    ok = fs.begin_write(path, total_bytes)
+    if not ok:
+        print("  ❌ fs.begin_write 失敗")
+        return 0, 0
+
+    buf = bytearray(16384)
+    gc.collect()
+    t0 = time.ticks_ms()
+    written = 0
+    next_progress = PROGRESS_EVERY_BYTES
+    while written < total_bytes:
+        n = min(len(buf), total_bytes - written)
+        fs.write(buf[:n])
+        written += n
+        if written >= next_progress:
+            elapsed = time.ticks_diff(time.ticks_ms(), t0)
+            if elapsed > 0:
+                pct = written * 100 // total_bytes
+                print("  ... {:.0f}%  ({})  {:.1f} MB/s".format(
+                    pct, _fmt_bytes(written), _mb_s(written, elapsed)))
+            next_progress += PROGRESS_EVERY_BYTES
+            if next_progress % (8 * PROGRESS_EVERY_BYTES) == 0:
+                gc.collect()
+
+    elapsed = time.ticks_diff(time.ticks_ms(), t0)
+    ok = fs.end_write()
+    if not ok:
+        print("  ❌ end_write 失敗 (SHA256 不符或寫入錯誤)")
+        return written, elapsed
+    return written, elapsed
+
+
 def run():
     print("\n" + "=" * 58)
-    print("  fs_manager 互動式讀取測速")
+    print("  fs_manager 互動式讀寫測速")
     print("=" * 58)
 
     from lib.fs_manager import fs
 
-    # 顯示目前模式
     print("  模式:", "⚡ SD-raw (高速)" if fs._raw_mode else "📂 FAT")
 
     sd = bus.get_service("sd_raw")
@@ -155,16 +186,60 @@ def run():
 
     while True:
         try:
-            sel = input("\n選擇檔案編號 (q=離開, s=seek示範): ").strip()
+            sel = input("\n選擇 (n=編號讀取, w=寫入測速, q=離開): ").strip()
         except (EOFError, KeyboardInterrupt):
             break
+
         if sel.lower() in ("q", "quit", "exit", ""):
             break
 
+        # ── 寫入測速 ──
+        if sel.lower() == "w":
+            try:
+                size_mb = input("  寫入大小 (MB, 預設 4): ").strip()
+                size_mb = int(size_mb) if size_mb else 4
+            except (ValueError, EOFError):
+                size_mb = 4
+            if size_mb <= 0 or size_mb > 256:
+                print("  範圍 1-256 MB")
+                continue
+
+            total_bytes = size_mb * 1024 * 1024
+            wpath = "/sd/_fs_write_test.bin"
+            print("\n  寫入: {}  ({})".format(wpath, _fmt_bytes(total_bytes)))
+
+            written, elapsed = _stream_write(fs, wpath, total_bytes)
+            if written == 0:
+                continue
+
+            speed = _mb_s(written, elapsed)
+            bar = "  ████████" if speed >= 4 else "  ████" if speed >= 1 else ""
+            print("  ✅ {}  |  {} ms  |  {:.2f} MB/s{}  [via {}]".format(
+                _fmt_bytes(written), elapsed, speed, bar,
+                "RAW" if fs._raw_mode else "FAT"))
+
+            # 清理
+            gc.collect()
+            try:
+                fs.remove(wpath)
+            except Exception:
+                pass
+            # 刷新檔案列表
+            files = _scan_files(fs)
+            files.sort(key=lambda x: x[2], reverse=True)
+            print("\n  {:>4s}  {:>28s}  {:>10s}  {}".format("#", "name", "size", "layer"))
+            print("  " + "-" * 56)
+            for i, (label, path, size, kind) in enumerate(files):
+                name = label[6:]
+                print("  {:>4d}  {:>28s}  {:>10s}  {}".format(i + 1, name[:28], _fmt_bytes(size), label[:5]))
+            print("  " + "-" * 56)
+            continue
+
+        # ── 讀取測速 ──
         try:
             idx = int(sel) - 1
         except ValueError:
-            print("  請輸入數字")
+            print("  請輸入數字 或 w/q")
             continue
 
         if idx < 0 or idx >= len(files):
@@ -175,7 +250,6 @@ def run():
 
         print("\n  讀取: {}  ({})  [{}]".format(path, _fmt_bytes(size_bytes), kind))
 
-        # 全程走 fs_manager 串流讀取
         total, elapsed = _stream_read(fs, path, size_bytes)
 
         if total == 0:
@@ -196,7 +270,6 @@ def run():
         print("  ✅ {}  |  {} ms  |  {:.2f} MB/s{}  [via {}]".format(
             _fmt_bytes(total), elapsed, speed, bar, kind.upper()))
 
-        # seek / tell 示範
         if size_bytes >= 2048:
             gc.collect()
             _demo_seek(fs, path, size_bytes)

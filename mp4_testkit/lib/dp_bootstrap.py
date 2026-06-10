@@ -23,6 +23,11 @@ def load_dp_config(path="/dp_config.json"):
 
 
 def init_lcd(dp_config_path="/dp_config.json"):
+    existing = bus.get_service("lcd")
+    if existing is not None:
+        print("[DPBoot] lcd already initialized, skip")
+        return existing
+
     cfg = load_dp_config(dp_config_path)
 
     tft_cfg = cfg.get("tft")

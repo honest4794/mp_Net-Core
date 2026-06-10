@@ -10,6 +10,10 @@ CONFIG = [
 
 
 def config():
+    existing = bus.get_service("i2c_by_id")
+    if existing is not None:
+        return list(existing.values())
+
     i2c_list = []
     i2c_by_id = {}
     for item in CONFIG:

@@ -28,6 +28,10 @@ CONFIG = [
 
 
 def config(_cfg=None):
+    existing = bus.get_service("xl9555")
+    if existing is not None:
+        return existing
+
     i2c_by_id = bus.get_service("i2c_by_id") or {}
     i2c = i2c_by_id.get(0)
     if i2c is None:

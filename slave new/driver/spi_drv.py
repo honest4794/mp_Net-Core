@@ -45,6 +45,10 @@ def _make_machine_spi(item, gpio, data):
 
 
 def config():
+    existing = bus.get_service("spi_by_id")
+    if existing is not None:
+        return list(existing.values()), existing
+
     spi_list = []
     spi_by_id = {}
     for item in CONFIG:

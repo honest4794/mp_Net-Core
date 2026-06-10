@@ -61,6 +61,9 @@ class FileSystemManager:
         # 串流讀取狀態
         self._str_kind = None
 
+        # 串流寫入狀態
+        self._w_kind = None
+
         self.load_manifest()
 
     def load_manifest(self):
@@ -145,8 +148,10 @@ class FileSystemManager:
                 pass
         self.session["fp"] = None
 
-    def begin_write(self, args: dict) -> bool:
-        """FILE_BEGIN (0x2001)"""
+    def proto_begin_write(self, args: dict) -> bool:
+        """FILE_BEGIN (0x2001) — 檔案傳輸協議"""
+        # 先結束正在進行的串流寫入
+        self._end_write()
         self._close_session()
         
         # Reset Session
@@ -194,7 +199,7 @@ class FileSystemManager:
             self.session["last_error"] = f"OPEN_FAIL: {e}"
             return False
 
-    def write_chunk(self, args: dict) -> bool:
+    def proto_write_chunk(self, args: dict) -> bool:
         """FILE_CHUNK (0x2002)"""
         if not self.session["active"] or not self.session["fp"]:
             self.session["last_error"] = "NO_ACTIVE_SESSION"
@@ -220,8 +225,8 @@ class FileSystemManager:
             self.session["active"] = False
             return False
 
-    def end_write(self, args: dict) -> bool:
-        """FILE_END (0x2003) -> Finalize"""
+    def proto_end_write(self, args: dict) -> bool:
+        """FILE_END (0x2003)"""
         if not self.session["active"]:
             return False
             
@@ -295,16 +300,17 @@ class FileSystemManager:
     # 路徑前綴決定目的地：
     #   /ram/...  -> RAM cache (暫存，最快)
     #   /sd/...   -> SD 永久儲存 (依 _raw_mode 決定走 raw 或 FAT)
-    #   其他/相對路徑 -> 預設補 /sd
+    #   其他路徑     -> 直接 FAT (flash 根目錄等，不補 /sd 前綴)
     #
-    # raw 模式 (alloc.json 存在)：讀寫直接走 fast_io.Storage
-    # FAT 模式 (alloc.json 不存在)：讀寫走 os.open/readinto
+    # raw 模式 (alloc.json 存在)：/sd 路徑讀寫走 fast_io.Storage
+    # FAT 模式 (alloc.json 不存在)：/sd 路徑讀寫走 os.open/readinto
 
     def resolve(self, path):
         """正規化路徑前綴。回傳 (kind, full_path, raw_name)
-        kind: 'ram' | 'sd'
-        full_path: FAT 用的完整路徑 (/ram/... 或 /sd/...)
-        raw_name : SD-raw alloc 用的鍵名 (去掉 /sd 前綴)
+        kind: 'ram' | 'sd' | 'fat'
+          ram — /ram/...  dict 緩存
+          sd  — /sd/...   依 _raw_mode 走 raw 或 FAT
+          fat — 其他路徑    直接走 FAT (flash 根目錄等)
         """
         p = str(path)
         if not p.startswith("/"):
@@ -313,7 +319,8 @@ class FileSystemManager:
             return ("ram", p, p[len("/ram"):].lstrip("/"))
         if p == "/sd" or p.startswith("/sd/"):
             return ("sd", p, p[len("/sd"):].lstrip("/"))
-        return ("sd", "/sd" + p, p.lstrip("/"))
+        # 其他絕對路徑 (如 /manifest.json, /config.json) → 直接 FAT
+        return ("fat", p, "")
 
     def _ensure_parent(self, full_path):
         parent = "/".join(full_path.split("/")[:-1])
@@ -332,22 +339,37 @@ class FileSystemManager:
                 except Exception:
                     pass
 
-    def write(self, path, data):
-        """統一寫入：依路由 + 模式寫入，回傳 True/False。"""
+    def write_file(self, path, data, sha256=None):
+        """一次性寫入整個檔案 (便捷方法)。
+        sha256: 可選的 SHA256 hex 字串，寫入後自動驗證。回傳 True/False。
+        """
         kind, full, raw_name = self.resolve(path)
 
         if kind == "ram":
             self._ram[full] = bytes(data)
+            if sha256:
+                got = ubinascii.hexlify(hashlib.sha256(data).digest()).decode()
+                if got != sha256:
+                    print("❌ [FS] SHA256 mismatch in RAM write")
+                    self._ram.pop(full, None)
+                    return False
             return True
 
-        if self._raw_mode and self._raw is not None and raw_name:
+        # 只有 /sd 路徑且 raw 模式才走 fast_io
+        if kind == "sd" and self._raw_mode and self._raw is not None:
             try:
                 self._raw.write_file(raw_name, data)
+                if sha256:
+                    got = ubinascii.hexlify(hashlib.sha256(data).digest()).decode()
+                    if got != sha256:
+                        print("❌ [FS] SHA256 mismatch in raw write_file")
+                        self._raw.remove(raw_name)
+                        return False
                 return True
             except Exception as e:
-                print("⚠️ [FS] raw write failed:", e)
+                print("⚠️ [FS] raw write_file failed:", e)
 
-        # FAT 落地
+        # FAT 落地 (sd FAT 模式 / 其他非 ram 路徑)
         try:
             self._ensure_parent(full)
             tmp = full + ".tmp"
@@ -357,13 +379,19 @@ class FileSystemManager:
                 f.write(mv)
             size = len(mv)
             h.update(mv)
+            sha = ubinascii.hexlify(h.digest()).decode()
+
+            if sha256 and sha != sha256:
+                print("❌ [FS] SHA256 mismatch in FAT write_file")
+                os.remove(tmp)
+                return False
             try:
                 os.stat(full)
                 os.remove(full)
             except Exception:
                 pass
             os.rename(tmp, full)
-            self.update_manifest_entry(full, size, ubinascii.hexlify(h.digest()).decode())
+            self.update_manifest_entry(full, size, sha)
             return True
         except Exception as e:
             print("❌ [FS] FAT write failed:", e)
@@ -380,7 +408,8 @@ class FileSystemManager:
         if kind == "ram":
             return self._ram.get(full)
 
-        if self._raw_mode and self._raw is not None and raw_name:
+        # 只有 /sd 路徑且 raw 模式才走 fast_io
+        if kind == "sd" and self._raw_mode and self._raw is not None:
             try:
                 return bytes(self._raw.read_all(raw_name))
             except Exception:
@@ -410,7 +439,8 @@ class FileSystemManager:
             self._str_pos = 0
             return len(data)
 
-        if self._raw_mode and self._raw is not None and raw_name:
+        # 只有 /sd 路徑且 raw 模式才走 fast_io
+        if kind == "sd" and self._raw_mode and self._raw is not None:
             try:
                 size = self._raw.read_begin(raw_name)
                 self._str_kind = "raw"
@@ -418,6 +448,7 @@ class FileSystemManager:
             except Exception:
                 pass
 
+        # FAT (sd FAT 模式 / 其他路徑)
         try:
             f = open(full, "rb")
             self._str_kind = "fat"
@@ -507,11 +538,185 @@ class FileSystemManager:
         except Exception:
             return None
 
+    # ════════════════════════════════════════════════════════
+    #  串流寫入 API (begin_write / write / end_write)
+    #  語法與讀取對稱：begin_read↔begin_write, read_into↔write, end_read↔end_write
+    # ════════════════════════════════════════════════════════
+
+    def begin_write(self, path, total_bytes, sha256=None):
+        """開始串流寫入。total_bytes 必填 (raw 模式需預分配 sector)。
+        sha256: 可選的 SHA256 hex 字串，end_write() 時自動驗證。
+        路由: RAM → dict / SD-raw → fast_io / 其他 → FAT atomic
+        """
+        self._end_write()
+        total_bytes = int(total_bytes)
+        if total_bytes <= 0:
+            return False
+
+        self._w_sha256 = sha256
+        self._w_hasher = hashlib.sha256() if sha256 else None
+
+        kind, full, raw_name = self.resolve(path)
+
+        if kind == "ram":
+            try:
+                self._w_buf = bytearray(total_bytes)
+            except MemoryError:
+                return False
+            self._w_kind = "ram"
+            self._w_path = full
+            self._w_pos = 0
+            self._w_total = total_bytes
+            return True
+
+        if kind == "sd" and self._raw_mode and self._raw is not None:
+            try:
+                self._raw.write_begin(raw_name, total_bytes)
+                self._w_kind = "raw"
+                self._w_path = full
+                self._w_total = total_bytes
+                return True
+            except Exception as e:
+                print("⚠️ [FS] raw begin_write failed:", e)
+
+        try:
+            self._ensure_parent(full)
+            self._w_kind = "fat"
+            self._w_path = full
+            self._w_tmp = full + ".tmp"
+            self._w_fp = open(self._w_tmp, "wb")
+            self._w_total = total_bytes
+            self._w_written = 0
+            return True
+        except Exception as e:
+            print("❌ [FS] begin_write failed:", e)
+            return False
+
+    def write(self, data):
+        """寫入一塊資料 (串流模式)。回傳寫入位元組數。"""
+        k = self._w_kind
+        if k is None:
+            return 0
+        # 累積 SHA256 (若 begin_write 有提供)
+        if self._w_hasher:
+            self._w_hasher.update(data)
+        if k == "ram":
+            n = min(len(data), self._w_total - self._w_pos)
+            if n <= 0:
+                return 0
+            self._w_buf[self._w_pos:self._w_pos + n] = data[:n]
+            self._w_pos += n
+            return n
+        if k == "raw":
+            return self._raw.write(data)
+        if k == "fat":
+            n = self._w_fp.write(data)
+            self._w_written += n
+            return n
+        return 0
+
+    def end_write(self):
+        """結束串流寫入。raw 更新 alloc.json + CRC，FAT atomic rename + SHA。
+        若 begin_write 有提供 sha256，會在此驗證 (所有模式)。
+        回傳 True/False 表示成功與否。
+        """
+        k = self._w_kind
+        sha_expected = self._w_sha256
+        sha_got = None
+        ok = False
+
+        # ── SHA256 驗證 (若提供) ──
+        if sha_expected and self._w_hasher:
+            sha_got = ubinascii.hexlify(self._w_hasher.digest()).decode()
+            if sha_got != sha_expected:
+                print("❌ [FS] SHA256 mismatch! expected={} got={}".format(
+                    sha_expected[:12], sha_got[:12]))
+                self._abort_write()
+                self._w_kind = None
+                return False
+            print("🔒 [FS] SHA256 verified: {}".format(sha_got[:12]))
+
+        if k == "ram":
+            self._ram[self._w_path] = bytes(self._w_buf[:self._w_pos])
+            print("✅ [FS] RAM written: {} ({} bytes)".format(self._w_path, self._w_pos))
+            ok = True
+        elif k == "raw":
+            self._raw.write_end()
+            print("✅ [FS] RAW written: {} ({} bytes)".format(self._w_path, self._w_total))
+            ok = True
+        elif k == "fat":
+            self._w_fp.close()
+            try:
+                if not sha_expected:
+                    h = hashlib.sha256()
+                    size = 0
+                    buf = bytearray(2048)
+                    with open(self._w_tmp, "rb") as f:
+                        while True:
+                            n = f.readinto(buf)
+                            if n == 0:
+                                break
+                            h.update(memoryview(buf)[:n])
+                            size += n
+                    sha = ubinascii.hexlify(h.digest()).decode()
+                else:
+                    sha = sha_got
+                    size = self._w_written
+                try:
+                    os.stat(self._w_path)
+                    os.remove(self._w_path)
+                except Exception:
+                    pass
+                os.rename(self._w_tmp, self._w_path)
+                self.update_manifest_entry(self._w_path, size, sha)
+                print("✅ [FS] FAT written: {} ({} bytes, sha={})".format(
+                    self._w_path, size, sha[:12]))
+                ok = True
+            except Exception as e:
+                print("❌ [FS] end_write FAT finalize failed:", e)
+                self._abort_write()
+        self._w_kind = None
+        return ok
+
+    def _abort_write(self):
+        """中止寫入並清理"""
+        k = self._w_kind
+        if k == "raw":
+            try:
+                self._raw.write_end()
+            except Exception:
+                pass
+        elif k == "fat":
+            try:
+                self._w_fp.close()
+                os.remove(self._w_tmp)
+            except Exception:
+                pass
+
+    def _end_write(self):
+        """強制中止寫入 (begin_write 前清理舊串流)"""
+        k = self._w_kind
+        if k == "raw":
+            try:
+                self._raw.write_end()
+            except Exception:
+                pass
+        elif k == "fat":
+            try:
+                self._w_fp.close()
+                os.remove(self._w_tmp)
+            except Exception:
+                pass
+        self._w_kind = None
+        self._w_sha256 = None
+        self._w_hasher = None
+
     def exists(self, path):
         kind, full, raw_name = self.resolve(path)
         if kind == "ram":
             return full in self._ram
-        if self._raw_mode and self._raw is not None and raw_name:
+        # 只有 /sd 路徑且 raw 模式才查 alloc.json
+        if kind == "sd" and self._raw_mode and self._raw is not None:
             try:
                 if self._raw._alloc.find(raw_name) is not None:
                     return True
@@ -552,17 +757,15 @@ class FileSystemManager:
         if kind == "ram":
             self._ram.pop(full, None)
             return True
-        ok = False
-        if self._raw_mode and self._raw is not None and raw_name:
+        # 只有 /sd 路徑且 raw 模式才從 alloc.json 刪除
+        if kind == "sd" and self._raw_mode and self._raw is not None:
             try:
                 if self._raw._alloc.find(raw_name) is not None:
                     self._raw.remove(raw_name)
-                    ok = True
+                    return True  # raw 已刪，不需再刪 FAT
             except Exception:
                 pass
-        if self.delete_file(full):
-            ok = True
-        return ok
+        return self.delete_file(full)
 
     # ==================== Other Operations ====================
 
