@@ -58,7 +58,7 @@ class JpegPlayerTask(Task):
         self._h = int(sys_cfg.get("player_height", bus.shared.get("tft_height", 320)))
 
         # ── Framebuffer（PSRAM 優先）──
-        self._bpp = 2  # RGB565
+        self._bpp = int(bus.shared.get("System", {}).get("player_bpp", 2))
         self._fb_size = self._w * self._h * self._bpp
         fb = self._alloc_fb(self._fb_size)
         if fb is None:
@@ -82,7 +82,8 @@ class JpegPlayerTask(Task):
             get_log().error("❌ [JpegPlayer] Decoder init: {}".format(e))
             return
 
-        # ── 播放控制 ──
+        # ── 播放控制（保留 boot 預設的 pace_ms）──
+        old = bus.shared.get("jpeg_player") or {}
         bus.shared["jpeg_player"] = {
             "playing": True,
             "paused": False,
@@ -91,6 +92,7 @@ class JpegPlayerTask(Task):
             "source": "",
             "fps": 0,
             "err": "",
+            "pace_ms": int(old.get("pace_ms", 33)),
         }
 
     def _alloc_fb(self, size):

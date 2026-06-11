@@ -18,16 +18,32 @@ def _u32_le(b, off):
 
 
 def _open_fs(path):
-    """透過 fs_manager 開檔；失敗退回原生 open()"""
+    """透過 fs_manager 開檔；失敗退回原生 open()。
+
+    三層降級鏈：fs.open_read(RAM/FAT) → fs.read(raw-SD→BytesIO) → open()
+    """
     try:
         from lib.sys_bus import bus
         fs = bus.get_service("data")
         if fs is not None:
-            f = fs.open_read(path)
-            if f is not None:
-                return f
+            # 1) fs.open_read — 支援 RAM (BytesIO) 與 FAT (原生 file)
+            try:
+                f = fs.open_read(path)
+                if f is not None:
+                    return f
+            except Exception:
+                pass
+            # 2) fs.read — 支援 raw-SD (fast_io.Storage) 讀全檔轉 BytesIO
+            try:
+                data = fs.read(path)
+                if data is not None:
+                    import io
+                    return io.BytesIO(data)
+            except Exception:
+                pass
     except Exception:
         pass
+    # 3) 最終 fallback
     return open(path, "rb")
 
 

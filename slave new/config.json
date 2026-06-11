@@ -48,6 +48,14 @@
         "list": [
             { "GPIO": { "uart": 0 } }
         ]
+    },
+    "Jpeg": {
+        "width": 240,
+        "height": 240,
+        "pixel_format": "RGB565_LE",
+        "loop": true,
+        "pace_ms": 33,
+        "default_source": "/jpeg/background"
     }
 
 }

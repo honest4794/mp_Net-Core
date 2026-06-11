@@ -22,21 +22,6 @@ from tasks.bus_decode import BusDecodeTask
 from tasks.log_task import LogTask
 
 
-def _init_player_shared():
-    """初始化播放器共享狀態（與 Core_Manager 一致）"""
-    bus_sys = bus.shared.setdefault("System", {})
-    bus_sys.setdefault("player_width", 240)
-    bus_sys.setdefault("player_height", 240)
-    bus_sys.setdefault("player_pixel_format", "RGB565_LE")
-    bus.shared.setdefault("jpeg_loop", True)
-    if "jpeg_player" not in bus.shared:
-        bus.shared["jpeg_player"] = {
-            "playing": True, "paused": False, "frame": 0, "total": 0,
-            "source": "", "err": "", "pace_ms": 33,
-        }
-    bus.shared.setdefault("jpeg_source_req", {"source": "/jpeg/background"})
-
-
 def worker_start():
     """Core 0 入口 — 極速控制核主迴圈（阻塞）"""
     log = get_log()
@@ -61,8 +46,6 @@ def worker_start():
     bus.shared["log_print_interval_ms"] = int(interval or 1000)
     bus.shared["log_print_levels"] = ["info", "warn", "error", "immediate"]
     bus.shared["log_subscribe"] = []
-
-    _init_player_shared()
 
     ctx = {"app": app, "st_LED": st_LED, "bus": bus}
 

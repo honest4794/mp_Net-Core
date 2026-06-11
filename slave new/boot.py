@@ -94,3 +94,37 @@ except Exception:
         pass
 from lib.fs_manager import fs
 bus.register_service("data", fs)
+
+# ══════════════════════════════════════════════════════
+# 播放器預設參數（臨時值，SD 卡儲存）
+#   width/height : 播放區尺寸
+#   pixel_format : JPEG 解碼輸出格式（RGB565_LE / RGB888）
+#   bpp          : bytes per pixel（2=RGB565, 3=RGB888）
+#   loop         : 播到尾是否循環
+#   pace_ms      : 幀間隔 ms
+#   default_source : 預設媒體路徑（/sd/ 前綴 = SD 卡）
+# ══════════════════════════════════════════════════════
+bus_sys = bus.shared.setdefault("System", {})
+bus_sys.setdefault("player_width", 240)
+bus_sys.setdefault("player_height", 240)
+bus_sys.setdefault("player_pixel_format", "RGB565_LE")
+bus_sys.setdefault("player_bpp", 2)  # RGB565=2, RGB888=3
+
+bus.shared.setdefault("jpeg_loop", True)
+bus.shared["jpeg_player"] = {
+    "playing": True,
+    "paused": False,
+    "frame": 0,
+    "total": 0,
+    "source": "",
+    "fps": 0,
+    "err": "",
+    "pace_ms": 33,
+}
+bus.shared.setdefault("jpeg_source_req", {"source": "/sd/background"})
+
+get_log().info("🖼 [Boot] Player {}x{} fmt={} bpp={} loop={} pace={} src={}".format(
+    bus_sys["player_width"], bus_sys["player_height"],
+    bus_sys["player_pixel_format"], bus_sys["player_bpp"],
+    bus.shared["jpeg_loop"], bus.shared["jpeg_player"]["pace_ms"],
+    bus.shared["jpeg_source_req"]["source"]))

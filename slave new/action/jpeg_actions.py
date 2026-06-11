@@ -13,8 +13,8 @@ from lib.schema_codec import SchemaCodec
 def _player():
     p = bus.shared.get("jpeg_player")
     if not isinstance(p, dict):
-        p = {"playing": False, "paused": False, "frame": 0,
-             "total": 0, "source": "", "err": "", "pace_ms": 33}
+        p = {"playing": True, "paused": False, "frame": 0,
+             "total": 0, "source": "", "fps": 0, "err": "", "pace_ms": 33}
         bus.shared["jpeg_player"] = p
     return p
 

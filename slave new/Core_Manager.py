@@ -31,7 +31,7 @@ def launcher():
     bus.slave_id = ubinascii.hexlify(machine.unique_id()).decode().upper()
     bus.shared["engine_run"] = True
     bus.shared["spi_busy"] = False
-    bus_sys = bus.shared["System"]
+    bus_sys = bus.shared.setdefault("System", {})
 
     if st_LED:
         hub = AtomicStreamHub(st_LED.total_bytes * bus_sys["buffer_frames"])
@@ -75,26 +75,6 @@ def launcher():
     # ── Layer 1: JPEG 播放器 ──
     from tasks.jpeg_player_task import JpegPlayerTask
     tm.register_task("jpeg_player", JpegPlayerTask, default_affinity=(0, 1), layer=1)
-
-    # ══════════════════════════════════════════════════════
-    # 臨時播放參數（之後會移到 config.json）
-    # ══════════════════════════════════════════════════════
-    bus_sys["player_width"]  = 240
-    bus_sys["player_height"] = 240
-    bus_sys["player_pixel_format"] = "RGB565_LE"
-    bus.shared["jpeg_loop"] = True
-    bus.shared["jpeg_player"] = {
-        "playing": True,
-        "paused":  False,
-        "frame":   0,
-        "total":   0,
-        "source":  "",
-        "err":     "",
-        "pace_ms": 33,
-    }
-    bus.shared["jpeg_source_req"] = {
-        "source": "/jpeg/background",
-    }
 
     tm.finalize()
 

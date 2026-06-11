@@ -100,15 +100,28 @@ def _data_fs():
 
 
 def _open_read(path):
-    """經統一資料層開檔；失敗退回原生 open()"""
+    """經統一資料層開檔；失敗退回原生 open()。
+
+    三層降級鏈：fs.open_read(RAM/FAT) → fs.read(raw-SD→BytesIO) → open()
+    """
     fs = _data_fs()
     if fs is not None:
+        # 1) fs.open_read — 支援 RAM (BytesIO) 與 FAT (原生 file)
         try:
             f = fs.open_read(path)
             if f is not None:
                 return f
         except Exception:
             pass
+        # 2) fs.read — 支援 raw-SD (fast_io.Storage) 讀全檔轉 BytesIO
+        try:
+            data = fs.read(path)
+            if data is not None:
+                import io
+                return io.BytesIO(data)
+        except Exception:
+            pass
+    # 3) 最終 fallback
     return open(path, "rb")
 
 
