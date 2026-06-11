@@ -19,7 +19,15 @@ from tasks.jpeg_player_task import JpegPlayerTask
 def engine_start():
     """Core 1 入口 — 極速渲染引擎主迴圈（在獨立 thread 執行）"""
     log = get_log()
-    log.info("⚡ [Core1] Worker/Engine Mode — render engine")
+    _vb = bus.shared.get("verbose_print")
+
+    def _p(msg):
+        if _vb:
+            print(msg)
+        else:
+            log.info(msg)
+
+    _p("⚡ [Core1] Worker/Engine Mode — render engine")
 
     # 等待 Core0 初始化播放器共享狀態（避免啟動競態）
     import time
@@ -28,6 +36,19 @@ def engine_start():
         time.sleep_ms(10)
         waited += 10
 
+    # ── TFT 診斷（可選）──
+    if bus.shared.get("tft_diag"):
+        _p("🔧 [Core1] Running TFT diagnostics...")
+        try:
+            import tft_test_tool
+            tft_test_tool.config(
+                bus.shared.get("tft_width", 240),
+                bus.shared.get("tft_height", 320))
+            tft_test_tool.all()
+            _p("🔧 [Core1] TFT diagnostics done")
+        except Exception as e:
+            _p("[Core1] TFT diag failed: {}".format(e))
+
     st_LED = bus.get_service("st_LED")
     ctx = {"app": None, "st_LED": st_LED, "bus": bus}
 
@@ -35,20 +56,21 @@ def engine_start():
     try:
         player.on_start()
     except Exception as e:
-        log.error("[Core1] player on_start failed: {}".format(e))
+        _p("[Core1] player on_start failed: {}".format(e))
         return
 
-    log.info("⚡ [Core1] Render engine online")
+    _p("⚡ [Core1] Render engine online")
 
     try:
         while bus.shared.get("engine_run", True):
             try:
                 player.loop()
             except Exception as e:
-                log.error("[Core1] player loop err: {}".format(e))
+                _p("[Core1] player loop err: {}".format(e))
+            time.sleep_ms(1)
     finally:
         try:
             player.on_stop()
         except Exception:
             pass
-        print("[Core1]🛑 Render engine stopped.")
+        _p("[Core1] Render engine stopped.")

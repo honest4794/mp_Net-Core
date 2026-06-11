@@ -1,7 +1,7 @@
 {
     "scan_ignore": ["/sd"],
     "System": {
-        "dual_core_mode": "taskmanager",
+        "dual_core_mode": "0",
         "c_lum": 1.0,
         "hostname": "",
         "refresh_rate_ms": 1,
@@ -48,14 +48,6 @@
         "list": [
             { "GPIO": { "uart": 0 } }
         ]
-    },
-    "Jpeg": {
-        "width": 240,
-        "height": 240,
-        "pixel_format": "RGB565_LE",
-        "loop": true,
-        "pace_ms": 33,
-        "default_source": "/jpeg/background"
     }
 
 }

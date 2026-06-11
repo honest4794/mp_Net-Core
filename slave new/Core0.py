@@ -11,7 +11,9 @@
 #
 # 由 main.py 在 worker_engine 模式下呼叫 worker_start()（阻塞於本核心）。
 
-import machine, time, ubinascii
+import time
+import machine
+import ubinascii
 from app import App
 from lib.sys_bus import bus
 from lib.log_service import get_log
@@ -25,7 +27,21 @@ from tasks.log_task import LogTask
 def worker_start():
     """Core 0 入口 — 極速控制核主迴圈（阻塞）"""
     log = get_log()
-    log.info("⚡ [Core0] Worker/Engine Mode — control core")
+    _vb = bus.shared.get("verbose_print")
+
+    def _p(msg):
+        if _vb:
+            print(msg)
+        else:
+            log.info(msg)
+
+    def _pe(msg):
+        if _vb:
+            print(msg)
+        else:
+            log.error(msg)
+
+    _p("⚡ [Core0] Worker/Engine Mode — control core")
 
     st_LED = bus.get_service("st_LED")
 
@@ -36,7 +52,6 @@ def worker_start():
     app = App()
     bus.register_service("log", log)
 
-    # 日誌輸出設定（與 Core_Manager 一致）
     sys_cfg = bus.shared.get("System", {})
     interval = sys_cfg.get("log_interval_ms")
     if interval is None:
@@ -49,7 +64,6 @@ def worker_start():
 
     ctx = {"app": app, "st_LED": st_LED, "bus": bus}
 
-    # 指令線路任務（直接驅動，免 TaskManager 調度開銷）
     tasks = [
         LogTask("log", ctx),
         NetworkTask("network", ctx),
@@ -61,9 +75,9 @@ def worker_start():
         try:
             t.on_start()
         except Exception as e:
-            log.error("[Core0] {} on_start failed: {}".format(t.name, e))
+            _pe("[Core0] {} on_start failed: {}".format(t.name, e))
 
-    log.info("⚡ [Core0] Command line online (net + circuit): {}".format(bus.slave_id))
+    _p("⚡ [Core0] Command line online (net + circuit): {}".format(bus.slave_id))
 
     try:
         while bus.shared.get("engine_run", True):
@@ -71,9 +85,10 @@ def worker_start():
                 try:
                     t.loop()
                 except Exception as e:
-                    log.error("[Core0] {} loop err: {}".format(t.name, e))
+                    _pe("[Core0] {} loop err: {}".format(t.name, e))
+            time.sleep_ms(0)
     except KeyboardInterrupt:
-        print("[Core0]👋 User stop requested.")
+        _p("[Core0] User stop requested.")
     finally:
         bus.shared["engine_run"] = False
         for t in tasks:
@@ -81,4 +96,4 @@ def worker_start():
                 t.on_stop()
             except Exception:
                 pass
-        print("[Core0]🛑 Control core stopped.")
+        _p("[Core0] Control core stopped.")

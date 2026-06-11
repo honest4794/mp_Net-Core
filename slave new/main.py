@@ -10,9 +10,8 @@ from lib.sys_bus import bus
 
 
 def main():
-    raw = bus.shared.get("System", {}).get("dual_core_mode", 0)
+    raw = bus.shared.get("System", {}).get("dual_core_mode", "worker_engine")
 
-    # 支援字串 ("taskmanager" / "worker_engine") 和數字 (0 / 1)
     if isinstance(raw, int):
         mode = int(raw)
     else:

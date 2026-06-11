@@ -106,8 +106,8 @@ bus.register_service("data", fs)
 # ══════════════════════════════════════════════════════
 bus_sys = bus.shared.setdefault("System", {})
 bus_sys.setdefault("player_width", 240)
-bus_sys.setdefault("player_height", 240)
-bus_sys.setdefault("player_pixel_format", "RGB565_LE")
+bus_sys.setdefault("player_height", 320)
+bus_sys.setdefault("player_pixel_format", "RGB565_BE")
 bus_sys.setdefault("player_bpp", 2)  # RGB565=2, RGB888=3
 
 bus.shared.setdefault("jpeg_loop", True)
@@ -121,7 +121,16 @@ bus.shared["jpeg_player"] = {
     "err": "",
     "pace_ms": 33,
 }
-bus.shared.setdefault("jpeg_source_req", {"source": "/sd/background"})
+bus.shared.setdefault("jpeg_source_req", {"source": "/sd/output.jpk"})
+
+# ── 測試模式：設為 True 直出色條繞過 media source，False 正常播放 ──
+bus.shared["jpeg_test_pattern"] = True
+
+# ── TFT 診斷：True 開機先跑 tft_test_tool.all() 後再開始播放 ──
+bus.shared["tft_diag"] = False
+
+# ── worker_engine 直接 print 狀態：True 開，False 關 ──
+bus.shared["verbose_print"] = True
 
 get_log().info("🖼 [Boot] Player {}x{} fmt={} bpp={} loop={} pace={} src={}".format(
     bus_sys["player_width"], bus_sys["player_height"],

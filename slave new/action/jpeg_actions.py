@@ -104,7 +104,6 @@ def on_jpeg_status_get(ctx, args):
     """0x3105 — 查詢播放狀態"""
     _status_reply(ctx)
 
-
 def register(app):
     app.disp.on(0x3101, on_jpeg_player_ctl)
     app.disp.on(0x3103, on_jpeg_player_params)

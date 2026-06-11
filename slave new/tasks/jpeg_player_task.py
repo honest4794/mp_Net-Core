@@ -24,26 +24,26 @@ class JpegPlayerTask(Task):
         self.lcd = None
         self._bus = None
         self._decoder = None
-        self._fb = None          # 全幀 framebuffer
+        self._fb = None
         self._fb_size = 0
-        self._bpp = 2            # bytes per pixel (RGB565)
+        self._bpp = 2
         self._w = 0
         self._h = 0
-        self._pending_tid = None # DMA trans_id
-        self._source = None      # 統一媒體來源（folder/jpk/bin）
+        self._pending_tid = None
+        self._source = None
         self._total_frames = 0
         self._frame = 0
 
-        # 統計
         self._fps_count = 0
         self._fps_t0 = 0
         self._frame_t0 = 0
-        self._last_frame_ms = 0    # pace_ms 節奏控制
+        self._last_frame_ms = 0
+        self._test_first = True    # 測試模式首幀標記
+        self._test_chunk = None   # 測試模式 row buffer（w*bpp bytes，只分配一次）
 
     def on_start(self):
         super().on_start()
 
-        # ── LCD ──
         self.lcd = bus.get_service("lcd") or bus.get_service("tft")
         if self.lcd is None:
             get_log().error("❌ [JpegPlayer] LCD not found")
@@ -53,13 +53,13 @@ class JpegPlayerTask(Task):
             get_log().error("❌ [JpegPlayer] bus adapter not found")
             return
 
+        # 直接從 lcd 物件讀取真實解析度（最可靠）
+        self._w = getattr(self.lcd, "width", 240)
+        self._h = getattr(self.lcd, "height", 320)
         sys_cfg = bus.shared.get("System", {})
-        self._w = int(sys_cfg.get("player_width", bus.shared.get("tft_width", 240)))
-        self._h = int(sys_cfg.get("player_height", bus.shared.get("tft_height", 320)))
-
-        # ── Framebuffer（PSRAM 優先）──
-        self._bpp = int(bus.shared.get("System", {}).get("player_bpp", 2))
+        self._bpp = int(sys_cfg.get("player_bpp", 2))
         self._fb_size = self._w * self._h * self._bpp
+
         fb = self._alloc_fb(self._fb_size)
         if fb is None:
             get_log().error("❌ [JpegPlayer] framebuffer alloc failed")
@@ -68,10 +68,9 @@ class JpegPlayerTask(Task):
         get_log().info("🖼 [JpegPlayer] {}x{} fb={} KB".format(
             self._w, self._h, self._fb_size // 1024))
 
-        # ── Decoder ──
         try:
             import jpeg
-            fmt = str(sys_cfg.get("player_pixel_format", "RGB565_LE"))
+            fmt = str(sys_cfg.get("player_pixel_format", "RGB565_BE"))
             self._decoder = jpeg.Decoder(
                 pixel_format=fmt,
                 rotation=0,
@@ -79,10 +78,8 @@ class JpegPlayerTask(Task):
                 return_bytes=False,
             )
         except Exception as e:
-            get_log().error("❌ [JpegPlayer] Decoder init: {}".format(e))
-            return
+            get_log().info("⚠ [JpegPlayer] no jpeg module — test pattern only: {}".format(e))
 
-        # ── 播放控制（保留 boot 預設的 pace_ms）──
         old = bus.shared.get("jpeg_player") or {}
         bus.shared["jpeg_player"] = {
             "playing": True,
@@ -112,14 +109,10 @@ class JpegPlayerTask(Task):
             pass
         return bytearray(size)
 
-    # ── 來源管理（統一 media_source）──────────────────
-
     def _apply_source_req(self, req):
-        """處理來源切換請求，建立統一 MediaSource（folder/jpk/bin 自動判斷）"""
         source = str(req.get("source", "") or "").strip()
         if not source:
             return
-        # 關閉舊來源
         if self._source is not None:
             try:
                 self._source.close()
@@ -129,12 +122,8 @@ class JpegPlayerTask(Task):
         try:
             from lib import media_source
             loop = bool(bus.shared.get("jpeg_loop", True))
-            # bin 模式參數（可由請求覆寫，預設用 player 尺寸）
             self._source = media_source.open_source(
-                source,
-                decoder=self._decoder,
-                bpp=self._bpp,
-                loop=loop,
+                source, decoder=self._decoder, bpp=self._bpp, loop=loop,
                 frame_size=req.get("frame_size"),
                 width=int(req.get("width", self._w) or self._w),
                 height=int(req.get("height", self._h) or self._h),
@@ -143,7 +132,6 @@ class JpegPlayerTask(Task):
             self._total_frames = int(self._source.count)
             bus.shared["jpeg_player"]["total"] = self._total_frames
             bus.shared["jpeg_player"]["source"] = source
-            # 起始幀（seek）：bin 隨機存取，其他來源忽略
             start = int(req.get("start_frame", 0) or 0)
             if start > 0 and hasattr(self._source, "read_frame_into"):
                 try:
@@ -159,8 +147,45 @@ class JpegPlayerTask(Task):
             bus.shared["jpeg_player"]["err"] = str(e)
             self._source = None
 
+    def _test_pattern_direct(self, frame):
+        """填 framebuffer → show_frame() 整幀 DMA（write_frame 內部 chunk + CS/DC）"""
+        bands = [
+            [0xF800, 0x07E0, 0x001F, 0x07FF, 0xF81F, 0xFFE0, 0xFFFF, 0x0000],
+            [0xFFFF, 0x0000, 0xF800, 0x07E0, 0x001F, 0xFFE0, 0x07FF, 0xF81F],
+            [0x0000, 0xFFFF, 0xF81F, 0x07FF, 0xFFE0, 0x001F, 0x07E0, 0xF800],
+            [0x07E0, 0xF800, 0xFFE0, 0x001F, 0xFFFF, 0x07FF, 0x0000, 0xF81F],
+        ]
+        bars = bands[frame % len(bands)]
+        n_bars = len(bars)
+        bar_w = max(1, self._w // n_bars)
+        bpp = self._bpp
+
+        # 預建 row buffer（只分配一次）
+        if self._test_chunk is None:
+            self._test_chunk = bytearray(self._w * bpp)
+        row_buf = self._test_chunk
+        row_mv = memoryview(row_buf)
+
+        for bar_i, color in enumerate(bars):
+            x0 = bar_i * bar_w
+            x1 = min(x0 + bar_w, self._w)
+            hi = (color >> 8) & 0xFF
+            lo = color & 0xFF
+            for x in range(x0, x1):
+                off = x * bpp
+                row_buf[off] = hi
+                row_buf[off + 1] = lo
+
+        fb_mv = memoryview(self._fb)
+        row_bytes = self._w * bpp
+        for row in range(self._h):
+            off = row * row_bytes
+            fb_mv[off:off + row_bytes] = row_mv
+
+        self.lcd.set_window(0, 0, self._w - 1, self._h - 1)
+        self.lcd.show_frame(fb_mv[:self._fb_size])
+
     def _fill_next_frame(self):
-        """把下一幀填入 fb（jpeg 整幀解碼 / bin 直接拷貝）。成功回 True。"""
         if self._source is None:
             return False
         try:
@@ -174,31 +199,53 @@ class JpegPlayerTask(Task):
         bus.shared["jpeg_player"]["frame"] = self._frame
         return True
 
-    # ── DMA 寫入 ──────────────────────────────────────
-
     def _dma_fire(self, mv):
-        """async DMA：分段送整幀 pixel data，回傳最後的 trans_id"""
+        """逐 chunk 寫入 + wait，確保每段 DMA 完成再送下一段"""
         bus_obj = self._bus
         off, rem = 0, len(mv)
-        last_tid = None
         while rem > 0:
             n = min(rem, _SEND_CHUNK)
             tid = bus_obj.write_data_async(mv[off:off + n])
             if tid is not None:
-                last_tid = tid
+                bus_obj.wait(tid)
             off += n
             rem -= n
-        return last_tid
 
     # ── 主迴圈 ────────────────────────────────────────
 
     def loop(self):
         if not self.running:
             return
-        if self.lcd is None or self._bus is None or self._decoder is None:
+        if self.lcd is None or self._bus is None:
             return
 
-        # ── 來源切換 ──
+        # ── 測試模式：色條直出（繞過 media source + framebuffer，直接 chunk DMA）──
+        if bus.shared.get("jpeg_test_pattern"):
+            self._test_pattern_direct(self._fps_count)
+
+            self._fps_count += 1
+            now = time.ticks_ms()
+
+            if self._test_first:
+                self._test_first = False
+                print("[JpegPlayer] test w={} h={} bpp={} fb={}B".format(
+                    self._w, self._h, self._bpp, self._fb_size))
+                self._fps_t0 = now
+            else:
+                dt = time.ticks_diff(now, self._fps_t0)
+                if dt >= 1000:
+                    fps = self._fps_count * 1000 // dt
+                    print("[JpegPlayer] fps={} frame={}".format(fps, self._fps_count))
+                    self._fps_t0 = now
+                    self._fps_count = 0
+
+            self._last_frame_ms = now
+            return
+
+        # ── 正常播放：需要 decoder + source ──
+        if self._decoder is None:
+            return
+
         req = bus.shared.pop("jpeg_source_req", None)
         if req is not None:
             self._apply_source_req(req)
@@ -206,38 +253,25 @@ class JpegPlayerTask(Task):
         if self._source is None:
             return
 
-        # ── pace_ms 節奏控制 ──
         pace_ms = int(bus.shared.get("jpeg_player", {}).get("pace_ms", 0) or 0)
         if pace_ms > 0 and self._last_frame_ms:
             now = time.ticks_ms()
             if time.ticks_diff(now, self._last_frame_ms) < pace_ms:
                 return
 
-        # ── 播放控制（幀邊界生效）──
         player = bus.shared.get("jpeg_player", {})
         if not player.get("playing", True):
             return
         if player.get("paused", False):
             return
 
-        # ── 取下一幀填入 fb（jpeg 整幀解碼 / bin 直接拷貝）──
         if not self._fill_next_frame():
             bus.shared["jpeg_player"]["playing"] = False
             return
 
-        # ── 整幀寫入 LCD ──
         self.lcd.set_window(0, 0, self._w - 1, self._h - 1)
-        mv = memoryview(self._fb)[:self._fb_size]
+        self.lcd.show_frame(memoryview(self._fb)[:self._fb_size])
 
-        if self._pending_tid is not None:
-            self._bus.wait(self._pending_tid)
-        self._pending_tid = self._dma_fire(mv)
-        if self._pending_tid is not None:
-            self._bus.wait(self._pending_tid)
-            self._pending_tid = None
-        self._bus.flush()
-
-        # ── 統計 ──
         self._fps_count += 1
         now = time.ticks_ms()
         if self._fps_t0 == 0:
@@ -248,7 +282,10 @@ class JpegPlayerTask(Task):
             if dt >= 1000:
                 fps = self._fps_count * 1000 // dt
                 bus.shared["jpeg_player"]["fps"] = fps
-                self._lw_ex(0, self._fps_count)
+                if bus.shared.get("verbose_print"):
+                    print("[JpegPlayer] fps={} frame={}".format(fps, self._frame))
+                else:
+                    self._lw_ex(0, self._fps_count)
                 self._fps_t0 = now
                 self._fps_count = 0
 
