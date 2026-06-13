@@ -86,6 +86,26 @@ def compute_max_frame_size(paths, default_bytes=240 * 240, bytes_per_pixel=2):
     return int(default_bytes) * int(bytes_per_pixel)
 
 
+def _clamp_range(total, start=0, end=None):
+    total = int(total or 0)
+    if total <= 0:
+        return 0, -1, 0
+    start = int(start or 0)
+    if start < 0:
+        start = 0
+    if start >= total:
+        start = total - 1
+    if end is None or int(end) == 0xFFFFFFFF:
+        end = total - 1
+    else:
+        end = int(end)
+    if end < start:
+        end = start
+    if end >= total:
+        end = total - 1
+    return start, end, (end - start + 1)
+
+
 # ── 統一資料層存取（fs）───────────────────────────────────────
 
 
@@ -141,7 +161,7 @@ class MediaSource:
     height = 0
     frame_size = 0   # 每幀像素位元組數（bin 模式必填；jpeg 解碼後 = w*h*bpp）
 
-    def read_into(self, fb):
+    def read_into(self, _fb):
         raise NotImplementedError
 
     def reset(self):
@@ -185,7 +205,7 @@ class FolderSource(MediaSource, _JpegDecodeMixin):
 
     is_raw = False
 
-    def __init__(self, folder, decoder, bpp=2, loop=True):
+    def __init__(self, folder, decoder, bpp=2, loop=True, start=0, end=None):
         self._decoder = decoder
         self._bpp = int(bpp)
         self.loop = bool(loop)
@@ -197,16 +217,17 @@ class FolderSource(MediaSource, _JpegDecodeMixin):
                 self._paths = list_jpegs(folder)
         else:
             self._paths = list_jpegs(folder)
-        self.count = len(self._paths)
-        self._idx = 0
+        self._range_start, self._range_end, self.count = _clamp_range(
+            len(self._paths), start, end)
+        self._idx = self._range_start
 
     def read_into(self, fb):
-        if not self._paths:
+        if not self._paths or self.count <= 0:
             return None, 0
-        if self._idx >= len(self._paths):
+        if self._idx > self._range_end:
             if not self.loop:
                 return None, 0
-            self._idx = 0
+            self._idx = self._range_start
         path = self._paths[self._idx]
         idx = self._idx
         self._idx += 1
@@ -222,7 +243,7 @@ class FolderSource(MediaSource, _JpegDecodeMixin):
             return idx, 0
 
     def reset(self):
-        self._idx = 0
+        self._idx = self._range_start
 
 
 # ── jpk 模式 ─────────────────────────────────────────────────
@@ -236,20 +257,29 @@ class PackJpegSource(MediaSource, _JpegDecodeMixin):
 
     is_raw = False
 
-    def __init__(self, path, decoder, bpp=2, loop=True, max_jpeg=None):
+    def __init__(self, path, decoder, bpp=2, loop=True, max_jpeg=None,
+                 start=0, end=None):
         from lib.pack_source import PackSource
 
         self._decoder = decoder
         self._bpp = int(bpp)
         self.loop = bool(loop)
         self._pack = PackSource(path, loop=loop)
-        self.count = int(self._pack.count)
+        self._range_start, self._range_end, self.count = _clamp_range(
+            int(self._pack.count), start, end)
         # JPEG raw 暫存區：用 pack header 內的 max_size，不足則回退預設
         self._max_jpeg = int(max_jpeg or self._pack.max_size or (64 * 1024))
         self._read_buf = bytearray(self._max_jpeg)
         self._read_mv = memoryview(self._read_buf)
+        self.reset()
 
     def read_into(self, fb):
+        if self.count <= 0:
+            return None, 0
+        if self._pack._idx > self._range_end:
+            if not self.loop:
+                return None, 0
+            self.reset()
         idx, got, _dt = self._pack.read_next_into(self._read_mv, self._max_jpeg)
         if idx is None:
             return None, 0
@@ -261,6 +291,8 @@ class PackJpegSource(MediaSource, _JpegDecodeMixin):
 
     def reset(self):
         self._pack.reset()
+        if self._range_start > 0:
+            self._pack.skip_next(self._range_start)
 
     def close(self):
         try:
@@ -281,7 +313,8 @@ class BinSource(MediaSource):
 
     is_raw = True
 
-    def __init__(self, path, frame_size=None, width=0, height=0, bpp=2, loop=True):
+    def __init__(self, path, frame_size=None, width=0, height=0, bpp=2, loop=True,
+                 start=0, end=None):
         if frame_size is None:
             if width and height:
                 frame_size = int(width) * int(height) * int(bpp)
@@ -293,36 +326,43 @@ class BinSource(MediaSource):
         self.height = int(height)
         self.loop = bool(loop)
         self.file_size = os.stat(path)[6]
-        self.count = self.file_size // self.frame_size
+        self._full_count = self.file_size // self.frame_size
+        self._range_start, self._range_end, self.count = _clamp_range(
+            self._full_count, start, end)
         self._f = _open_read(path)  # 經 fs_manager 開檔，保持開啟
-        self._idx = 0
+        self._idx = self._range_start
+        if self._range_start > 0:
+            self._f.seek(self._range_start * self.frame_size)
 
     def read_into(self, fb):
         """順序讀下一幀進 fb（最高效）；EOF 時依 loop 重置。"""
         mv = fb if isinstance(fb, memoryview) else memoryview(fb)
         if len(mv) < self.frame_size:
             raise ValueError("fb too small for bin frame")
+        if self.count <= 0:
+            return None, 0
+        if self._idx > self._range_end:
+            if not self.loop:
+                return None, 0
+            self.reset()
         target = mv[: self.frame_size]
         n = self._f.readinto(target)
         if not n:
             if not self.loop:
                 return None, 0
-            self._f.seek(0)
-            self._idx = 0
+            self.reset()
             n = self._f.readinto(target)
             if not n:
                 return None, 0
         idx = self._idx
         self._idx += 1
-        if self.count and self._idx >= self.count:
-            if self.loop:
-                self._f.seek(0)
-                self._idx = 0
+        if self._idx > self._range_end and self.loop:
+            self.reset()
         return idx, n
 
     def read_frame_into(self, fb, frame_index):
         """讀取指定索引的單幀進 fb（隨機存取）。"""
-        if frame_index < 0 or (self.count and frame_index >= self.count):
+        if frame_index < self._range_start or frame_index > self._range_end:
             return None, 0
         mv = fb if isinstance(fb, memoryview) else memoryview(fb)
         offset = frame_index * self.frame_size
@@ -332,8 +372,8 @@ class BinSource(MediaSource):
         return frame_index, n
 
     def reset(self):
-        self._f.seek(0)
-        self._idx = 0
+        self._f.seek(self._range_start * self.frame_size)
+        self._idx = self._range_start
 
     def close(self):
         try:
@@ -353,7 +393,8 @@ def _is_dir(path):
 
 
 def open_source(path, decoder=None, bpp=2, loop=True,
-                frame_size=None, width=0, height=0, max_jpeg=None):
+                frame_size=None, width=0, height=0, max_jpeg=None,
+                range_start=0, range_end=None):
     """依輸入路徑自動判斷模式並回傳統一 MediaSource。
 
     判斷規則：
@@ -375,15 +416,20 @@ def open_source(path, decoder=None, bpp=2, loop=True,
     if _is_dir(p):
         if decoder is None:
             raise ValueError("FolderSource needs a decoder")
-        return FolderSource(p, decoder, bpp=bpp, loop=loop)
+        return FolderSource(
+            p, decoder, bpp=bpp, loop=loop,
+            start=range_start, end=range_end)
 
     if low.endswith(".jpk") or low.endswith(".pack"):
         if decoder is None:
             raise ValueError("PackJpegSource needs a decoder")
-        return PackJpegSource(p, decoder, bpp=bpp, loop=loop, max_jpeg=max_jpeg)
+        return PackJpegSource(
+            p, decoder, bpp=bpp, loop=loop, max_jpeg=max_jpeg,
+            start=range_start, end=range_end)
 
     if low.endswith(".bin") or low.endswith(".raw"):
-        return BinSource(p, frame_size=frame_size, width=width, height=height,
-                         bpp=bpp, loop=loop)
+        return BinSource(
+            p, frame_size=frame_size, width=width, height=height,
+            bpp=bpp, loop=loop, start=range_start, end=range_end)
 
     raise ValueError("unknown media source: " + p)

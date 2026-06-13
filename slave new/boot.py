@@ -120,6 +120,7 @@ bus.shared["jpeg_player"] = {
     "fps": 0,
     "err": "",
     "pace_ms": 33,
+    "mode": 0,
 }
 bus.shared.setdefault("jpeg_source_req", {"source": "/sd/output.jpk"})
 
