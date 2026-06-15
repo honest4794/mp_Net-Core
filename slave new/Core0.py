@@ -585,9 +585,43 @@ def worker_start():
 
     _log_info("⚡ [Core0] Command line online (net + circuit): {}".format(bus.slave_id))
 
+    sys_cfg2 = bus.shared.get("System", {})
+    _tw = int(sys_cfg2.get("tft_width", sys_cfg2.get("player_width", 240)))
+    _th = int(sys_cfg2.get("tft_height", sys_cfg2.get("player_height", 320)))
+    _tbpp = int(sys_cfg2.get("player_bpp", 2))
+    _tfs = _tw * _th * _tbpp
+
+    from lib.buffer_hub import AtomicStreamHub
+    _hub = AtomicStreamHub(_tfs, num_buffers=4)
+    bus.register_service("frame_hub", _hub)
+    _log_info("[Core0] frame_hub {}B x4".format(_tfs))
+
+    if bus.shared.get("jpeg_test_hub"):
+        if _tbpp == 3:
+            _wb = bytearray(b"\xff\xff\xff" * (_tfs // 3))
+        else:
+            _wb = bytearray(b"\xff\xff" * (_tfs // 2))
+        if len(_wb) < _tfs:
+            _wb += b"\xff" * (_tfs - len(_wb))
+        _bb = bytearray(_tfs)
+        _src = (_wb, _bb, _wb, _bb)
+        for i in range(4):
+            w = _hub.get_write_view()
+            w[:_tfs] = _src[i]
+            _hub.commit()
+        _log_info("[Core0] test_hub 4 slots pre-filled")
+
     try:
         while bus.shared.get("engine_run", True):
             try:
+                if bus.shared.get("jpeg_test_hub"):
+                    while True:
+                        w = _hub.get_write_view()
+                        if w is None:
+                            break
+                        _hub.commit()
+                    time.sleep_ms(0)
+
                 _poll_log_runtime(state["log"])
                 _poll_network_runtime(state["network"])
                 _poll_circuit_runtime(state["circuit"])

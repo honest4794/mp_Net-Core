@@ -124,8 +124,8 @@ bus.shared["jpeg_player"] = {
 }
 bus.shared.setdefault("jpeg_source_req", {"source": "/sd/output.jpk"})
 
-# ── 測試模式：設為 True 直出色條繞過 media source，False 正常播放 ──
-bus.shared["jpeg_test_pattern"] = True
+# ── Hub 管線測試：True 則 Core0 生產黑白幀 → Core1 消費顯示，False 正常播放 ──
+bus.shared["jpeg_test_hub"] = True
 
 # ── TFT 診斷：True 開機先跑 tft_test_tool.all() 後再開始播放 ──
 bus.shared["tft_diag"] = False

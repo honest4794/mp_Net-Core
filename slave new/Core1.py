@@ -142,42 +142,6 @@ def _fill_next_frame(st):
     return True
 
 
-def _draw_test_pattern(st, frame):
-    bands = [
-        [0xF800, 0x07E0, 0x001F, 0x07FF, 0xF81F, 0xFFE0, 0xFFFF, 0x0000],
-        [0xFFFF, 0x0000, 0xF800, 0x07E0, 0x001F, 0xFFE0, 0x07FF, 0xF81F],
-        [0x0000, 0xFFFF, 0xF81F, 0x07FF, 0xFFE0, 0x001F, 0x07E0, 0xF800],
-        [0x07E0, 0xF800, 0xFFE0, 0x001F, 0xFFFF, 0x07FF, 0x0000, 0xF81F],
-    ]
-    bars = bands[frame % len(bands)]
-    bar_w = max(1, st["w"] // len(bars))
-    bpp = st["bpp"]
-
-    if st["test_chunk"] is None:
-        st["test_chunk"] = bytearray(st["w"] * bpp)
-    row_buf = st["test_chunk"]
-    row_mv = memoryview(row_buf)
-
-    for bar_i, color in enumerate(bars):
-        x0 = bar_i * bar_w
-        x1 = min(x0 + bar_w, st["w"])
-        hi = (color >> 8) & 0xFF
-        lo = color & 0xFF
-        for x in range(x0, x1):
-            off = x * bpp
-            row_buf[off] = hi
-            row_buf[off + 1] = lo
-
-    fb_mv = memoryview(st["fb"])
-    row_bytes = st["w"] * bpp
-    for row in range(st["h"]):
-        off = row * row_bytes
-        fb_mv[off:off + row_bytes] = row_mv
-
-    st["lcd"].set_window(0, 0, st["w"] - 1, st["h"] - 1)
-    st["lcd"].show_frame(fb_mv[:st["fb_size"]])
-
-
 def engine_start():
     """Core 1 入口 — 極速渲染引擎主迴圈（在獨立 thread 執行）"""
     _log_info("⚡ [Core1] Worker/Engine Mode — render engine")
@@ -263,8 +227,8 @@ def engine_start():
         "fps_t0": 0,
         "frame_t0": 0,
         "last_frame_ms": 0,
-        "test_first": True,
-        "test_chunk": None,
+        "_first_frame": False,
+        "_frame_us": 0,
     }
 
     _log_info("🖼 [JpegPlayer] {}x{} fb={} KB".format(w, h, fb_size // 1024))
@@ -273,25 +237,48 @@ def engine_start():
     try:
         while bus.shared.get("engine_run", True):
             try:
-                if bus.shared.get("jpeg_test_pattern"):
-                    _draw_test_pattern(st, st["fps_count"])
-                    st["fps_count"] += 1
-                    now = time.ticks_ms()
-                    if st["test_first"]:
-                        st["test_first"] = False
-                        print("[JpegPlayer] test w={} h={} bpp={} fb={}B".format(
-                            st["w"], st["h"], st["bpp"], st["fb_size"]))
-                        st["fps_t0"] = now
-                    else:
-                        dt = time.ticks_diff(now, st["fps_t0"])
-                        if dt >= 1000:
-                            fps = st["fps_count"] * 1000 // dt
-                            print("[JpegPlayer] fps={} frame={}".format(fps, st["fps_count"]))
-                            st["fps_t0"] = now
-                            st["fps_count"] = 0
-                    st["last_frame_ms"] = now
-                    time.sleep_ms(1)
+                if bus.shared.get("jpeg_test_hub"):
+                    _hub = bus.get_service("frame_hub")
+                    if _hub is not None:
+                        r = _hub.get_read_view()
+                        if r is not None:
+                            st["lcd"].set_window(0, 0, st["w"] - 1, st["h"] - 1)
+                            _t0 = time.ticks_us()
+                            st["lcd"].show_frame(r[:st["fb_size"]])
+                            _t1 = time.ticks_us()
+                            _hub.release_read()
+                            _fu = time.ticks_diff(_t1, _t0)
+                            st["_frame_us"] = (st.get("_frame_us", 0) + _fu) // 2 if st.get("_frame_us", 0) else _fu
+                            if not st["_first_frame"]:
+                                print("[Hub] first frame: {}us ({}B)".format(_fu, st["fb_size"]))
+                                st["_first_frame"] = True
+                            st["fps_count"] += 1
+                            now = time.ticks_ms()
+                            if st["fps_t0"] == 0:
+                                st["fps_t0"] = now
+                            dt = time.ticks_diff(now, st["fps_t0"])
+                            if dt >= 1000:
+                                fps = st["fps_count"] * 1000 // dt
+                                total = st["fb_size"]
+                                mbps = total * st["fps_count"] / dt * 1000 / (1024 * 1024)
+                                fu = st.get("_frame_us", 0)
+                                print("[Hub] FPS={} frame={} {:.1f}ms/f {:.1f}MB/s frame={}us".format(
+                                    fps, st["fps_count"],
+                                    1000.0 / fps if fps else 0, mbps, fu))
+                                st["fps_t0"] = now
+                                st["fps_count"] = 0
+                                st["_frame_us"] = 0
+                    time.sleep_ms(0)
                     continue
+
+                _hub = bus.get_service("frame_hub")
+                if _hub is not None:
+                    r = _hub.get_read_view()
+                    if r is not None:
+                        st["lcd"].set_window(0, 0, st["w"] - 1, st["h"] - 1)
+                        st["lcd"].show_frame(r[:st["fb_size"]])
+                        _hub.release_read()
+                        continue
 
                 if st["decoder"] is None:
                     time.sleep_ms(1)
