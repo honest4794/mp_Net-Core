@@ -79,16 +79,21 @@ class Allocator:
     def _load(self):
         try:
             with open(self._p) as f: r = json.load(f)
-            if "_offset" in r: self._off = r["_offset"]
+            ver = r.get("_version", 0)
+            if "_offset" in r:
+                self._off = r["_offset"]
             for k, v in r.items():
                 if k.startswith("_") and not isinstance(v, list): continue
-                self._e[k] = tuple(v[:3]) if len(v) >= 3 else (v[0], v[1])
+                t = tuple(v[:3]) if len(v) >= 3 else (v[0], v[1])
+                if ver <= 1:
+                    t = (t[0], (t[1] + self._ss - 1) // self._ss) + t[2:]
+                self._e[k] = t
         except Exception as e:
             print("alloc load err:", e)
 
     def _save(self):
         try:
-            r = {"_version": 1, "_offset": self._off}
+            r = {"_version": 2, "_offset": self._off}
             for k, v in self._e.items(): r[k] = list(v)
             with open(self._p, "w") as f:
                 json.dump(r, f); f.flush()
@@ -190,7 +195,8 @@ class Storage:
         if remaining <= 0: return 0
         sector = self._r_sector + self._r_byte // self._ss
         n_sectors = min(self._spc, (remaining + self._ss - 1) // self._ss)
-        with _sd_lock: self._sd.readblocks(sector, self._io_buf)
+        with _sd_lock:
+            self._sd.readblocks(sector, self._io_buf)
         n_bytes = min(remaining, n_sectors * self._ss)
         n_bytes = min(n_bytes, max_bytes)
         buf[off:off + n_bytes] = self._io_buf[:n_bytes]

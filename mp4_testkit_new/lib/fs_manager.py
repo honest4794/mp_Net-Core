@@ -523,9 +523,6 @@ class FileSystemManager:
         self._str_kind = None
 
     def open_read(self, path):
-        """回傳可讀的 file-like 物件供串流讀取；RAM 則回 BytesIO。
-        大檔串流建議使用 begin_read / read_into / seek / tell / end_read。
-        """
         kind, full, raw_name = self.resolve(path)
         if kind == "ram":
             data = self._ram.get(full)

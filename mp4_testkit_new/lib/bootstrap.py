@@ -238,6 +238,37 @@ def build_bus():
             if isinstance(assets_pack, str) and assets_pack:
                 break
 
+    if pack is None and fs._raw_mode and fs._raw is not None:
+        jpk_name = folder + ".jpk"
+        if fs._raw._alloc.find(jpk_name) is not None:
+            import os, time
+            e = fs._raw._alloc.find(jpk_name)
+            sd = fs._raw._sd
+            ss = fs._raw._ss
+            t = bytearray(ss)
+            os.umount(assets_root)
+            try:
+                found = -1
+                for sec in range(0, 200000, 1000):
+                    sd.readblocks(sec, t)
+                    if t[:4] == b"JPK1":
+                        found = sec
+                        break
+                if found >= 0:
+                    hx = "".join("{:02X}".format(b) for b in t[:16])
+                    print("[raw] JPK1 found at sector={} buf={}".format(found, hx))
+                else:
+                    print("[raw] JPK1 NOT FOUND (scanned 0-200K step 1K)")
+                data = fs._raw.read_all(jpk_name)
+                if data is not None:
+                    pack = PackSource(folder_path + ".jpk", loop=loop_play, data=bytes(data))
+                    print("[Pack] raw:", jpk_name, "count:", pack.count, "max_size:", pack.max_size)
+                    if max_jpeg_bytes <= 0:
+                        max_jpeg_bytes = int(pack.max_size)
+                    paths = []
+            finally:
+                os.mount(sd, assets_root)
+
     if pack is None:
         try:
             paths = fs.list_jpegs(folder_path)

@@ -22,9 +22,9 @@ def _mount_spi(sd_cfg, path):
         cs=int(g.get("data", [0, 0, 0, 0])[3]),
         freq=int(c.get("freq", 20_000_000)),
     )
-    os.mount(sd, path)
     from lib.sys_bus import bus
     bus.register_service("sd_raw", sd)
+    os.mount(sd, path)
     return path
 
 
@@ -41,9 +41,9 @@ def _mount_sdio(sd_cfg, path):
         data=tuple(int(x) for x in (g.get("data") or ())),
         freq=int(c.get("freq", 40_000_000)),
     )
-    os.mount(sd, path)
     from lib.sys_bus import bus
     bus.register_service("sd_raw", sd)
+    os.mount(sd, path)
     return path
 
 

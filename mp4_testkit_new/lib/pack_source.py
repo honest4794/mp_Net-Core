@@ -58,6 +58,21 @@ def _open_fs(path):
         fs = bus.get_service("data")
         if fs is not None:
             try:
+                kind, full, raw_name = fs.resolve(path)
+                if kind == "sd" and fs._raw_mode and fs._raw is not None:
+                    if fs._raw._alloc.find(raw_name) is not None:
+                        import os
+                        sd = fs._raw._sd
+                        os.umount(full[:3] if full.startswith("/sd") else "/sd")
+                        try:
+                            data = fs._raw.read_all(raw_name)
+                        finally:
+                            os.mount(sd, full[:3] if full.startswith("/sd") else "/sd")
+                        if data is not None:
+                            return _MemFile(data)
+            except Exception:
+                pass
+            try:
                 f = fs.open_read(path)
                 if f is not None:
                     return f
@@ -75,10 +90,13 @@ def _open_fs(path):
 
 
 class PackSource:
-    def __init__(self, path, loop=True):
+    def __init__(self, path, loop=True, data=None):
         self.path = path
         self.loop = bool(loop)
-        self._f = _open_fs(path)
+        if data is not None:
+            self._f = _MemFile(data)
+        else:
+            self._f = _open_fs(path)
         hdr = self._f.read(16)
         if len(hdr) != 16 or hdr[0:4] != b"JPK1":
             raise ValueError("bad pack header")
