@@ -5,7 +5,7 @@
 用法: python3 storage_tool.py
 """
 
-import subprocess as SP, os, sys, json, re, time, hashlib, platform, shutil
+import subprocess as SP, os, sys, json, re, time, hashlib, platform, shutil, ctypes
 S=512; OS=platform.system()
 
 def I(msg,defv=""):
@@ -25,15 +25,22 @@ def _scan():
         for dev in re.findall(r"^(/dev/disk\d+)",r.stdout,re.M):
             i=R(["diskutil","info",dev]).stdout
             m=re.search(r"\((\d+)\s*Bytes?\)",i)
-            if m and int(m.group(1))>=512*1024*1024: d.append((dev,int(m.group(1))))
+            nm=re.search(r"Media Name:\s*(.+)",i)
+            name=nm.group(1).strip() if nm else dev
+            if m and int(m.group(1))>=512*1024*1024: d.append((dev,int(m.group(1)),name))
     elif OS=="Windows":
-        r=RS("wmic diskdrive get size,index /format:csv")
-        for line in r.stdout.strip().split("\n")[1:]:
+        r=R(["powershell","-NoProfile","-Command",
+             'Get-Disk | ForEach-Object { $n=$_.Number; $s=$_.Size; $b=$_.BusType; $v=Get-Partition -DiskNumber $n -ErrorAction SilentlyContinue | Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | Select-Object -First 1; if ($v) { "$n,$s,$b,$($v.DriveLetter): $($v.FileSystemLabel)" } else { "$n,$s,$b," } }'])
+        for line in r.stdout.strip().split("\n"):
+            line=line.strip()
             p=line.split(",")
-            if len(p)>=2:
-                try: sz=int(p[0])
+            if len(p)>=3:
+                try: sz=int(p[1])
                 except: continue
-                if sz>=512*1024*1024: d.append(("PhysicalDrive"+p[1].strip(),sz))
+                bus=p[2].strip()
+                if bus!="USB": continue
+                label=p[3].strip() if len(p)>=4 and p[3].strip() else ""
+                if sz>=512*1024*1024: d.append(("PhysicalDrive"+p[0],sz,label))
     return d
 
 def _mp(dev):
@@ -45,6 +52,12 @@ def _mp(dev):
     elif OS=="Windows":
         for l in "DEFGHIJKLMNOPQRSTUVWXYZ":
             if os.path.exists(l+":/alloc.json"): return l+":"
+        n=dev.replace("PhysicalDrive","")
+        r=R(["powershell","-NoProfile","-Command",
+             '$v=Get-Partition -DiskNumber {} -ErrorAction SilentlyContinue | Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter }; if ($v) { $v.DriveLetter+\":\" }'.format(n)])
+        dl=r.stdout.strip()
+        if dl and os.path.exists(dl+"\\"):
+            return dl.rstrip("\\")
     return None
 
 def _unmount(dev):
@@ -54,6 +67,29 @@ def _fmt(dev):
     if OS=="Darwin":
         R(["diskutil","unmountDisk",dev])
         return R(["diskutil","eraseDisk","FAT32","SDCARD","MBRFormat",dev]).returncode==0
+    elif OS=="Windows":
+        n=dev.replace("PhysicalDrive","")
+        scr="select disk {n}\nclean\nconvert mbr\ncreate partition primary\nformat fs=fat32 quick label=SDCARD\nactive\nassign\nexit\n".format(n=n)
+        tf=os.path.join(os.environ.get("TEMP",os.getcwd()),"_sdfmt.txt")
+        open(tf,"w").write(scr)
+        print("格式化中 (diskpart)...")
+        try:
+            r=R(["diskpart","/s",tf])
+        except OSError as e:
+            try: os.unlink(tf)
+            except: pass
+            print("diskpart 需要管理員權限: "+str(e))
+            return False
+        try: os.unlink(tf)
+        except: pass
+        if r.returncode!=0:
+            for line in (r.stdout+r.stderr).split("\n"):
+                lo=line.lower()
+                if any(w in lo for w in ("error","fail","cannot","denied","invalid")):
+                    print("  "+line.strip())
+            return False
+        time.sleep(3)
+        return True
     return False
 
 def _w(dev,data,off):
@@ -84,7 +120,7 @@ def A(dev):
     return json.load(open(p)) if p and os.path.exists(p) else None
 
 def F(dev,cap):
-    v=I("FAT MB [32]: ","32")
+    v=I("FAT MB [512]: ","512")
     if v is None: return
     f=int(v)
     if f<=0: _fmt(dev); print("✅"); return
@@ -92,11 +128,17 @@ def F(dev,cap):
     print("sector:{} FAT:{}MB managed:~{:.1f}GB".format(off,off*512/1048576,(t-off)*512/1073741824))
     if I("確認? (yes): ") is None: return
     if not _fmt(dev): print("❌"); return
-    m=_mp(dev)
+    print("✅ FAT32 格式化完成")
+    m=None
+    for _ in range(6):
+        time.sleep(1); m=_mp(dev)
+        if m: break
     a={"_version":1,"_offset":off,"_total_sectors":t}
     if m:
         json.dump(a,open(os.path.join(m,"alloc.json"),"w"),indent=2)
         print("✅ alloc.json (offset={})".format(off))
+    else:
+        print("⚠️  無法取得掛載點，請重新插拔 SD 卡後再試")
     _unmount(dev)
 
 def P(dev):
@@ -131,11 +173,14 @@ def DL(dev):
     if os.path.exists(out):
         if I("⚠️ 覆蓋? (yes/no): ") is None: return
     _unmount(dev); _r(dev,sec,cnt,out)
+    abspath=os.path.abspath(out)
     d=open(out,"rb").read()
     print("\n✅ {} bytes".format(len(d)))
+    print("📁 {}".format(abspath))
     if len(a[name])>=3 and a[name][2]:
         h=hashlib.sha256(d).hexdigest()
-        print("✅ SHA256 ok" if h==a[name][2] else "⚠️ mismatch")
+        if h==a[name][2]: print("✅ SHA256 ok")
+        else: print("⚠️ SHA256 mismatch")
 
 def UL(dev):
     a=A(dev)
@@ -201,16 +246,29 @@ def TR(dev):
         json.dump(r,open(os.path.join(m,"alloc.json"),"w"),indent=2)
         print("✅ 刪除:",", ".join(rm))
 
+def _is_admin():
+    if OS!="Windows": return True
+    try: return ctypes.windll.shell32.IsUserAnAdmin()!=0
+    except: return False
+
 def main():
     print("\nSD 卡工具 (OS: {})\n{}".format(OS,"="*50))
+    if OS=="Windows" and not _is_admin():
+        print("正在以管理員身份重新啟動...")
+        ctypes.windll.shell32.ShellExecuteW(None,"runas",sys.executable,__file__,None,1)
+        os._exit(0)
     disks=_scan()
     if not disks: print("❌ 找不到 SD 卡"); return
-    for i,(d,c) in enumerate(disks): print(" {}. {}  ({:.1f}GB)".format(i+1,d,c/1073741824))
+    for i,(d,c,lb) in enumerate(disks):
+        info="  ({:.1f}GB)".format(c/1073741824)
+        label=lb if lb else d
+        print(" {}. {}{}".format(i+1,label,info))
     n=I("選擇: ")
     if n is None: return
-    dev,cap=disks[int(n)-1]
+    dev,cap,lb=disks[int(n)-1]
+    dev_display=lb if lb else dev
     while True:
-        print("\nDevice:",dev); print("1.格式化 2.列表 3.下載 4.上傳 5.刪除 0.離開")
+        print("\nDevice: {} ({})".format(dev_display,dev)); print("1.格式化 2.列表 3.下載 4.上傳 5.刪除 0.離開")
         c=I("選擇: ")
         if c is None: break
         if c=="1": F(dev,cap)
