@@ -17,6 +17,33 @@ def I(msg,defv=""):
 def R(c): return SP.run(c,capture_output=True,text=True)
 def RS(c): return SP.run(c,capture_output=True,text=True,shell=True)
 
+def _sha256_file(p):
+    h=hashlib.sha256()
+    with open(p,"rb") as f:
+        while True:
+            b=f.read(1024*1024)
+            if not b: break
+            h.update(b)
+    return h.hexdigest()
+
+def _save_json(p,obj):
+    try:
+        with open(p,"w") as f:
+            json.dump(obj,f,indent=2)
+        return True
+    except PermissionError:
+        if OS!="Darwin": raise
+        tmp="/tmp/_alloc.json"
+        with open(tmp,"w") as f:
+            json.dump(obj,f,indent=2)
+        r=R(["sudo","cp",tmp,p])
+        try: os.unlink(tmp)
+        except: pass
+        if r.returncode==0: return True
+        msg=(r.stderr or r.stdout or "sudo cp failed").strip()
+        print("⚠️ alloc.json 更新失敗: {}".format(msg))
+        return False
+
 # ── 平台層 ──
 def _scan():
     d=[]
@@ -45,10 +72,18 @@ def _scan():
 
 def _mp(dev):
     if OS=="Darwin":
-        for p in ["/Volumes/SDCARD","/Volumes/NO NAME"]:
-            if os.path.exists(p): return p
-        R(["diskutil","mountDisk",dev]);R(["diskutil","mount",dev+"s1"]);time.sleep(1)
-        if os.path.exists("/Volumes/SDCARD"): return "/Volumes/SDCARD"
+        part=dev+"s1"
+        def _mounted_path():
+            i=R(["diskutil","info",part]).stdout
+            m=re.search(r"Mount Point:\s*(.+)",i)
+            if not m: return None
+            p=m.group(1).strip()
+            if not p or p=="Not mounted": return None
+            return p if os.path.ismount(p) else None
+        p=_mounted_path()
+        if p: return p
+        R(["diskutil","mountDisk",dev]);R(["diskutil","mount",part]);time.sleep(1)
+        return _mounted_path()
     elif OS=="Windows":
         for l in "DEFGHIJKLMNOPQRSTUVWXYZ":
             if os.path.exists(l+":/alloc.json"): return l+":"
@@ -119,6 +154,56 @@ def A(dev):
     p=os.path.join(m,"alloc.json") if m else None
     return json.load(open(p)) if p and os.path.exists(p) else None
 
+def _tail(a):
+    t=a["_offset"]
+    for k,v in a.items():
+        if k.startswith("_"): continue
+        t=max(t,v[0]+v[1])
+    return t
+
+def _split_upload_paths(raw):
+    ps=[]
+    for x in re.split(r"[\n,]+",raw):
+        x=x.strip().strip('"').strip("'").strip()
+        if not x: continue
+        ps.append(os.path.expanduser(x))
+    return ps
+
+def _pick_name(a,p,fs,sh,ask_name):
+    name=os.path.basename(p)
+    while True:
+        dup=None
+        for k,v in a.items():
+            if k.startswith("_"): continue
+            if len(v)>=3 and v[2]==sh: dup=k; break
+            if v[1]*S==fs: dup=dup or k
+        if dup:
+            print("⚠️ 與 {} 重複".format(dup))
+            v=I("跳過? (enter=yes, r=rename): ")
+            if v is None: return None
+            if v.lower().startswith("r"):
+                v2=I("新名: ")
+                if v2 is None: return None
+                name=v2
+            else:
+                return None
+        elif ask_name:
+            v=I("名 [{}]: ".format(name),name)
+            if v is None: return None
+            name=v or name
+        if name not in a: return name
+        v=I("覆蓋? (enter=yes, r=rename, q=cancel): ")
+        if v is None: return None
+        v=v.lower()
+        if v.startswith("r"):
+            v2=I("新名: ")
+            if v2 is None: return None
+            name=v2
+            ask_name=False
+            continue
+        if v in ("yes","y",""): return name
+        return None
+
 def F(dev,cap):
     v=I("FAT MB [512]: ","512")
     if v is None: return
@@ -135,8 +220,10 @@ def F(dev,cap):
         if m: break
     a={"_version":1,"_offset":off,"_total_sectors":t}
     if m:
-        json.dump(a,open(os.path.join(m,"alloc.json"),"w"),indent=2)
-        print("✅ alloc.json (offset={})".format(off))
+        if _save_json(os.path.join(m,"alloc.json"),a):
+            print("✅ alloc.json (offset={})".format(off))
+        else:
+            print("⚠️ alloc.json 寫入失敗")
     else:
         print("⚠️  無法取得掛載點，請重新插拔 SD 卡後再試")
     _unmount(dev)
@@ -185,48 +272,51 @@ def DL(dev):
 def UL(dev):
     a=A(dev)
     if not a: return
-    p=I("檔案路徑: ")
-    if p is None or not os.path.exists(p): return
-    fs=os.path.getsize(p); sh=hashlib.sha256(open(p,"rb").read()).hexdigest()
-    print("SHA256:",sh[:24],fs)
-    dup=None
-    for k,v in a.items():
-        if k.startswith("_"): continue
-        if len(v)>=3 and v[2]==sh: dup=k; break
-        if v[1]*S==fs: dup=dup or k
-    if dup:
-        print("⚠️ 與 {} 重複".format(dup))
-        v=I("跳過? (enter=yes, r=rename): ")
-        if v is None: return
-        if v.lower().startswith("r"):
-            v2=I("新名: ")
-            if v2 is None: return
-            name=v2
-        else: return
-    else:
-        v=I("名 [{}]: ".format(os.path.basename(p)))
-        if v is None: return
-        name=v or os.path.basename(p)
-    if name in a:
-        v=I("覆蓋? (enter=yes, r=rename, q=cancel): ").lower()
-        if v is None: return
-        if v.startswith("r"):
-            v2=I("新名: ")
-            if v2 is None: return
-            name=v2
-        elif v not in ("yes","y",""): return
-    data=open(p,"rb").read(); cnt=(len(data)+S-1)//S
-    tail=a["_offset"]
-    for k,v in a.items():
-        if k.startswith("_"): continue
-        tail=max(tail,v[0]+v[1])
-    _unmount(dev); _w(dev,data,tail)
+    raw=I("檔案路徑（可多個，以逗號分隔）: ")
+    if raw is None: return
+    srcs=[]; bad=[]
+    for p in _split_upload_paths(raw):
+        if not os.path.exists(p): bad.append((p,"不存在"))
+        elif not os.path.isfile(p): bad.append((p,"不是檔案"))
+        else: srcs.append(p)
+    for p,msg in bad: print("⚠️ 跳過 {}: {}".format(p,msg))
+    if not srcs: return
+    plan=[]; work=dict(a); tail=_tail(work); total=work.get("_total_sectors",0)
+    for i,p in enumerate(srcs):
+        fs=os.path.getsize(p); sh=_sha256_file(p)
+        print("\n[{} / {}] {}".format(i+1,len(srcs),os.path.basename(p)))
+        print("SHA256:",sh[:24],fs)
+        name=_pick_name(work,p,fs,sh,True)
+        if not name: continue
+        cnt=(fs+S-1)//S
+        if total and tail+cnt>total:
+            free=max(0,total-tail)
+            print("❌ 空間不足: {} 需要 {} sectors, 剩餘 {} sectors".format(name,cnt,free))
+            continue
+        plan.append((p,name,sh,tail,cnt))
+        work[name]=[tail,cnt,sh]
+        tail+=cnt
+    if not plan: return
+    _unmount(dev)
+    for i,(p,name,sh,sec,cnt) in enumerate(plan):
+        print("寫入 [{}/{}] {} ...".format(i+1,len(plan),name))
+        data=open(p,"rb").read()
+        _w(dev,data,sec)
     m=_mp(dev)
     if m:
-        r=json.load(open(os.path.join(m,"alloc.json")))
-        r[name]=[tail,cnt,sh]
-        json.dump(r,open(os.path.join(m,"alloc.json"),"w"),indent=2)
-        print("\n✅ {} sector{}~{}".format(name,tail,tail+cnt))
+        if _save_json(os.path.join(m,"alloc.json"),work):
+            chk=A(dev)
+            ok=chk and all(name in chk and chk[name][:2]==[sec,cnt] for _,name,_,sec,cnt in plan)
+            if ok:
+                print("\n✅ 完成上傳 {} 個檔案".format(len(plan)))
+                for name,sec,cnt in [(x[1],x[3],x[4]) for x in plan]:
+                    print("  - {} sector{}~{}".format(name,sec,sec+cnt))
+            else:
+                print("⚠️ alloc.json 已嘗試更新，但重新讀回驗證失敗")
+        else:
+            print("⚠️ 已寫入資料區，但 alloc.json 更新失敗")
+    else:
+        print("⚠️ 已寫入資料區，但無法掛載回 FAT 分區更新 alloc.json，請重新插拔 SD 卡後檢查")
 
 def TR(dev):
     a=A(dev)
@@ -243,8 +333,10 @@ def TR(dev):
         r=json.load(open(os.path.join(m,"alloc.json")))
         rm=[k for k,v in r.items() if not k.startswith("_") and v[0]>=s]
         for k in rm: del r[k]
-        json.dump(r,open(os.path.join(m,"alloc.json"),"w"),indent=2)
-        print("✅ 刪除:",", ".join(rm))
+        if _save_json(os.path.join(m,"alloc.json"),r):
+            print("✅ 刪除:",", ".join(rm))
+        else:
+            print("⚠️ 刪除清單已計算，但 alloc.json 更新失敗")
 
 def _is_admin():
     if OS!="Windows": return True
@@ -268,7 +360,7 @@ def main():
     dev,cap,lb=disks[int(n)-1]
     dev_display=lb if lb else dev
     while True:
-        print("\nDevice: {} ({})".format(dev_display,dev)); print("1.格式化 2.列表 3.下載 4.上傳 5.刪除 0.離開")
+        print("\nDevice: {} ({})".format(dev_display,dev)); print("1.格式化 2.列表 3.下載 4.上傳(可批量) 5.刪除 0.離開")
         c=I("選擇: ")
         if c is None: break
         if c=="1": F(dev,cap)
