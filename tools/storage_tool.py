@@ -88,8 +88,8 @@ def _mp(dev):
         for l in "DEFGHIJKLMNOPQRSTUVWXYZ":
             if os.path.exists(l+":/alloc.json"): return l+":"
         n=dev.replace("PhysicalDrive","")
-        r=R(["powershell","-NoProfile","-Command",
-             '$v=Get-Partition -DiskNumber {} -ErrorAction SilentlyContinue | Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter }; if ($v) { $v.DriveLetter+\":\" }'.format(n)])
+        cmd='$v=Get-Partition -DiskNumber '+n+' -ErrorAction SilentlyContinue | Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter }; if ($v) { $v.DriveLetter+":" }'
+        r=R(["powershell","-NoProfile","-Command",cmd])
         dl=r.stdout.strip()
         if dl and os.path.exists(dl+"\\"):
             return dl.rstrip("\\")
@@ -107,25 +107,96 @@ def _fmt(dev):
         scr="select disk {n}\nclean\nconvert mbr\ncreate partition primary\nformat fs=fat32 quick label=SDCARD\nactive\nassign\nexit\n".format(n=n)
         tf=os.path.join(os.environ.get("TEMP",os.getcwd()),"_sdfmt.txt")
         open(tf,"w").write(scr)
-        print("格式化中 (diskpart)...")
-        try:
-            r=R(["diskpart","/s",tf])
-        except OSError as e:
+        for attempt in range(2):
+            print("格式化中 (diskpart)..." if attempt==0 else "重試格式化...")
+            try:
+                r=R(["diskpart","/s",tf])
+            except OSError as e:
+                try: os.unlink(tf)
+                except: pass
+                print("diskpart 需要管理員權限: "+str(e))
+                return False
+            if r.returncode==0:
+                try: os.unlink(tf)
+                except: pass
+                time.sleep(3)
+                return True
+            if attempt==0:
+                time.sleep(2); continue
             try: os.unlink(tf)
             except: pass
-            print("diskpart 需要管理員權限: "+str(e))
-            return False
-        try: os.unlink(tf)
-        except: pass
-        if r.returncode!=0:
             for line in (r.stdout+r.stderr).split("\n"):
                 lo=line.lower()
                 if any(w in lo for w in ("error","fail","cannot","denied","invalid")):
                     print("  "+line.strip())
             return False
-        time.sleep(3)
-        return True
     return False
+
+def _win_letters(dev):
+    n=dev.replace("PhysicalDrive","")
+    cmd='(Get-Partition -DiskNumber '+n+' -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter }).DriveLetter'
+    r=R(["powershell","-NoProfile","-Command",cmd])
+    return [c for c in r.stdout.strip().split() if c.isalpha()]
+
+def _win_k():
+    import ctypes
+    from ctypes import wintypes
+    k=ctypes.windll.kernel32
+    k.CreateFileW.restype=wintypes.HANDLE
+    k.CreateFileW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,wintypes.LPVOID,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]
+    k.SetFilePointerEx.argtypes=[wintypes.HANDLE,ctypes.c_longlong,ctypes.POINTER(ctypes.c_longlong),wintypes.DWORD]
+    k.ReadFile.argtypes=[wintypes.HANDLE,wintypes.LPVOID,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),wintypes.LPVOID]
+    k.WriteFile.argtypes=[wintypes.HANDLE,wintypes.LPCVOID,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),wintypes.LPVOID]
+    k.DeviceIoControl.argtypes=[wintypes.HANDLE,wintypes.DWORD,wintypes.LPVOID,wintypes.DWORD,wintypes.LPVOID,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),wintypes.LPVOID]
+    k.CloseHandle.argtypes=[wintypes.HANDLE]
+    return k
+
+def _win_disk(dev,k):
+    import ctypes
+    GENERIC_READ=0x80000000; GENERIC_WRITE=0x40000000
+    FILE_SHARE_RW=0x1|0x2; OPEN_EXISTING=3
+    h=k.CreateFileW("\\\\.\\"+dev,GENERIC_READ|GENERIC_WRITE,FILE_SHARE_RW,None,OPEN_EXISTING,0,None)
+    INVALID=ctypes.c_void_p(-1).value
+    if not h or h==INVALID:
+        raise OSError("無法開啟磁碟 "+dev+" (錯誤碼 {})".format(ctypes.get_last_error()))
+    return h
+
+def _win_lock(k,letters):
+    import ctypes
+    from ctypes import wintypes
+    FSCTL_LOCK_VOLUME=0x00090018; FSCTL_DISMOUNT_VOLUME=0x00090020
+    ret=wintypes.DWORD(0)
+    INVALID=ctypes.c_void_p(-1).value
+    for l in letters:
+        vh=k.CreateFileW("\\\\.\\"+l+":",0x80000000|0x40000000,0x1|0x2,None,3,0,None)
+        if not vh or vh==INVALID: continue
+        k.DeviceIoControl(vh,FSCTL_LOCK_VOLUME,None,0,None,0,ctypes.byref(ret),None)
+        k.DeviceIoControl(vh,FSCTL_DISMOUNT_VOLUME,None,0,None,0,ctypes.byref(ret),None)
+        k.CloseHandle(vh)
+
+def _win_io(dev,off,buf,read_len=0,letters=""):
+    import ctypes
+    from ctypes import wintypes
+    k=_win_k()
+    h=_win_disk(dev,k)
+    try:
+        if letters: _win_lock(k,letters)
+        pos=ctypes.c_longlong(off*S); newpos=ctypes.c_longlong(0)
+        if not k.SetFilePointerEx(h,pos,ctypes.byref(newpos),0):
+            raise OSError("SetFilePointerEx 失敗 ({})".format(ctypes.get_last_error()))
+        done=wintypes.DWORD(0)
+        if read_len:
+            outbuf=ctypes.create_string_buffer(read_len)
+            if not k.ReadFile(h,outbuf,read_len,ctypes.byref(done),None):
+                raise OSError("ReadFile 失敗 ({})".format(ctypes.get_last_error()))
+            return outbuf.raw[:done.value]
+        else:
+            cbuf=ctypes.create_string_buffer(buf,len(buf))
+            if not k.WriteFile(h,cbuf,len(buf),ctypes.byref(done),None):
+                raise OSError("WriteFile 失敗 ({})".format(ctypes.get_last_error()))
+            return done.value
+    finally:
+        k.CloseHandle(h)
 
 def _w(dev,data,off):
     sz=((len(data)+S-1)//S)*S
@@ -136,7 +207,7 @@ def _w(dev,data,off):
         if pv: RS("sudo dd if="+tmp+" bs=512 2>/dev/null | "+pv+" -s "+str(sz)+" 2>/dev/null | sudo dd of="+dev+" bs=512 seek="+str(off)+" 2>/dev/null")
         else: RS("sudo dd if="+tmp+" of="+dev+" bs=512 seek="+str(off)+" 2>/dev/null")
     elif OS=="Windows":
-        with open("\\\\.\\"+dev,"wb") as f: f.seek(off*S); f.write(data.ljust(sz,b"\x00"))
+        _win_io(dev,off,data.ljust(sz,b"\x00"),letters=_win_letters(dev))
 
 def _r(dev,off,cnt,out):
     sz=cnt*S
@@ -145,7 +216,7 @@ def _r(dev,off,cnt,out):
         if pv: RS("sudo dd if="+dev+" bs=512 skip="+str(off)+" count="+str(cnt)+" 2>/dev/null | "+pv+" -s "+str(sz)+" > "+out)
         else: RS("sudo dd if="+dev+" of="+out+" bs=512 skip="+str(off)+" count="+str(cnt)+" 2>/dev/null")
     elif OS=="Windows":
-        with open("\\\\.\\"+dev,"rb") as f: f.seek(off*S); d=f.read(sz)
+        d=_win_io(dev,off,b"",read_len=sz)
         open(out,"wb").write(d)
 
 # ── 功能 ──
@@ -252,11 +323,12 @@ def DL(dev):
     fs=[k for k in a if not k.startswith("_")]
     if not fs: return
     for i,n in enumerate(fs): print(" {}. {} (sec{})".format(i+1,n,a[n][0]))
-    v=I("選擇: "); 
+    v=I("選擇: ")
     if v is None: return
     n=int(v)-1; name=fs[n]; sec,cnt=a[name][0],a[name][1]
     out=I("路徑 [./{}]: ".format(name),"./"+name)
     if out is None: return
+    out=out.strip().strip('"').strip("'")
     if os.path.exists(out):
         if I("⚠️ 覆蓋? (yes/no): ") is None: return
     _unmount(dev); _r(dev,sec,cnt,out)
@@ -346,9 +418,16 @@ def _is_admin():
 def main():
     print("\nSD 卡工具 (OS: {})\n{}".format(OS,"="*50))
     if OS=="Windows" and not _is_admin():
-        print("正在以管理員身份重新啟動...")
-        ctypes.windll.shell32.ShellExecuteW(None,"runas",sys.executable,__file__,None,1)
-        os._exit(0)
+        print("\n⚠️  需要管理員權限才能格式化 / 讀寫 SD 卡。")
+        print("    請『關閉此視窗』，然後：")
+        print("    1) 用滑鼠右鍵點擊『命令提示字元 / PowerShell』→『以系統管理員身分執行』")
+        print("    2) 在該視窗輸入: python \"{}\"".format(os.path.abspath(__file__)))
+        if I("\n或按 Enter 直接嘗試自動提權 (q=取消): ") is None: return
+        try:
+            ctypes.windll.shell32.ShellExecuteW(None,"runas",sys.executable,'"{}"'.format(os.path.abspath(__file__)),None,1)
+        except Exception as e:
+            print("自動提權失敗:",e)
+        return
     disks=_scan()
     if not disks: print("❌ 找不到 SD 卡"); return
     for i,(d,c,lb) in enumerate(disks):
@@ -358,17 +437,24 @@ def main():
     n=I("選擇: ")
     if n is None: return
     dev,cap,lb=disks[int(n)-1]
-    dev_display=lb if lb else dev
     while True:
+        if OS=="Windows":
+            ls=_win_letters(dev)
+            dev_display=(ls[0]+": SDCARD") if ls else dev
+        else:
+            dev_display=lb if lb else dev
         print("\nDevice: {} ({})".format(dev_display,dev)); print("1.格式化 2.列表 3.下載 4.上傳(可批量) 5.刪除 0.離開")
         c=I("選擇: ")
         if c is None: break
-        if c=="1": F(dev,cap)
-        elif c=="2": P(dev)
-        elif c=="3": DL(dev)
-        elif c=="4": UL(dev)
-        elif c=="5": TR(dev)
-        elif c=="0": break
+        try:
+            if c=="1": F(dev,cap)
+            elif c=="2": P(dev)
+            elif c=="3": DL(dev)
+            elif c=="4": UL(dev)
+            elif c=="5": TR(dev)
+            elif c=="0": break
+        except Exception as e:
+            print("⚠️  操作發生錯誤: {}: {}".format(type(e).__name__,e))
 
 if __name__=="__main__":
     main()
