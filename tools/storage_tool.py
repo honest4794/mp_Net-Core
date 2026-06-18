@@ -162,25 +162,35 @@ def _win_disk(dev,k):
     return h
 
 def _win_lock(k,letters):
+    """Lock volumes - keep handles alive, caller must close"""
     import ctypes
     from ctypes import wintypes
     FSCTL_LOCK_VOLUME=0x00090018; FSCTL_DISMOUNT_VOLUME=0x00090020
     ret=wintypes.DWORD(0)
     INVALID=ctypes.c_void_p(-1).value
+    handles=[]
     for l in letters:
         vh=k.CreateFileW("\\\\.\\"+l+":",0x80000000|0x40000000,0x1|0x2,None,3,0,None)
         if not vh or vh==INVALID: continue
         k.DeviceIoControl(vh,FSCTL_LOCK_VOLUME,None,0,None,0,ctypes.byref(ret),None)
         k.DeviceIoControl(vh,FSCTL_DISMOUNT_VOLUME,None,0,None,0,ctypes.byref(ret),None)
-        k.CloseHandle(vh)
+        handles.append(vh)
+    return handles
+
+def _win_unlock(k,handles):
+    """Close volume handles to release locks"""
+    for h in handles:
+        try: k.CloseHandle(h)
+        except: pass
 
 def _win_io(dev,off,buf,read_len=0,letters=""):
     import ctypes
     from ctypes import wintypes
     k=_win_k()
     h=_win_disk(dev,k)
+    lock_h=None
     try:
-        if letters: _win_lock(k,letters)
+        if letters: lock_h=_win_lock(k,letters)
         pos=ctypes.c_longlong(off*S); newpos=ctypes.c_longlong(0)
         if not k.SetFilePointerEx(h,pos,ctypes.byref(newpos),0):
             raise OSError("SetFilePointerEx 失敗 ({})".format(ctypes.get_last_error()))
@@ -196,7 +206,10 @@ def _win_io(dev,off,buf,read_len=0,letters=""):
                 raise OSError("WriteFile 失敗 ({})".format(ctypes.get_last_error()))
             return done.value
     finally:
+        if lock_h: _win_unlock(k,lock_h)
         k.CloseHandle(h)
+
+CHUNK_S=8  # 4096 bytes = 8 sectors per IO call
 
 def _w(dev,data,off):
     sz=((len(data)+S-1)//S)*S
@@ -207,7 +220,31 @@ def _w(dev,data,off):
         if pv: RS("sudo dd if="+tmp+" bs=512 2>/dev/null | "+pv+" -s "+str(sz)+" 2>/dev/null | sudo dd of="+dev+" bs=512 seek="+str(off)+" 2>/dev/null")
         else: RS("sudo dd if="+tmp+" of="+dev+" bs=512 seek="+str(off)+" 2>/dev/null")
     elif OS=="Windows":
-        _win_io(dev,off,data.ljust(sz,b"\x00"),letters=_win_letters(dev))
+        buf=data.ljust(sz,b"\x00")
+        k=_win_k()
+        # lock volume once, hold throughout this file
+        letters=_win_letters(dev)
+        lock_handles=_win_lock(k,letters)
+        try:
+            for pos in range(0,sz,CHUNK_S*S):
+                end=min(pos+CHUNK_S*S,sz)
+                sec_off=off+pos//S
+                chunk=buf[pos:end]
+                h=_win_disk(dev,k)
+                try:
+                    import ctypes; from ctypes import wintypes
+                    p=ctypes.c_longlong(sec_off*S); np=ctypes.c_longlong(0)
+                    k.SetFilePointerEx(h,p,ctypes.byref(np),0)
+                    cb=ctypes.create_string_buffer(chunk,len(chunk))
+                    d=wintypes.DWORD(0)
+                    ok=k.WriteFile(h,cb,len(chunk),ctypes.byref(d),None)
+                    if not ok or d.value!=len(chunk):
+                        err=ctypes.get_last_error()
+                        raise OSError("WriteFile at sector {} wrote {}/{} err={}".format(sec_off,d.value,len(chunk),err))
+                finally:
+                    k.CloseHandle(h)
+        finally:
+            _win_unlock(k,lock_handles)
 
 def _r(dev,off,cnt,out):
     sz=cnt*S
@@ -216,8 +253,48 @@ def _r(dev,off,cnt,out):
         if pv: RS("sudo dd if="+dev+" bs=512 skip="+str(off)+" count="+str(cnt)+" 2>/dev/null | "+pv+" -s "+str(sz)+" > "+out)
         else: RS("sudo dd if="+dev+" of="+out+" bs=512 skip="+str(off)+" count="+str(cnt)+" 2>/dev/null")
     elif OS=="Windows":
-        d=_win_io(dev,off,b"",read_len=sz)
-        open(out,"wb").write(d)
+        import ctypes; from ctypes import wintypes
+        k=_win_k(); letters=_win_letters(dev)
+        lock_handles=_win_lock(k,letters)
+        try:
+            with open(out,"wb") as f:
+                for sec_off in range(0,cnt,CHUNK_S):
+                    n=min(CHUNK_S,cnt-sec_off)
+                    h=_win_disk(dev,k)
+                    try:
+                        p=ctypes.c_longlong((off+sec_off)*S); np=ctypes.c_longlong(0)
+                        k.SetFilePointerEx(h,p,ctypes.byref(np),0)
+                        outbuf=ctypes.create_string_buffer(n*S)
+                        d2=wintypes.DWORD(0)
+                        k.ReadFile(h,outbuf,n*S,ctypes.byref(d2),None)
+                        f.write(outbuf.raw[:d2.value])
+                    finally:
+                        k.CloseHandle(h)
+        finally:
+            _win_unlock(k,lock_handles)
+
+def _r_mem(dev,off,cnt):
+    """Read sectors to bytes (chunked, persistent lock)"""
+    import ctypes; from ctypes import wintypes
+    k=_win_k(); letters=_win_letters(dev)
+    lock_handles=_win_lock(k,letters)
+    try:
+        rd=b""
+        for sec_off in range(0,cnt,CHUNK_S):
+            n=min(CHUNK_S,cnt-sec_off)
+            h=_win_disk(dev,k)
+            try:
+                p=ctypes.c_longlong((off+sec_off)*S); np=ctypes.c_longlong(0)
+                k.SetFilePointerEx(h,p,ctypes.byref(np),0)
+                outbuf=ctypes.create_string_buffer(n*S)
+                d2=wintypes.DWORD(0)
+                k.ReadFile(h,outbuf,n*S,ctypes.byref(d2),None)
+                rd+=outbuf.raw[:d2.value]
+            finally:
+                k.CloseHandle(h)
+        return rd
+    finally:
+        _win_unlock(k,lock_handles)
 
 # ── 功能 ──
 def A(dev):
@@ -370,10 +447,73 @@ def UL(dev):
         tail+=cnt
     if not plan: return
     _unmount(dev)
+    time.sleep(1)
     for i,(p,name,sh,sec,cnt) in enumerate(plan):
         print("寫入 [{}/{}] {} ...".format(i+1,len(plan),name))
         data=open(p,"rb").read()
-        _w(dev,data,sec)
+        sz=((len(data)+S-1)//S)*S
+        buf=data.ljust(sz,b"\x00")
+        fail_at=None
+        rd=b""
+
+        if OS=="Darwin":
+            _w(dev,data,sec)
+            _r(dev,sec,cnt,"/tmp/_chk.bin")
+            rd=open("/tmp/_chk.bin","rb").read()
+        else:
+            import ctypes; from ctypes import wintypes
+            k=_win_k()
+            letters=_win_letters(dev)
+            lock_h=_win_lock(k,letters)
+            try:
+                h=_win_disk(dev,k)
+                try:
+                    for pos in range(0,sz,CHUNK_S*S):
+                        end=min(pos+CHUNK_S*S,sz)
+                        sec_off=sec+pos//S
+                        chunk=buf[pos:end]
+                        p2=ctypes.c_longlong(sec_off*S); np2=ctypes.c_longlong(0)
+                        k.SetFilePointerEx(h,p2,ctypes.byref(np2),0)
+                        cb=ctypes.create_string_buffer(chunk,len(chunk))
+                        d2=wintypes.DWORD(0)
+                        ok=k.WriteFile(h,cb,len(chunk),ctypes.byref(d2),None)
+                        if not ok or d2.value!=len(chunk):
+                            err=ctypes.get_last_error()
+                            fail_at="write sector {} wrote {}/{} err={}".format(sec_off,d2.value,len(chunk),err)
+                            break
+                        p3=ctypes.c_longlong(sec_off*S); np3=ctypes.c_longlong(0)
+                        k.SetFilePointerEx(h,p3,ctypes.byref(np3),0)
+                        outbuf=ctypes.create_string_buffer(len(chunk))
+                        d3=wintypes.DWORD(0)
+                        k.ReadFile(h,outbuf,len(chunk),ctypes.byref(d3),None)
+                        rd+=outbuf.raw[:d3.value]
+                        if outbuf.raw[:d3.value]!=chunk:
+                            allff=all(b==0xFF for b in outbuf.raw[:64])
+                            all00=all(b==0x00 for b in outbuf.raw[:64])
+                            fail_at="verify sector {} mismatch (ff={} 00={})".format(sec_off,allff,all00)
+                            break
+                finally:
+                    k.CloseHandle(h)
+            finally:
+                _win_unlock(k,lock_h)
+
+        all_ff=all(b==0xFF for b in rd[:1024])
+        all_00=all(b==0x00 for b in rd[:1024])
+        if fail_at:
+            print("  ❌ {}".format(fail_at))
+        elif all_ff:
+            print("  ❌ 寫入失敗！sector {} 讀回全 0xFF".format(sec))
+        elif all_00:
+            print("  ❌ 寫入失敗！sector {} 讀回全 0x00".format(sec))
+        else:
+            rh=hashlib.sha256(rd).hexdigest()
+            if rh==sh:
+                print("  ✅ SHA256 驗證通過")
+            else:
+                print("  ❌ SHA256 不匹配！")
+                print("     expected: {}...".format(sh[:32]))
+                print("     got:      {}...".format(rh[:32]))
+                print("     head64B:  {}".format(rd[:64].hex()))
     m=_mp(dev)
     if m:
         if _save_json(os.path.join(m,"alloc.json"),work):
