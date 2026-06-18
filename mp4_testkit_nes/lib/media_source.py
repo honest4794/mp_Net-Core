@@ -279,18 +279,18 @@ class BinSource(MediaSource):
         self.width = int(width)
         self.height = int(height)
         self.loop = bool(loop)
-
         fs = _data_fs()
-        _fs_size = 0
         if fs is not None:
             try:
-                _fs_size = fs.begin_read(path)
-                fs.end_read()
+                st = os.stat(path)
+                self.file_size = st[6]
             except Exception:
-                pass
-        self.file_size = _fs_size if _fs_size > 0 else os.stat(path)[6]
-        self.count = self.file_size // self.frame_size
-        self._f = _open_read(path)
+                self.file_size = 0
+            self._f = _open_read(path)
+        else:
+            self.file_size = os.stat(path)[6]
+            self._f = open(path, "rb")
+        self.count = self.file_size // self.frame_size if self.file_size > 0 else 0
         self._idx = 0
 
     def read_into(self, fb):

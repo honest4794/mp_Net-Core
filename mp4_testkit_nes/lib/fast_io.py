@@ -188,22 +188,23 @@ class Storage:
         if max_bytes <= 0: return 0
         remaining = self._r_cnt * self._ss - self._r_byte
         if remaining <= 0: return 0
+        sector_off = self._r_byte % self._ss
         sector = self._r_sector + self._r_byte // self._ss
-        n_sectors = min(self._spc, (remaining + self._ss - 1) // self._ss)
+        n_sectors = min(self._spc, (remaining + sector_off + self._ss - 1) // self._ss)
         with _sd_lock: self._sd.readblocks(sector, self._io_buf)
-        n_bytes = min(remaining, n_sectors * self._ss)
+        n_bytes = min(remaining, n_sectors * self._ss - sector_off)
         n_bytes = min(n_bytes, max_bytes)
-        buf[off:off + n_bytes] = self._io_buf[:n_bytes]
+        buf[off:off + n_bytes] = self._io_buf[sector_off:sector_off + n_bytes]
         self._r_byte += n_bytes
         return n_bytes
 
     def seek(self, offset):
-        """設定讀取位置 (會對齊 sector 邊界)"""
+        """設定讀取位置"""
         if not self._r_open: return
         max_byte = self._r_cnt * self._ss
         if offset < 0: offset = 0
         if offset > max_byte: offset = max_byte
-        self._r_byte = (offset // self._ss) * self._ss
+        self._r_byte = offset
 
     def tell(self):
         """回傳目前讀取位置 (byte offset)"""

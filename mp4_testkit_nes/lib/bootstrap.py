@@ -10,7 +10,6 @@ from lib.pack_source import PackSource
 from lib.comm import init_comms_from_config
 from lib.sdio_mount import mount_from_config
 from lib.sys_bus import bus
-from lib.fs_manager import fs
 
 
 def _parse_pixel_format(raw):
@@ -146,9 +145,14 @@ def build_bus():
         except Exception:
             autoplay = bool(raw_autoplay)
 
-    sd_mount = mount_from_config(cfg)
+    sd_mount, sd_card = mount_from_config(cfg)
     if debug and sd_mount:
         print("[SD]", sd_mount)
+    if sd_card is not None:
+        bus.set_service("sd_raw", sd_card)
+    from lib.fs_manager import fs
+    fs.init_backend()
+    bus.set_service("data", fs)
 
     assets_root = (cfg.get("assets_root", "/jpeg") or "/jpeg").rstrip("/")
     if assets_root in ("/sd", "/sdcard", "/SD", "/SDCARD"):
@@ -220,27 +224,45 @@ def build_bus():
     pack = None
     pack_candidates = _pack_candidates(assets_root, folder, assets_pack)
 
-    for cand in pack_candidates:
-        try:
-            os.stat(cand)
-        except Exception:
-            continue
-        try:
-            pack = PackSource(cand, loop=loop_play)
-            print("[Pack] using:", cand, "count:", pack.count, "max_size:", pack.max_size)
-            if max_jpeg_bytes <= 0:
-                max_jpeg_bytes = int(pack.max_size)
-            paths = []
-            break
-        except Exception as e:
-            pack = None
-            print("[Pack] unavailable:", cand, "-> fallback folder. err:", e)
-            if isinstance(assets_pack, str) and assets_pack:
-                break
+    if pack_candidates:
+        cand = pack_candidates[0]
+
+        # Priority 1: SD-raw mode (alloc.json + fast_io.Storage)
+        if fs._raw_mode:
+            try:
+                pack = PackSource(cand, loop=loop_play, _fs=fs)
+                print("[Pack] raw mode:", cand, "count:", pack.count, "max_size:", pack.max_size)
+                if max_jpeg_bytes <= 0:
+                    max_jpeg_bytes = int(pack.max_size)
+                paths = []
+            except Exception as e:
+                if debug:
+                    print("[Pack] raw mode failed:", cand, "->", e)
+                pack = None
+
+        # Priority 2: FAT mode
+        if pack is None:
+            try:
+                os.stat(cand)
+            except Exception:
+                pass
+            else:
+                try:
+                    pack = PackSource(cand, loop=loop_play)
+                    print("[Pack] FAT mode:", cand, "count:", pack.count, "max_size:", pack.max_size)
+                    if max_jpeg_bytes <= 0:
+                        max_jpeg_bytes = int(pack.max_size)
+                    paths = []
+                except Exception as e:
+                    pack = None
+                    print("[Pack] FAT mode failed:", cand, "-> fallback folder. err:", e)
+                    if isinstance(assets_pack, str) and assets_pack:
+                        pass
 
     if pack is None:
+        # Priority 3: folder mode
         try:
-            paths = list_jpegs(folder_path)
+            paths = fs.list_jpegs(folder_path) if fs is not None else list_jpegs(folder_path)
         except OSError as e:
             raise OSError(
                 "Assets folder not found: {} (assets_root={}, type={}). "
@@ -466,10 +488,6 @@ def build_bus():
             bus.shared["backlight_on"] = True
 
     bus.set_service("data_Phat", sd_mount or "")
-
-    fs.init_storage_mode()
-    bus.set_service("data", fs)
-
     bus.set_service("lcd", lcd)
     bus.set_service("decoder", decoder)
     bus.set_service("paths", paths)

@@ -18,10 +18,16 @@ def _u32_le(b, off):
 
 
 class PackSource:
-    def __init__(self, path, loop=True):
+    def __init__(self, path, loop=True, _fs=None):
         self.path = path
         self.loop = bool(loop)
-        self._f = open(path, "rb")
+        self._fs = _fs
+        if _fs is not None:
+            self._f = _fs.open_read(path)
+            if self._f is None:
+                raise ValueError("pack file not found: " + path)
+        else:
+            self._f = open(path, "rb")
         hdr = self._f.read(16)
         if len(hdr) != 16 or hdr[0:4] != b"JPK1":
             raise ValueError("bad pack header")

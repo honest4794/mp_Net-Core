@@ -50,13 +50,13 @@
     "spi": {
       "id": 1,
       "baudrate": 80000000,
-      "sck": 13,
+      "sck": 21,
       "mosi": 14
     },
     "pins": {
-      "dc": 11,
-      "cs": 12,
-      "rst": 21,
+      "dc": 12,
+      "cs": 11,
+      "rst": 13,
       "bl": 10
     },
     "backlight": {

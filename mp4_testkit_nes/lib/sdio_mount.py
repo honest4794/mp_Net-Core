@@ -23,7 +23,7 @@ def _mount_spi(sd_cfg, path):
         freq=int(c.get("freq", 20_000_000)),
     )
     os.mount(sd, path)
-    return path
+    return path, sd
 
 
 def _mount_sdio(sd_cfg, path):
@@ -40,27 +40,27 @@ def _mount_sdio(sd_cfg, path):
         freq=int(c.get("freq", 40_000_000)),
     )
     os.mount(sd, path)
-    return path
+    return path, sd
 
 
 def mount_from_config(cfg):
     sd_cfg = cfg.get("SDcard", None)
     if not isinstance(sd_cfg, dict):
-        return ""
+        return "", None
     if not bool(sd_cfg.get("enable", False)):
-        return ""
+        return "", None
 
     path = sd_cfg.get("phat", None) or sd_cfg.get("path", None) or sd_cfg.get("mount", None) or "/sd"
     if not isinstance(path, str) or not path:
         path = "/sd"
     if _exists(path):
-        return path
+        return path, None
 
     try:
         import machine
     except Exception as e:
         print("SD mount: machine import failed:", e)
-        return ""
+        return "", None
 
     slot = int((sd_cfg.get("config") or {}).get("slot", 0))
     try:
@@ -70,4 +70,4 @@ def mount_from_config(cfg):
             return _mount_sdio(sd_cfg, path)
     except Exception as e:
         print("SD card init error:", e)
-        return ""
+        return "", None

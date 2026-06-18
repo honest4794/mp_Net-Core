@@ -7,6 +7,53 @@ from lib.dispatch import dprint
 
 MANIFEST_FILE = "/manifest.json"
 
+
+class _RawFileWrapper:
+    def __init__(self, fs, path):
+        self._fs = fs
+        self._size = fs.begin_read(path)
+        if self._size == 0:
+            raise OSError("cannot open: " + str(path))
+
+    def readinto(self, buf):
+        mv = buf if isinstance(buf, memoryview) else memoryview(buf)
+        total = 0
+        remaining = len(mv)
+        while remaining > 0:
+            n = self._fs.read_into(mv[total:])
+            if n == 0:
+                break
+            total += n
+            remaining -= n
+        return total
+
+    def read(self, n=-1):
+        if n < 0:
+            n = self._size
+        buf = bytearray(n)
+        got = self.readinto(buf)
+        return bytes(buf[:got]) if got else b""
+
+    def seek(self, offset, whence=0):
+        if whence == 1:
+            offset = self._fs.tell() + offset
+        elif whence == 2:
+            offset = self._size + offset
+        self._fs.seek(offset)
+
+    def tell(self):
+        return self._fs.tell()
+
+    def close(self):
+        self._fs.end_read()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
 class FileSystemManager:
     """
     Unified File System Manager
@@ -45,6 +92,23 @@ class FileSystemManager:
         self._str_kind = None
 
         self.load_manifest()
+
+    def init_backend(self):
+        if self._raw_mode:
+            return True
+        try:
+            os.stat("/sd/alloc.json")
+            from lib.sys_bus import bus
+            if bus.get_service("sd_raw") is not None:
+                from lib.fast_io import Storage
+                self._raw = Storage()
+                self._raw_mode = True
+                print("✅ [FS] SD-raw backend ready (alloc.json found)")
+                return True
+        except Exception:
+            pass
+        print("📂 [FS] FAT mode (alloc.json not found)")
+        return False
 
     def load_manifest(self):
         try:
@@ -283,22 +347,6 @@ class FileSystemManager:
     # raw 模式 (alloc.json 存在)：讀寫直接走 fast_io.Storage
     # FAT 模式 (alloc.json 不存在)：讀寫走 os.open/readinto
 
-    def init_storage_mode(self):
-        if self._raw_mode:
-            return
-        try:
-            os.stat("/sd/alloc.json")
-            from lib.sys_bus import bus
-            if bus.get_service("sd_raw") is not None:
-                from lib.fast_io import Storage
-                self._raw = Storage()
-                self._raw_mode = True
-                print("✅ [FS] SD-raw backend ready (alloc.json found)")
-        except Exception:
-            pass
-        if not self._raw_mode:
-            print("📂 [FS] FAT mode (alloc.json not found)")
-
     def resolve(self, path):
         """正規化路徑前綴。回傳 (kind, full_path, raw_name)
         kind: 'ram' | 'sd'
@@ -501,6 +549,11 @@ class FileSystemManager:
                 return None
             import io
             return io.BytesIO(data)
+        if self._raw_mode and self._raw is not None and raw_name:
+            try:
+                return _RawFileWrapper(self, path)
+            except Exception:
+                pass
         try:
             return open(full, "rb")
         except Exception:
