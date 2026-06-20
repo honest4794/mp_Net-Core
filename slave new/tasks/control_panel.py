@@ -12,7 +12,7 @@ import time, struct
 from machine import Encoder
 from lib.task import Task
 from lib.sys_bus import bus
-from lib.hw_manager import HW
+from lib.hw_manager import HW, _PIN_CACHE
 from lib.proto import Proto
 from lib.log_service import get_log
 
@@ -23,6 +23,37 @@ _VBTN_SYNC = [
     ("btn",  0),
     ("encC", 1),
 ]
+
+
+def _find_pin_obj(label, fallback=0):
+    plist = bus.get_service("pin_list")
+    if plist:
+        cfg = bus.shared.get("PIN") or {}
+        lst = cfg.get("list") or []
+        for i, item in enumerate(lst):
+            if isinstance(item, dict) and item.get("label") == label:
+                if i < len(plist):
+                    return plist[i]
+    gpio = fallback
+    cfg = bus.shared.get("PIN") or {}
+    lst = cfg.get("list") or []
+    for item in lst:
+        if isinstance(item, dict) and item.get("label") == label:
+            gpio = int(item.get("GPIO", fallback))
+            break
+    if gpio in _PIN_CACHE:
+        return _PIN_CACHE[gpio]
+    from machine import Pin
+    return Pin(gpio, Pin.IN, Pin.PULL_UP)
+
+
+def _label_gpio(label):
+    cfg = bus.shared.get("PIN") or {}
+    lst = cfg.get("list") or []
+    for item in lst:
+        if isinstance(item, dict) and item.get("label") == label:
+            return item.get("GPIO", "?")
+    return "?"
 
 
 class ControlPanelTask(Task):
@@ -38,19 +69,28 @@ class ControlPanelTask(Task):
     def on_start(self):
         super().on_start()
 
-        btn1 = HW.resolve_pin("btn")
-        btn2 = HW.resolve_pin("encC")
+        btn1 = _find_pin_obj("btn", 40)
+        btn2 = _find_pin_obj("encC", 17)
         self._btns.append([btn1, btn1.value(), "btn", 0])
         self._btns.append([btn2, btn2.value(), "encC", 0])
 
-        pin_a = HW.resolve_pin("encA")
-        pin_b = HW.resolve_pin("encB")
+        pin_a = _find_pin_obj("encA", 18)
+        pin_b = _find_pin_obj("encB", 8)
         self._enc = Encoder(0, pin_a, pin_b)
         self._enc_last = self._enc.value()
 
         self._now_bus = bus.get_service("NowBus")
+        for _, vbtn_id in _VBTN_SYNC:
+            HW.set(HW.VBTN, vbtn_id, 1)
+        for pin, stable, label, _ in self._btns:
+            for sync_label, vbtn_id in _VBTN_SYNC:
+                if label == sync_label:
+                    HW.set(HW.VBTN, vbtn_id, stable)
+                    self._send_vbtn(vbtn_id, stable)
+                    break
         get_log().info("[CP] encA={} encB={} btn={} encC={}".format(
-            "?", "?", "?", "?"))
+            _label_gpio("encA"), _label_gpio("encB"),
+            _label_gpio("btn"), _label_gpio("encC")))
 
     def _read_buttons(self, now):
         triggered = []

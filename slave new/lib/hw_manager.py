@@ -1,7 +1,26 @@
+"""
+統一硬體資源管理器
+
+整合所有硬體資源的初始化查找與讀寫，取代各處分散的 cache 和直接存取。
+
+使用方式:
+  from lib.hw_manager import HW
+  HW.get(HW.PWM, 0)        # 讀取 pwm_list[0] 的 duty
+  HW.set(HW.PWM, 0, 512)   # 寫入 pwm_list[0] 的 duty
+  HW.get(HW.PIN, 8)        # 讀取 GPIO 8 的值（自動快取 Pin 物件）
+  HW.set(HW.PIN, 8, 1)     # 寫入 GPIO 8
+  HW.get(HW.VBTN, 1)       # 讀取虛擬按鈕 ID=1 的值 (0/1)
+  HW.set(HW.VBTN, 1, 1)    # 寫入虛擬按鈕 ID=1
+  HW.vbtn_buf()             # 取得虛擬按鈕原始 bytearray (32B, 供高效輪詢)
+  HW.list_all()             # 列出所有已註冊的硬體資源
+
+虛擬按鈕緩衝存放於 bus.shared["_vbtn"] (Global 區域)，可供所有任務存取。
+"""
+
 from machine import Pin
 from lib.sys_bus import bus
-from lib.log_service import get_log
 
+# -- 設備類型常數 --
 PIN  = 0
 PWM  = 1
 SPI  = 2
@@ -10,10 +29,14 @@ LED  = 4
 LCD  = 5
 SD   = 6
 UART = 7
-VBTN = 8
-EXIO = 9  # XL9555 擴展 IO
+VBTN = 8  # 虛擬按鈕: ID 0-255, 值 0/1, 32-byte bitfield
 
+# -- 虛擬按鈕緩衝大小 --
 _VBTN_BYTES = 32
+
+# -- Pin 快取 (單例) --
+#   優先使用 boot 註冊的 pin_list（已設好 mode/pull/initial），
+#   否則才自行建立 Pin(gpio, OUT)。
 _PIN_CACHE = {}
 
 
@@ -25,70 +48,31 @@ def _get_pin(gpio_num):
 
 
 def _vbtn_buf():
+    """從 Global 區域 (bus.shared) 取得/初始化虛擬按鈕緩衝"""
     key = "_vbtn"
     if key not in bus.shared:
-        bus.shared[key] = bytearray(_VBTN_BYTES)
+        # vbtn 採用 active-low 語意: 0=按下, 1=放開
+        # 開機預設應為全放開，避免未同步前被誤判為長按
+        bus.shared[key] = bytearray([0xFF] * _VBTN_BYTES)
     return bus.shared[key]
 
 
-def init_pins(config):
-    pin_list = []
-    pin_by_label = {}
-    for item in config:
-        gpio = item.get("GPIO")
-        label = item.get("label", "pin_{}".format(gpio))
-        if gpio is None:
-            continue
-        mode = item.get("mode", "OUT")
-        initial = item.get("initial", 0)
-        pull = item.get("pull")
-        if mode == "IN":
-            pull_mode = None
-            if pull == "UP":
-                pull_mode = Pin.PULL_UP
-            elif pull == "DOWN":
-                pull_mode = Pin.PULL_DOWN
-            p = Pin(gpio, Pin.IN, pull=pull_mode)
-        else:
-            p = Pin(gpio, Pin.OUT, value=1 if initial else 0)
-        pin_list.append(p)
-        _PIN_CACHE[gpio] = p
-        pin_by_label[label] = p
-
-    bus.register_service("pin_list", pin_list)
-    bus.register_service("pin_by_label", pin_by_label)
-    get_log().info("PIN: {} pin(s)".format(len(pin_list)))
-    return pin_list
-
-
-def resolve_pin(identifier):
-    """回傳 Pin-like 物件, 不論 GPIO 或 XL9555
-       int  → pin_list 順序索引
-       str  → pin_by_label 查詢"""
-    if isinstance(identifier, int):
-        lst = bus.get_service("pin_list") or []
-        if 0 <= identifier < len(lst):
-            return lst[identifier]
-        raise ValueError("Pin index {} out of range (0..{})".format(identifier, len(lst)-1))
-    by_label = bus.get_service("pin_by_label") or {}
-    p = by_label.get(identifier)
-    if p is not None:
-        return p
-    raise ValueError("Pin label not found: {}".format(identifier))
+def _init_pin_from_list():
+    """由 boot 呼叫，把 pin_list 中的 Pin 物件填入快取"""
+    plist = bus.get_service("pin_list")
+    if plist is None:
+        return
+    cfg = bus.shared.get("PIN", {}) or {}
+    items = cfg.get("list", []) or []
+    for i, entry in enumerate(items):
+        gpio = entry.get("GPIO")
+        if gpio is not None and i < len(plist):
+            _PIN_CACHE[gpio] = plist[i]
 
 
 def get(dev_type, dev_id=None):
     try:
         if dev_type == PIN:
-            if isinstance(dev_id, str):
-                by_label = bus.get_service("pin_by_label") or {}
-                p = by_label.get(dev_id)
-                if p is not None:
-                    return p.value()
-                raise ValueError("Pin label not found: {}".format(dev_id))
-            lst = bus.get_service("pin_list") or []
-            if 0 <= dev_id < len(lst):
-                return lst[dev_id].value()
             return _get_pin(dev_id).value()
         elif dev_type == PWM:
             lst = bus.get_service("pwm_list")
@@ -115,7 +99,9 @@ def get(dev_type, dev_id=None):
             if not (0 <= dev_id <= 255):
                 return 0
             buf = _vbtn_buf()
-            return (buf[dev_id >> 3] >> (dev_id & 0x07)) & 1
+            byte_idx = dev_id >> 3
+            bit_idx = dev_id & 0x07
+            return (buf[byte_idx] >> bit_idx) & 1
     except Exception:
         pass
     return None
@@ -124,17 +110,6 @@ def get(dev_type, dev_id=None):
 def set(dev_type, dev_id, value):
     try:
         if dev_type == PIN:
-            if isinstance(dev_id, str):
-                by_label = bus.get_service("pin_by_label") or {}
-                p = by_label.get(dev_id)
-                if p is not None:
-                    p.value(1 if value else 0)
-                    return
-                raise ValueError("Pin label not found: {}".format(dev_id))
-            lst = bus.get_service("pin_list") or []
-            if 0 <= dev_id < len(lst):
-                lst[dev_id].value(1 if value else 0)
-                return
             _get_pin(dev_id).value(1 if value else 0)
         elif dev_type == PWM:
             lst = bus.get_service("pwm_list")
@@ -155,6 +130,7 @@ def set(dev_type, dev_id, value):
 
 
 def vbtn_buf():
+    """回傳 bus.shared["_vbtn"] 原始 bytearray，供高效 byte-level diff 輪詢"""
     return _vbtn_buf()
 
 
@@ -173,6 +149,7 @@ def list_all():
     return rows
 
 
+# -- 單例物件 --
 HW = type("HW", (), {
     "PIN": PIN, "PWM": PWM, "SPI": SPI, "I2C": I2C,
     "LED": LED, "LCD": LCD, "SD": SD, "UART": UART, "VBTN": VBTN,
@@ -180,5 +157,4 @@ HW = type("HW", (), {
     "set": staticmethod(set),
     "vbtn_buf": staticmethod(vbtn_buf),
     "list_all": staticmethod(list_all),
-    "resolve_pin": staticmethod(resolve_pin),
 })

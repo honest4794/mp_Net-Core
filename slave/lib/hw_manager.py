@@ -51,7 +51,9 @@ def _vbtn_buf():
     """從 Global 區域 (bus.shared) 取得/初始化虛擬按鈕緩衝"""
     key = "_vbtn"
     if key not in bus.shared:
-        bus.shared[key] = bytearray(_VBTN_BYTES)
+        # vbtn 採用 active-low 語意: 0=按下, 1=放開
+        # 開機預設應為全放開，避免未同步前被誤判為長按
+        bus.shared[key] = bytearray([0xFF] * _VBTN_BYTES)
     return bus.shared[key]
 
 

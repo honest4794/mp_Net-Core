@@ -80,6 +80,14 @@ class ControlPanelTask(Task):
         self._enc_last = self._enc.value()
 
         self._now_bus = bus.get_service("NowBus")
+        for _, vbtn_id in _VBTN_SYNC:
+            HW.set(HW.VBTN, vbtn_id, 1)
+        for pin, stable, label, _ in self._btns:
+            for sync_label, vbtn_id in _VBTN_SYNC:
+                if label == sync_label:
+                    HW.set(HW.VBTN, vbtn_id, stable)
+                    self._send_vbtn(vbtn_id, stable)
+                    break
         get_log().info("[CP] encA={} encB={} btn={} encC={}".format(
             _label_gpio("encA"), _label_gpio("encB"),
             _label_gpio("btn"), _label_gpio("encC")))
