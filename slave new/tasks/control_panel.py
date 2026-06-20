@@ -17,6 +17,13 @@ from lib.proto import Proto
 from lib.log_service import get_log
 
 CMD_HW = 0x1401
+_EX_IC_SLOT_KEY = "_ex_ic_slot"
+_EX_IC_PENDING_KEY = "_ex_ic_pending"
+_UART_SOF = 0xB4
+_UART_EOF = 0xFF
+_ENC_DELTA_KEY = "_enc_delta"
+_ENC_EVENT_TYPE = 0xFE
+_ENC_EVENT_LABEL = b"enc_delta"
 
 # 需要同步的實體按鈕: [(label, vbtn_id), ...]
 _VBTN_SYNC = [
@@ -54,6 +61,10 @@ def _label_gpio(label):
         if isinstance(item, dict) and item.get("label") == label:
             return item.get("GPIO", "?")
     return "?"
+
+
+def _format_mode_bits(mode):
+    return "{:08b}".format(mode & 0xFF)
 
 
 class ControlPanelTask(Task):
@@ -126,16 +137,66 @@ class ControlPanelTask(Task):
         payload += struct.pack("<H", state)
         self._now_bus.broadcast(Proto.pack(CMD_HW, payload))
 
+    def _send_encoder_delta(self, delta):
+        """ESP-NOW 發送編碼器增量事件，value 以 u16 裝載 (+1 / 0xFFFF[-1])"""
+        if self._now_bus is None:
+            return
+        encoded = delta & 0xFFFF
+        payload = struct.pack("<BB", _ENC_EVENT_TYPE, 0)
+        payload += struct.pack("<H", len(_ENC_EVENT_LABEL)) + _ENC_EVENT_LABEL
+        payload += struct.pack("<H", encoded)
+        self._now_bus.broadcast(Proto.pack(CMD_HW, payload))
+
+    def _poll_ex_ic(self):
+        if not bus.shared.get(_EX_IC_PENDING_KEY):
+            return
+
+        event = bus.shared.get(_EX_IC_SLOT_KEY) or {}
+        chip_type = int(event.get("chip_type", -1) or -1)
+        chip_id = int(event.get("chip_id", -1) or -1)
+        data = event.get("data", b"") or b""
+        if isinstance(data, memoryview):
+            data = bytes(data)
+        elif not isinstance(data, (bytes, bytearray)):
+            data = bytes(data)
+
+        bus.shared[_EX_IC_PENDING_KEY] = 0
+
+        if len(data) != 5 or data[0] != _UART_SOF or data[4] != _UART_EOF:
+            get_log().info("[CP][RX][0x1403][DROP] chip={} id={} len={}".format(
+                chip_type, chip_id, len(data)))
+            return
+
+        mode = data[1]
+        brightness = data[2]
+        time_remaining = data[3]
+        bus.shared["_display_mode"] = mode
+        bus.shared["_display_brightness"] = brightness
+        bus.shared["_display_time"] = time_remaining
+        get_log().info("[CP][RX][0x1403] chip={} id={} mod={} bit={} bri={} time={}".format(
+            chip_type,
+            chip_id,
+            mode & 0x3F,
+            _format_mode_bits(mode),
+            brightness,
+            time_remaining))
+
     def loop(self):
         if not self.running:
             return
 
         now = time.ticks_ms()
+        self._poll_ex_ic()
 
         pos = self._enc.value()
         if pos != self._enc_last:
+            step = 1 if pos > self._enc_last else -1
             self._enc_last = pos
             self._lw_ex(0, pos)
+            cur = int(bus.shared.get(_ENC_DELTA_KEY, 0) or 0)
+            bus.shared[_ENC_DELTA_KEY] = cur + step
+            self._send_encoder_delta(step)
+            get_log().immediate("[CP] enc_delta={:+d} pos={}".format(step, pos))
             self.success += 1
 
         for label, raw in self._read_buttons(now):

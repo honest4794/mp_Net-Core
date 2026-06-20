@@ -2,7 +2,18 @@ from machine import UART, Pin
 from lib.sys_bus import bus
 from lib.log_service import get_log
 
-CONFIG = []
+CONFIG = [
+            {
+                "id": 1,
+                "baudrate": 115200,
+                "GPIO": { "tx": 38, "rx": 38 }
+            },
+            {
+                "id": 2,
+                "baudrate": 9600,
+                "GPIO": { "tx": 40, "rx": 41 }
+            }
+        ]
 
 
 def config():

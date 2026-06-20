@@ -22,6 +22,12 @@ CONFIG = [
 
     # ── 電池 ADC ──
 #     {"GPIO": 8,  "label": "bat_adc",   "mode": "IN",  "initial": 0},
+    
+    # ── 可調編碼器 ──
+    { "GPIO": 42, "label": "btn",  "mode": "IN",  "initial": 0, "pull": "UP" },
+    { "GPIO": 18, "label": "encA", "mode": "IN",  "initial": 0, "pull": "UP" },
+    { "GPIO": 8,  "label": "encB", "mode": "IN",  "initial": 0, "pull": "UP" },
+    { "GPIO": 17, "label": "encC", "mode": "IN", "initial": 0, "pull": "UP" }
 
     # ── 剩餘可用 GPIO (未分配、可自由使用) ──
 #     {"GPIO": 0,  "label": "gp0",       "mode": "IN",  "initial": 0, "pull": "UP"},

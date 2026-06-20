@@ -39,12 +39,27 @@ _VBTN_BYTES = 32
 #   否則才自行建立 Pin(gpio, OUT)。
 _PIN_CACHE = {}
 
+_PIN_MODE_MAP = {
+    "IN": Pin.IN,
+    "OUT": Pin.OUT,
+}
+
+_PIN_PULL_MAP = {
+    "UP": Pin.PULL_UP,
+    "DOWN": Pin.PULL_DOWN,
+}
+
 
 def _get_pin(gpio_num):
     if gpio_num in _PIN_CACHE:
         return _PIN_CACHE[gpio_num]
     _PIN_CACHE[gpio_num] = Pin(gpio_num, Pin.OUT)
     return _PIN_CACHE[gpio_num]
+
+
+def resolve_pin(gpio_num):
+    """相容舊介面：回傳指定 GPIO 的 Pin 物件。"""
+    return _get_pin(gpio_num)
 
 
 def _vbtn_buf():
@@ -68,6 +83,54 @@ def _init_pin_from_list():
         gpio = entry.get("GPIO")
         if gpio is not None and i < len(plist):
             _PIN_CACHE[gpio] = plist[i]
+
+
+def init_pins(config_list):
+    """
+    相容舊版 driver/pin_drv.py 介面。
+    根據 CONFIG 建立 Pin 物件、註冊 `pin_list` / `pin_by_label`，
+    並同步填入 `_PIN_CACHE`。
+    """
+    pin_cfg = bus.shared.get("PIN")
+    if not isinstance(pin_cfg, dict):
+        pin_cfg = {}
+        bus.shared["PIN"] = pin_cfg
+    pin_cfg["list"] = [dict(entry) for entry in (config_list or [])]
+
+    pin_list = bus.get_service("pin_list")
+    if pin_list is None:
+        pin_list = []
+        bus.register_service("pin_list", pin_list)
+
+    pin_by_label = bus.get_service("pin_by_label")
+    if pin_by_label is None:
+        pin_by_label = {}
+        bus.register_service("pin_by_label", pin_by_label)
+
+    for entry in config_list or []:
+        gpio = entry.get("GPIO")
+        if gpio is None:
+            continue
+
+        mode_name = str(entry.get("mode", "OUT")).upper()
+        mode = _PIN_MODE_MAP.get(mode_name, Pin.OUT)
+        pull_name = entry.get("pull")
+        pull = _PIN_PULL_MAP.get(str(pull_name).upper()) if pull_name else None
+        initial = entry.get("initial")
+
+        if pull is not None:
+            pin = Pin(gpio, mode, pull)
+        else:
+            pin = Pin(gpio, mode)
+        if mode == Pin.OUT and initial is not None:
+            pin.value(1 if initial else 0)
+
+        pin_list.append(pin)
+        _PIN_CACHE[gpio] = pin
+        label = entry.get("label")
+        if label:
+            pin_by_label[label] = pin
+    return pin_list
 
 
 def get(dev_type, dev_id=None):
@@ -155,6 +218,7 @@ HW = type("HW", (), {
     "LED": LED, "LCD": LCD, "SD": SD, "UART": UART, "VBTN": VBTN,
     "get": staticmethod(get),
     "set": staticmethod(set),
+    "resolve_pin": staticmethod(resolve_pin),
     "vbtn_buf": staticmethod(vbtn_buf),
     "list_all": staticmethod(list_all),
 })

@@ -32,6 +32,15 @@ def on_hw_ctl(ctx, args):
             print("[HW] pwm err: {}".format(e))
         return
 
+    if label == "enc_delta":
+        # HW_CTL schema 的 value 是 u16，這裡轉回 signed delta。
+        if value & 0x8000:
+            value -= 0x10000
+        cur = int(bus.shared.get("_enc_delta", 0) or 0)
+        bus.shared["_enc_delta"] = cur + value
+        print("[HW] enc_delta={:+d}".format(value))
+        return
+
     if label:
         print("[HW] {}={}".format(label, value))
         bus.shared["hw_events"] = {"label": label, "value": value}

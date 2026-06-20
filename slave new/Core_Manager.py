@@ -64,9 +64,9 @@ def launcher():
     # ── Layer 0: 網路 + 通訊 + FS 掃描，最先啟動 ──
     tm.register_task("log", LogTask, default_affinity=(1, 0), layer=0)
     tm.register_task("network", NetworkTask, default_affinity=(1, 0), layer=0)
-    tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
+#     tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
     tm.register_task("motor", ActionTask1, default_affinity=(1, 0), layer=0)
-    tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
+#     tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
     tm.register_task("circuit", CircuitTask, default_affinity=(1, 0), layer=0)
     tm.register_task("bus_decode", BusDecodeTask, default_affinity=(1, 0), layer=0)
     tm.register_task("web_ui",  WebUITask,   default_affinity=(1, 0), layer=0)
@@ -74,7 +74,7 @@ def launcher():
 
     # ── Layer 1: JPEG 播放器 ──
     from tasks.jpeg_player_task import JpegPlayerTask
-    tm.register_task("jpeg_player", JpegPlayerTask, default_affinity=(0, 1), layer=1)
+#     tm.register_task("jpeg_player", JpegPlayerTask, default_affinity=(0, 1), layer=1)
 
     # ══════════════════════════════════════════════════════
     # 臨時播放參數（之後會移到 config.json）
