@@ -199,6 +199,7 @@ class ActionTask1(Task):
         self._uart_rx_buf = bytearray()  # UART 接收累積 buffer
         self._motor_control_source = None  # None | "manual" | "reserved"
         self._motor_start_ms = 0         # 記錄馬達啟動時間，供 STOP log 計算持續時間
+        self._position = None            # 當前實體位置: None | "top" | "bottom"
 
     def _is_motor_enabled(self):
         """讀取 bus.shared["_motor_enabled"]，0=禁用, 1=啟用 (預設 1)"""
@@ -511,25 +512,29 @@ class ActionTask1(Task):
 
     def _check_mode_motor(self):
         """
-        MODE_RESERVED (Bit6): 1=升高(RISE), 0=下降(FALL)
-        當 reserved bit 變化時觸發對應馬達動作。
+        MODE_RESERVED (Bit6): 1=目標頂部, 0=目標底部
+        檢查當前位置與目標是否一致，不一致則移動。
         """
         reserved = bool(self._display_mode & MODE_RESERVED)
         if reserved:
-            # Bit6=1 → 升高
+            # Bit6=1 → 目標 top
+            if self._position == "top":
+                return  # 已在頂部，不動
             if self._state == STATE_IDLE:
                 self._motor_control_source = "reserved"
                 self._enter(STATE_RISE)
-                get_log().immediate("[Motor] RESERVED=1 → RISE")
+                get_log().immediate("[Motor] RESERVED=1 → RISE (target top)")
             elif self._state in (STATE_FALL, STATE_PRE_DELAY):
                 self._enter(STATE_RISE)
                 get_log().immediate("[Motor] RESERVED=1 → switch to RISE")
         else:
-            # Bit6=0 → 下降
+            # Bit6=0 → 目標 bottom
+            if self._position == "bottom":
+                return  # 已在底部，不動
             if self._state == STATE_IDLE:
                 self._motor_control_source = "reserved"
                 self._enter(STATE_FALL)
-                get_log().immediate("[Motor] RESERVED=0 → FALL")
+                get_log().immediate("[Motor] RESERVED=0 → FALL (target bottom)")
             elif self._state in (STATE_RISE, STATE_WAIT, STATE_PRE_DELAY):
                 self._enter(STATE_FALL)
                 get_log().immediate("[Motor] RESERVED=0 → switch to FALL")
@@ -701,6 +706,7 @@ class ActionTask1(Task):
                 if self._state == STATE_PRE_DELAY:
                     self._enter(STATE_RISE)
                 elif self._state == STATE_RISE:
+                    self._position = "top"
                     if self._is_reserved_motor_control():
                         self._enter(STATE_IDLE)   # reserved: 到頂就停
                     else:
@@ -708,6 +714,7 @@ class ActionTask1(Task):
                 elif self._state == STATE_WAIT:
                     self._enter(STATE_FALL)
                 elif self._state == STATE_FALL:
+                    self._position = "bottom"
                     self._enter(STATE_IDLE)
                 self.success += 1
 
@@ -718,7 +725,10 @@ class ActionTask1(Task):
             return
         if self._state == STATE_IDLE:
             self._motor_control_source = "manual"
-            self._enter(STATE_RISE)
+            if self._position == "top":
+                self._enter(STATE_FALL)  # 在頂部 → 下降
+            else:
+                self._enter(STATE_RISE)  # 在底部/未知 → 上升
         elif self._state == STATE_PRE_DELAY:
             if self._is_reserved_motor_control():
                 self._enter(STATE_IDLE)
