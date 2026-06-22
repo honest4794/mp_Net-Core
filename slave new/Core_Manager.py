@@ -95,6 +95,7 @@ def launcher():
     bus.shared["jpeg_source_req"] = {
         "source": "/jpeg/background",
     }
+    bus.shared.setdefault("_stream_source", "/jpeg/background")
 
     tm.finalize()
 

@@ -937,3 +937,48 @@ class NV3030B(TFT):
 
     def _update_inversion(self):
         self.write_cmd(self._get_inversion_cmd())
+
+
+class ST7789V2(ST7789):
+    """
+    ST7789V2 控制器 (Waveshare LCD 1.83 Rev2)
+    分辨率: 240 x 284
+    默認: RGB顏色順序, 顏色反轉開啟, 含 Gamma 校正
+    """
+    def __init__(self, spi, dc, cs, rst, width=240, height=284, rotation=0, color_order="RGB", invert=True, pixel_format="RGB565_BE", bytes_per_pixel=2):
+        super().__init__(spi, dc, cs, rst, width=width, height=height, rotation=rotation, color_order=color_order, invert=invert, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+
+    def init(self):
+        self.rst(1)
+        _sleep_ms(10)
+        self.rst(0)
+        _sleep_ms(10)
+        self.rst(1)
+        _sleep_ms(50)
+
+        init_cmds = [
+            (0x01, None),       # 軟復位
+            (0x11, None),       # 退出睡眠模式
+            (0x3A, self._get_colmod_cmd()),    # 像素格式
+            (0x36, self._get_madctl_cmd()),    # 內存訪問控制
+            (0xB2, b'\x0C\x0C\x00\x33\x33'),   # 門控制
+            (0xB7, b'\x35'),    # 門控制
+            (0xBB, b'\x19'),    # VCOM設置
+            (0xC0, b'\x2C'),    # LCM控制
+            (0xC2, b'\x01'),
+            (0xC3, b'\x12'),
+            (0xC4, b'\x20'),
+            (0xC6, b'\x0F'),
+            (0xD0, b'\xA4\xA1'),  # 電源控制
+            (0xE0, b'\xD0\x04\x0D\x11\x13\x2B\x3F\x54\x4C\x18\x0D\x0B\x1F\x23'),  # 正極 Gamma
+            (0xE1, b'\xD0\x04\x0C\x11\x13\x2C\x3F\x44\x51\x2F\x1F\x1F\x20\x23'),  # 負極 Gamma
+            (self._get_inversion_cmd(), None),  # 顏色反轉
+            (0x29, None)        # 開啟顯示
+        ]
+
+        for cmd, data in init_cmds:
+            self.write_cmd_data(cmd, data)
+            _sleep_ms(10)
+
+        _sleep_ms(200)
+        self.set_window(0, 0)

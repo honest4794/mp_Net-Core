@@ -18,20 +18,25 @@ def on_stream_state_set(ctx, args):
 def on_stream_play(ctx, args):
     """0x300A: 開始播放 (支持中途加入)"""
     start_frame = args.get("start_frame", 0)
-    
-    # 如果指定了起始幀，通知 Supply Chain 進行跳轉
+
+    # 對接 Core0_worker 的播放狀態鍵
+    bus.shared.update({
+        "mp4_playing": True,
+        "mp4_paused": False,
+        "mp4_seek": start_frame,
+    })
+
+    # 同步 stream 管線的 seek 狀態
     if start_frame > 0:
         bus.shared.update({
             "seek_frame": start_frame,
-            "is_seeking": True # 觸發重新加載/跳轉
+            "is_seeking": True,
         })
-        # 刷新 Buffer Hub 以清除舊數據
         hub = bus.get_service("pixel_stream")
         if hub: hub.flush()
-        print(f"▶️ PLAY from frame {start_frame}")
-    else:
-        print(f"▶️ PLAY from start")
-        
+        bus.shared["mp4_flush"] = 1
+
+    print(f"▶️ PLAY from frame {start_frame}")
     bus.shared.update({"is_streaming": True})
 
 def handle_supply_chain(hub, s, ctx):
@@ -86,7 +91,14 @@ def register(app):
     # 播放控制
     app.disp.on(0x3009, on_stream_state_set) # SET
     app.disp.on(0x300A, on_stream_play) # PLAY
-    app.disp.on(0x3005, lambda c,a: bus.shared.update({"is_paused": bool(a["pause"])})) # PAUSE
-    app.disp.on(0x3002, lambda c,a: bus.shared.update({"is_streaming": False, "is_ready": False})) # STOP
+    app.disp.on(0x3005, lambda c,a: bus.shared.update({
+        "is_paused": bool(a["pause"]),
+        "mp4_paused": bool(a["pause"]),
+    }))  # PAUSE
+    app.disp.on(0x3002, lambda c,a: bus.shared.update({
+        "is_streaming": False,
+        "is_ready": False,
+        "mp4_playing": False,
+    }))  # STOP
     # 0x3003 Direct Mode
     app.disp.on(0x3003, lambda c,a: bus.get_service("pixel_stream").write_from(a["pixel_data"]))

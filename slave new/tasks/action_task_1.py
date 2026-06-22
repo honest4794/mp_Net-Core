@@ -224,23 +224,25 @@ class ActionTask1(Task):
             log.immediate(msg)
 
     def _dispatch_stream_play_from_start(self, reason):
+        # 透過本地 UART 發送 STREAM_PLAY (幀 0)，與 UART Display 幀共存
+        if self._uart is None:
+            get_log().warn("[STREAM][TX] UART not available — skip")
+            return
+
         app = self.ctx.get("app") if isinstance(self.ctx, dict) else None
         if app is None:
             return
-        cmd_def = app.store.get(0x300A)
-        if not cmd_def:
-            get_log().warn("[MP4][TX] schema 0x300A missing")
+
+        cmd_play = app.store.get(0x300A)
+        if not cmd_play:
+            get_log().warn("[STREAM][TX] schema 0x300A missing")
             return
         try:
-            payload = SchemaCodec.encode(cmd_def, {"start_frame": 0})
-            app.disp.dispatch(0x300A, payload, {
-                "app": app,
-                "transport": "ActionTask1",
-                "send": None,
-            })
-            get_log().immediate("[MP4][TX] cmd=0x300A start=0 reason={}".format(reason))
+            payload = SchemaCodec.encode(cmd_play, {"start_frame": 0})
+            self._uart.write(Proto.pack(0x300A, payload))
+            get_log().immediate("[STREAM][TX] 0x300A start=0 reason={}".format(reason))
         except Exception as e:
-            get_log().error("[MP4][TX] failed: {}".format(e))
+            get_log().error("[STREAM][TX] 0x300A failed: {}".format(e))
 
     def _is_reserved_motor_control(self):
         return self._motor_control_source == "reserved"

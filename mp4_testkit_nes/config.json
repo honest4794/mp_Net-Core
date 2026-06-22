@@ -42,21 +42,21 @@
   },
   "tft": {
     "driver": "ST7789",
-    "width": 240,
-    "height": 320,
+    "width": 320,
+    "height": 240,
     "rotation": 0,
     "color_order": "RGB",
     "invert": 1,
     "spi": {
       "id": 1,
       "baudrate": 40000000,
-      "sck": 21,
+      "sck": 13,
       "mosi": 14
     },
     "pins": {
-      "dc": 12,
-      "cs": 11,
-      "rst": 13,
+      "dc": 11,
+      "cs": 12,
+      "rst": 21,
       "bl": 10
     },
     "backlight": {
@@ -76,8 +76,8 @@
   "display_Layout": [
     {
       "type": "output",
-      "height": 240,
-      "width": 320,
+      "height": 320,
+      "width": 240,
       "x": 0,
       "y": 0,
       "assets_pack": 1,

@@ -172,6 +172,10 @@ def build_bus():
 
     width = int(tft_cfg.get("width", layout.get("width", 240)))
     height = int(tft_cfg.get("height", layout.get("height", 240)))
+    layout_x = int(layout.get("x", 0) or 0)
+    layout_y = int(layout.get("y", 0) or 0)
+    layout_w = int(layout.get("width", layout.get("w", width)) or width)
+    layout_h = int(layout.get("height", layout.get("h", height)) or height)
     folder = layout.get("type", "background")
     folder_path = assets_root + "/" + folder
 
@@ -459,6 +463,10 @@ def build_bus():
     bus.shared["debug"] = debug
     bus.shared["width"] = width
     bus.shared["height"] = height
+    bus.shared["layout_x"] = layout_x
+    bus.shared["layout_y"] = layout_y
+    bus.shared["layout_w"] = layout_w
+    bus.shared["layout_h"] = layout_h
     bus.shared["frame_bytes"] = compute_max_frame_size(
         paths,
         default_bytes=width * height,

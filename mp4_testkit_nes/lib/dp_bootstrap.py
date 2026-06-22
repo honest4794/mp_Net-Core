@@ -55,7 +55,7 @@ def init_lcd(dp_config_path="/dp_config.json"):
     color_order = tft_cfg.get("color_order", "RGB")
     invert = bool(tft_cfg.get("invert", True))
 
-    from lib.TFT import ST7789, ST7735, GC9A01, GC9D01, ILI9341, NV3030B
+    from lib.TFT import ST7789, ST7735, GC9A01, GC9D01, ILI9341, NV3030B, ST7789V2
     driver_map = {
         "ST7789": ST7789,
         "ST7735": ST7735,
@@ -63,6 +63,7 @@ def init_lcd(dp_config_path="/dp_config.json"):
         "GC9D01": GC9D01,
         "ILI9341": ILI9341,
         "NV3030B": NV3030B,
+        "ST7789V2": ST7789V2,
     }
     driver_cls = driver_map.get(driver_name)
     if driver_cls is None:

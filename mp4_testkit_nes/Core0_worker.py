@@ -167,6 +167,10 @@ def task_loop(bus):
     frame_bytes = int(bus.shared.get("frame_bytes", 0) or 0)
     io_prefetch = int(bus.shared.get("io_prefetch", 0) or 0)
     io_read_chunk = int(bus.shared.get("io_read_chunk", 0) or 0)
+    layout_x = int(bus.shared.get("layout_x", 0) or 0)
+    layout_y = int(bus.shared.get("layout_y", 0) or 0)
+    layout_w = int(bus.shared.get("layout_w", 0) or 0)
+    layout_h = int(bus.shared.get("layout_h", 0) or 0)
     jpeg_cache = bus.get_service("jpeg_cache")
     pack = bus.get_service("pack")
     if bool(bus.shared.get("debug", False)):
@@ -532,6 +536,8 @@ def task_loop(bus):
             t0 = time.ticks_us()
             try:
                 tx_payload = spi_tx.prep_for_spi(r[:frame_bytes], frame_bytes)
+                if layout_w > 0 and layout_h > 0:
+                    lcd.set_window(layout_x, layout_y, layout_x + layout_w - 1, layout_y + layout_h - 1)
                 lcd.write_data(tx_payload)
                 _backlight_try_on(bus)
             finally:

@@ -217,8 +217,8 @@ def _w(dev,data,off):
         import shutil; pv=shutil.which("pv")
         tmp="/tmp/_ul.bin"
         open(tmp,"wb").write(data.ljust(sz,b"\x00"))
-        if pv: RS("sudo dd if="+tmp+" bs=512 2>/dev/null | "+pv+" -s "+str(sz)+" 2>/dev/null | sudo dd of="+dev+" bs=512 seek="+str(off)+" 2>/dev/null")
-        else: RS("sudo dd if="+tmp+" of="+dev+" bs=512 seek="+str(off)+" 2>/dev/null")
+        if pv: RS("sudo dd if="+tmp+" bs=512 2>/dev/null | "+pv+" -s "+str(sz)+" 2>/dev/null | sudo dd of="+dev+" bs=512 seek="+str(off)+" conv=fsync 2>/dev/null")
+        else: RS("sudo dd if="+tmp+" of="+dev+" bs=512 seek="+str(off)+" conv=fsync 2>/dev/null")
     elif OS=="Windows":
         buf=data.ljust(sz,b"\x00")
         k=_win_k()
@@ -446,8 +446,6 @@ def UL(dev):
         work[name]=[tail,cnt,sh]
         tail+=cnt
     if not plan: return
-    _unmount(dev)
-    time.sleep(1)
     for i,(p,name,sh,sec,cnt) in enumerate(plan):
         print("寫入 [{}/{}] {} ...".format(i+1,len(plan),name))
         data=open(p,"rb").read()
@@ -457,9 +455,67 @@ def UL(dev):
         rd=b""
 
         if OS=="Darwin":
-            _w(dev,data,sec)
-            _r(dev,sec,cnt,"/tmp/_chk.bin")
-            rd=open("/tmp/_chk.bin","rb").read()
+            rdev = dev.replace("/dev/disk", "/dev/rdisk")
+            _unmount(dev)
+            time.sleep(0.5)
+
+            # Build chunk descriptor and write all data to temp files
+            DARWIN_CHUNK_BYTES = 8 * 1024 * 1024  # 8MB per chunk
+            chunks_desc = []
+            for pos in range(0, sz, DARWIN_CHUNK_BYTES):
+                end = min(pos + DARWIN_CHUNK_BYTES, sz)
+                sec_off = sec + pos // S
+                chunks_desc.append({"offset": sec_off * S, "size": end - pos})
+            data_tmp = "/tmp/_ul_data.bin"
+            open(data_tmp, "wb").write(buf)
+            info_tmp = "/tmp/_ul_info.json"
+            json.dump(chunks_desc, open(info_tmp, "w"))
+            result_tmp = "/tmp/_ul_result.json"
+
+            # Run helper via sudo — one process holds the fd, macOS can't re-mount
+            # Helper: write chunks, verify each, compute SHA256 (no giant hex dump)
+            helper_py = '''import os,json,sys,hashlib
+fd=os.open(sys.argv[1],os.O_RDWR)
+orig_size=int(sys.argv[5])
+try:
+ chunks=json.load(open(sys.argv[2])); data=open(sys.argv[3],"rb").read()
+ h=hashlib.sha256(); errors=[]; pos=0; hashed=0
+ for i,c in enumerate(chunks):
+  os.lseek(fd,c["offset"],os.SEEK_SET); chunk=data[pos:pos+c["size"]]
+  n=os.write(fd,chunk)
+  if n!=c["size"]:
+   errors.append("chunk %d: wrote %d/%d"%(i,n,c["size"]))
+   break
+  os.fsync(fd)
+  os.lseek(fd,c["offset"],os.SEEK_SET); rb=os.read(fd,c["size"])
+  if hashed<orig_size:
+   to_hash=rb[:orig_size-hashed]; h.update(to_hash); hashed+=len(to_hash)
+  if rb!=chunk:
+   allff=all(b==0xFF for b in rb[:64]); all00=all(b==0x00 for b in rb[:64])
+   errors.append("chunk %d sector %d mismatch (ff=%s 00=%s)"%(i,c["offset"]//512,allff,all00))
+   break
+  pos+=c["size"]
+finally: os.close(fd)
+json.dump({"errors":errors,"sha256":h.hexdigest() if not errors else ""},open(sys.argv[4],"w"))
+'''
+            r = SP.run(["sudo", sys.executable, "-c", helper_py,
+                        rdev, info_tmp, data_tmp, result_tmp, str(len(data))],
+                       capture_output=True, text=True)
+            if r.returncode != 0:
+                fail_at = "raw I/O helper failed: {}".format((r.stderr + r.stdout).strip())
+            else:
+                result = json.load(open(result_tmp))
+                if result["errors"]:
+                    fail_at = result["errors"][0]
+                else:
+                    rh = result["sha256"]
+                    if rh == sh:
+                        print("  ✅ SHA256 驗證通過")
+                    else:
+                        print("  ❌ SHA256 不匹配！")
+                        print("     expected: {}...".format(sh[:32]))
+                        print("     got:      {}...".format(rh[:32]))
+                    continue  # skip the all_ff/all_00 check below
         else:
             import ctypes; from ctypes import wintypes
             k=_win_k()
@@ -506,7 +562,7 @@ def UL(dev):
         elif all_00:
             print("  ❌ 寫入失敗！sector {} 讀回全 0x00".format(sec))
         else:
-            rh=hashlib.sha256(rd).hexdigest()
+            rh=hashlib.sha256(rd[:len(data)]).hexdigest()
             if rh==sh:
                 print("  ✅ SHA256 驗證通過")
             else:
