@@ -60,6 +60,166 @@ def _alloc_fb(size):
     return memoryview(raw)[off:off+size]
 
 
+# ═══════════════════ DmaBus — QSPI/DMA 抽象 ═══════════════════
+
+class DmaBus:
+    """輕量 SPI 抽象 — 自動偵測 QSPI / DMA / Blocking 並封裝差異。
+    來自 slave new BusAdapter 的精簡版：set_window / write_data_async / write_frame / flush / wait。
+    QSPI: 四線模式，命令走 cmd=0x02 addr=cmd<<8，像素走 cmd=0x32 addr=0x2C00。
+    DMA:  標準 SPI + dc 切換 + write(wait=False) 非同步排隊。
+    """
+
+    def __init__(self, spi, dc, cs=None, rst=None):
+        self._spi = spi
+        self._dc = dc
+        self._cs = cs
+        self._rst = rst
+        self._qspi = hasattr(spi, 'lane_count') and spi.lane_count() > 1
+        self._dma = hasattr(spi, 'wait') and hasattr(spi, 'pending')
+
+    def write_cmd(self, cmd, data=None):
+        if self._qspi:
+            if self._cs: self._cs.value(0)
+            payload = data if data else b'\x00'
+            self._spi.write(payload, cmd=0x02, addr=cmd << 8)
+            self._spi.wait_all()
+            if self._cs: self._cs.value(1)
+        elif self._dma:
+            if self._cs: self._cs.value(0)
+            self._dc.value(0); self._spi.write(bytearray([cmd])); self._spi.wait_all()
+            if data:
+                self._dc.value(1); self._spi.write(data); self._spi.wait_all()
+        else:
+            self._dc.value(0)
+            if self._cs: self._cs.value(0)
+            self._spi.write(bytearray([cmd]))
+            if data:
+                self._dc.value(1); self._spi.write(data)
+
+    def set_window(self, x0, y0, x1, y1):
+        if self._qspi:
+            if self._cs: self._cs.value(0)
+            self._spi.write(
+                bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]),
+                cmd=0x02, addr=0x2A << 8)
+            self._spi.wait_all()
+            if self._cs: self._cs.value(1)
+            if self._cs: self._cs.value(0)
+            self._spi.write(
+                bytes([y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF]),
+                cmd=0x02, addr=0x2B << 8)
+            self._spi.wait_all()
+            if self._cs: self._cs.value(1)
+            if self._cs: self._cs.value(0)
+            self._spi.write(b'', cmd=0x32, addr=0x002C00, multiline=False)
+            self._spi.wait_all()
+        elif self._dma:
+            if self._cs: self._cs.value(0)
+            self._dc.value(0); self._spi.write(bytearray([0x2A])); self._spi.wait_all()
+            self._dc.value(1); self._spi.write(bytes([x0>>8,x0&0xFF,x1>>8,x1&0xFF])); self._spi.wait_all()
+            self._dc.value(0); self._spi.write(bytearray([0x2B])); self._spi.wait_all()
+            self._dc.value(1); self._spi.write(bytes([y0>>8,y0&0xFF,y1>>8,y1&0xFF])); self._spi.wait_all()
+            self._dc.value(0); self._spi.write(bytearray([0x2C])); self._spi.wait_all(); self._dc.value(1)
+        else:
+            self._dc.value(0)
+            self._spi.write(bytearray([0x2A]))
+            self._dc.value(1); self._spi.write(bytes([x0>>8,x0&0xFF,x1>>8,x1&0xFF]))
+            self._dc.value(0); self._spi.write(bytearray([0x2B]))
+            self._dc.value(1); self._spi.write(bytes([y0>>8,y0&0xFF,y1>>8,y1&0xFF]))
+            self._dc.value(0); self._spi.write(bytearray([0x2C])); self._dc.value(1)
+
+    def write_frame(self, fb, chunk=32*1024):
+        if self._qspi:
+            if self._cs: self._cs.value(0)
+            mv = memoryview(fb) if not isinstance(fb, memoryview) else fb
+            off, rem = 0, len(mv)
+            while rem > 0:
+                n = min(rem, chunk)
+                tid = self._spi.write(mv[off:off + n])
+                self.wait(tid)
+                rem -= n; off += n
+            if self._cs: self._cs.value(1)
+        elif self._dma:
+            self._dc.value(1)
+            if self._cs: self._cs.value(0)
+            mv = memoryview(fb) if not isinstance(fb, memoryview) else fb
+            off, rem = 0, len(mv)
+            while rem > 0:
+                n = min(rem, chunk)
+                tid = self._spi.write(mv[off:off + n])
+                self.wait(tid)
+                rem -= n; off += n
+            if self._cs: self._cs.value(1)
+        else:
+            self._dc.value(1)
+            if self._cs: self._cs.value(0)
+            self._spi.write(fb)
+            if self._cs: self._cs.value(1)
+
+    def write_ramwr_fast(self):
+        if self._qspi:
+            if self._cs: self._cs.value(0)
+            self._spi.write(b'', cmd=0x32, addr=0x002C00, multiline=False)
+            self._spi.wait_all()
+        elif self._dma:
+            self._dc.value(0)
+            tid = self._spi.write(bytearray([0x2C]))
+            self.wait(tid)
+            self._dc.value(1)
+        else:
+            self._dc.value(0); self._spi.write(bytearray([0x2C])); self._dc.value(1)
+
+    def write_data_async(self, data):
+        """非同步寫入。DMA/QSPI 回傳 handle，blocking 回傳 True。"""
+        if self._dma or self._qspi:
+            while self._spi.pending() >= 4:
+                self._spi.wait_all()
+            try:
+                return self._spi.write(data)
+            except RuntimeError:
+                return None
+        self._dc.value(1)
+        if self._cs: self._cs.value(0)
+        self._spi.write(data)
+        return True
+
+    def fire_async(self, fb, chunk=32*1024):
+        """批次 fire 多個非同步寫入，回傳 tid 列表。不等完成，caller 後續 wait。"""
+        self._dc.value(1)
+        if self._cs: self._cs.value(0)
+        mv = memoryview(fb) if not isinstance(fb, memoryview) else fb
+        tids = []; off, rem = 0, len(mv)
+        while rem > 0:
+            n = min(rem, chunk)
+            while self._spi.pending() >= 4:
+                t = self._spi.wait_all()
+                if t is not None: tids.append(t)
+            tid = self._spi.write(mv[off:off + n])
+            if tid is not None: tids.append(tid)
+            rem -= n; off += n
+        return tids
+
+    def flush(self):
+        self._spi.wait_all()
+        if self._cs: self._cs.value(1)
+
+    def wait(self, handle):
+        if handle is not None:
+            self._spi.wait(handle)
+
+    def init_tft(self, driver="ST7789"):
+        seq = _INIT_MAP.get(driver)
+        if seq is None: raise ValueError("unknown driver: " + driver)
+        for cmd, data, delay in seq:
+            self.write_cmd(cmd, data)
+            if delay: time.sleep_ms(delay)
+
+    def reset(self):
+        if self._rst is None: return
+        self._rst.value(0); time.sleep_ms(10)
+        self._rst.value(1); time.sleep_ms(10)
+
+
 def _noise_rgb888(w, h):
     """真實世界壓力測試圖案"""
     buf = bytearray(w*h*3)
@@ -485,10 +645,9 @@ class PipelinePlayer:
 # ═══════════════════ Deep Buffer Pipeline ═══════════════════
 
 class DeepBufferPipeline:
-    def __init__(self, bus, dc, w, h, bpp, jpeg_frames,
+    def __init__(self, dma_bus, w, h, bpp, jpeg_frames,
                  pool_depth=8, target_fps=0, prefill_pct=1.0, loop=True):
-        self._bus = bus
-        self._dc = dc
+        self._bus = dma_bus
         self._w = w
         self._h = h
         self._bpp = bpp
@@ -523,14 +682,6 @@ class DeepBufferPipeline:
         self._pool_depth = actual_depth
         print("  pool: {} buffers, {}KB total".format(
             actual_depth, actual_depth * self._fb_size // 1024))
-
-        try:
-            import heap_caps
-            self._dma_buf = heap_caps.malloc(32 * 1024, heap_caps.CAP_DMA)
-            if self._dma_buf is None:
-                self._dma_buf = bytearray(32 * 1024)
-        except Exception:
-            self._dma_buf = bytearray(32 * 1024)
 
         self._dec = jpeg.Decoder(pixel_format=_DEC_FORMAT, block=False)
         self._frames = jpeg_frames
@@ -571,17 +722,6 @@ class DeepBufferPipeline:
                 break
         print("  prefill: {} frames decoded, pool {}/{}".format(
             target, len(self._ready), self._pool_depth))
-
-    def _dma_fire(self, fb):
-        tids = []
-        off = 0
-        while off < self._fb_size:
-            n = min(32 * 1024, self._fb_size - off)
-            tid = self._bus.write(fb[off:off + n])
-            if tid is not None:
-                tids.append(tid)
-            off += n
-        return tids
 
     def run(self, max_frames=0):
         self._running = True
@@ -659,10 +799,8 @@ class DeepBufferPipeline:
             self._advance_frame()
 
         if self._count == 0:
-            _ramwr_start(self._bus, self._dc, self._w, self._h)
-        else:
-            _ramwr_fast(self._bus, self._dc)
-        self._pending_tids = self._dma_fire(self._bufs[send_idx])
+            self._bus.set_window(0, 0, self._w - 1, self._h - 1)
+        self._pending_tids = self._bus.fire_async(self._bufs[send_idx])
         self._sending_idx = send_idx
         return True
 
@@ -889,7 +1027,8 @@ def run_deep_pipeline(quality=80, pool_depth=8, target_fps=0,
                           freq=_PINS["freq"], host=_PINS["host"])
     print("SPIBus host={} lane={}".format(_PINS["host"], spi.lane_count()))
 
-    _tft_init(spi, dc, _TFT_CFG["driver"])
+    dma_bus = DmaBus(spi, dc, cs, rst)
+    dma_bus.init_tft(_TFT_CFG["driver"])
     if bl: bl.value(1)
 
     print("generating {} noise frames (Q={})...".format(n_frames, quality))
@@ -898,7 +1037,7 @@ def run_deep_pipeline(quality=80, pool_depth=8, target_fps=0,
 
     gc.collect()
     player = DeepBufferPipeline(
-        spi, dc, w, h, bpp, frames,
+        dma_bus, w, h, bpp, frames,
         pool_depth=pool_depth,
         target_fps=target_fps,
         prefill_pct=1.0,
@@ -943,7 +1082,8 @@ def run_deep_compare(quality=80, n_frames=20, max_display=100):
 
     spi = lcd_bus.SPIBus(data=_PINS["data"], clk=_PINS["clk"],
                           freq=_PINS["freq"], host=_PINS["host"])
-    _tft_init(spi, dc, _TFT_CFG["driver"])
+    dma_bus = DmaBus(spi, dc, cs, rst)
+    dma_bus.init_tft(_TFT_CFG["driver"])
     if bl: bl.value(1)
 
     depths = [2, 4, 8, 12, 16]
@@ -959,7 +1099,7 @@ def run_deep_compare(quality=80, n_frames=20, max_display=100):
 
         try:
             player = DeepBufferPipeline(
-                spi, dc, _W, _H, _DEC_BPP, frames,
+                dma_bus, _W, _H, _DEC_BPP, frames,
                 pool_depth=depth, target_fps=0, prefill_pct=1.0, loop=True
             )
             player.run(max_frames=max_display)
