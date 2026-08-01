@@ -122,6 +122,7 @@ class TFT:
         self.chunk_size = int(chunk_size)          # 每次傳輸塊位元組數 (0=不分塊)
         self._chunk_total = 0                      # 當前幀總塊數
         self._chunk_done = 0                       # 已傳輸塊數
+        self._display_active = False               # begin_display 後為 True
         if self.chunk_size > 0:
             ppc = max(1, self.chunk_size // self.bytes_per_pixel)
             self._chunk_total = (self.width * self.height + ppc - 1) // ppc
@@ -186,6 +187,28 @@ class TFT:
         if h is None: h = self.height
         self.set_window(x, y, x + w - 1, y + h - 1)
         self._bus.write_data_async(data)
+
+    # ══════════════════════════════════════════════════════════════
+    #  Pipeline Display API — 持久視窗 + DMA chunk 平行
+    #  適用連續幀播放（如 JPEG player）：視窗只設一次，每幀只送 RAMWR。
+    # ══════════════════════════════════════════════════════════════
+
+    def begin_display(self):
+        """設定持久全螢幕視窗（CASET/PASET/RAMWR）一次。
+        之後 present() 只送 RAMWR + 資料，省去每幀重設視窗的命令開銷。"""
+        self._bus.set_window(0, 0, self.width - 1, self.height - 1)
+        self._display_active = True
+
+    def present(self, fb):
+        """送一幀到螢幕（視窗已由 begin_display 設好）。
+        流程：write_cmd(0x2C RAMWR, polling 確保送達) → write_frame_dma(分 chunk 填 queue)。
+        回傳 tid 列表；caller 需在下一幀前 flush() 等完成，實現 DMA 與解碼重疊。"""
+        self._bus.write_cmd(0x2C)               # RAMWR（polling，wait_all）
+        return self._bus.write_frame_dma(fb)    # 分 chunk DMA，回傳 tids
+
+    def present_wait(self):
+        """等所有 pending DMA 完成（每幀結尾或切換前呼叫）"""
+        self._bus.flush()
 
     # ══════════════════════════════════════════════════════════════
     #  Classic Write Session API — begin_write / write_pixels / end_write

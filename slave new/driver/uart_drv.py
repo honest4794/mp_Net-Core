@@ -1,24 +1,22 @@
+"""
+uart_drv.py — UART 管理
+
+設定來源: bus.shared["UART"]  ({enable, list})
+產物:    bus.register_service("uart_list", [UART_obj, ...])
+"""
 from machine import UART, Pin
 from lib.sys_bus import bus
 from lib.log_service import get_log
 
-CONFIG = [
-            {
-                "id": 1,
-                "baudrate": 115200,
-                "GPIO": { "tx": 38, "rx": 38 }
-            },
-            {
-                "id": 2,
-                "baudrate": 9600,
-                "GPIO": { "tx": 40, "rx": 41 }
-            }
-        ]
 
+def init_uart(sysbus=None):
+    sysbus = sysbus or bus
+    cfg = sysbus.shared.get("UART") or {}
+    if not cfg.get("enable"):
+        return []
 
-def config():
     uart_list = []
-    for item in CONFIG:
+    for item in cfg.get("list", []):
         gpio = item.get("GPIO", {})
         uart = UART(
             item.get("id", 1),
@@ -28,17 +26,23 @@ def config():
         )
         uart_list.append(uart)
 
-    bus.register_service("uart_list", uart_list)
+    sysbus.register_service("uart_list", uart_list)
     get_log().info("UART: {} port(s)".format(len(uart_list)))
     return uart_list
 
 
-def gpios():
+def gpios(sysbus=None):
+    sysbus = sysbus or bus
+    cfg = sysbus.shared.get("UART") or {}
+    if not cfg.get("enable"):
+        return {}
+
     result = {}
-    for item in CONFIG:
+    for item in cfg.get("list", []):
         gpio = item.get("GPIO", {})
+        uid = item.get("id", "?")
         for name in ("tx", "rx"):
             pin = gpio.get(name)
             if pin is not None:
-                result[pin] = "uart{}_{}".format(item.get("id", "?"), name)
+                result[pin] = "uart{}_{}".format(uid, name)
     return result

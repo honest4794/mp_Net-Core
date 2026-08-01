@@ -1,8 +1,15 @@
+# boot.py
+# 硬體初始化 — config.json (扁平 {enable, list}) → driver init_xxx(bus) → bus service
+#
+# 流程:
+#   Phase 1: 各 driver gpios() 回報腳位 → bus.gpio_claim → validate (衝突檢查)
+#   Phase 2: 線性呼叫 init_xxx(bus) 建立硬體 Object 並註冊到 bus
+#
+# 要停用某 driver：註解 Phase 1 與 Phase 2 對應兩行即可。
+
 from lib.ConfigManager import *
 from lib.sys_bus import bus
-from lib.log_service import get_log
-import machine
-import ubinascii
+import ubinascii, machine
 
 try:
     bus.slave_id = ubinascii.hexlify(machine.unique_id()).decode().upper()
@@ -12,76 +19,55 @@ except Exception:
     except Exception:
         bus.slave_id = "UNKNOWN"
 
-from driver.spi_drv import config as init_spi, gpios as gpios_spi
-from driver.i2c_drv import config as init_i2c, gpios as gpios_i2c
-from driver.pin_drv import config as init_pin, gpios as gpios_pin
-from driver.pwm_drv import config as init_pwm, gpios as gpios_pwm
-from driver.uart_drv import config as init_uart, gpios as gpios_uart
-from driver.i2s_drv import config as init_i2s, gpios as gpios_i2s
-from driver.sd_drv import config as init_sd, gpios as gpios_sd
-from driver.ws2812_drv import config as init_ws2812, gpios as gpios_ws2812
-from driver.apa102_drv import config as init_apa102, gpios as gpios_apa102
-from driver.pca9685_drv import config as init_pca9685, gpios as gpios_pca9685
-from driver.led_drv import config as init_led, gpios as gpios_led
-from driver.network_drv import config as init_network
-from driver.tft_drv import boot_config as init_tft_boot, gpios as gpios_tft
+from driver.spi_drv      import init_spi,      gpios as g_spi
+from driver.pin_drv      import init_pin,      gpios as g_pin
+from driver.i2c_drv      import init_i2c,      gpios as g_i2c
+from driver.uart_drv     import init_uart,     gpios as g_uart
+from driver.pwm_drv      import init_pwm,      gpios as g_pwm
+from driver.i2s_drv      import init_i2s,      gpios as g_i2s
+from driver.sd_drv       import init_sd,       gpios as g_sd
+from driver.tft_drv      import init_tft,      gpios as g_tft
+from driver.network_drv  import init_network
+
 
 # ══════════════════════════════════════════════════════
-# 一級硬件初始化 (Level 1) — 底層匯流排、GPIO、周邊
-#   config 寫在 driver/_drv.py 的 CONFIG 中
-#   要啟用 → 加入 tuple，要停用 → 註解整行
+# Phase 1: GPIO claim + 衝突檢查
+#   (name, gpios_fn) — driver 透過 gpios(bus) 回報自己用的腳位
 # ══════════════════════════════════════════════════════
-LEVEL1 = [
-    ("spi",      init_spi,      gpios_spi),
-    ("pin",      init_pin,      gpios_pin),
-    ("pwm",      init_pwm,      gpios_pwm),
-    ("i2c",      init_i2c,      gpios_i2c),
-    ("sd",       init_sd,       gpios_sd),
-    ("uart",   init_uart,     gpios_uart),
-    # ("i2s",    init_i2s,      gpios_i2s),
+DRIVERS = [
+    ("spi",  g_spi),
+    ("pin",  g_pin),
+    ("i2c",  g_i2c),
+    ("uart", g_uart),
+    ("pwm",  g_pwm),
+    ("i2s",  g_i2s),
+    ("sd",   g_sd),
+    ("tft",  g_tft),
 ]
 
-# ══════════════════════════════════════════════════════
-# 應用硬件驅動 (Application) — config 寫在這裡
-#   格式: (name, init_fn, gpios_fn, CONFIG)
-# ══════════════════════════════════════════════════════
-APP_DRV = [
-#     ("ws2812",   init_ws2812,   gpios_ws2812,   []),
-#     ("apa102",   init_apa102,   gpios_apa102,   []),
-#     ("pca9685",  init_pca9685,  gpios_pca9685,  []),
-#     ("led",      init_led,      gpios_led,      {}),
-    ("tft",      init_tft_boot, gpios_tft,      {
-        "driver": "ST7789",
-        "width": 240,
-        "height": 320,
-        "rotation": 0,
-        "color_order": "RGB",
-        "invert": 1,
-        "spi_id": 1,
-        "pins": {"dc": "tft_dc", "cs": "tft_cs", "rst": "tft_rst", "bl": "tft_bl"},
-        "pixel_format": "RGB565_BE",
-        "variant": 0,
-    }),
-]
-
-# ── Phase 1: GPIO claim ──
-for name, _, gpios_fn, *_ in LEVEL1 + APP_DRV:
-    for gpio, label in gpios_fn().items():
+for name, gpios_fn in DRIVERS:
+    for gpio, label in gpios_fn(bus).items():
         bus.gpio_claim(gpio, name, label)
 
 bus.gpio_validate()
 bus.gpio_dump()
 
-# ── Phase 2: 一級硬件初始化 ──
-for name, init_fn, *_ in LEVEL1:
-    init_fn()
 
-# ── Phase 3: 應用硬件驅動初始化 (傳入 config) ──
-for name, init_fn, _, cfg in APP_DRV:
-    init_fn(cfg)
+# ══════════════════════════════════════════════════════
+# Phase 2: 線性硬體初始化
+#   順序: 匯流排 (spi/pin/i2c/uart) → sd → tft → network
+#   driver 內部會檢查 bus.shared["XXX"]["enable"]，未啟用即跳過
+# ══════════════════════════════════════════════════════
+init_spi(bus)
+init_pin(bus)
+init_i2c(bus)
+init_uart(bus)
+# init_pwm(bus)
+# init_i2s(bus)
+init_sd(bus)
+init_tft(bus)
+init_network(bus)
 
-# ── Network (需排在最末) ──
-init_network()
 
 # ── 統一資料層 (fs)：永遠確保 /sd 存在 + 註冊成 service "data" ──
 import os as _os

@@ -1,18 +1,13 @@
+"""
+spi_drv.py — SPI 匯流排管理
+
+設定來源: bus.shared["SPI"]  ({enable, list})
+產物:    bus.register_service("spi_list", [SPI_obj, ...])
+
+支援 lcd_bus (DMA) 與 machine.SPI fallback。
+"""
 from machine import Pin, SPI
 from lib.sys_bus import bus
-
-# ESP32-S3-Touch-LCD-2.8
-# ST7789 via lcd_bus: data=(45,), clk=40, host=1
-CONFIG = [
-    {
-        "id": 1,
-        "baudrate": 80000000,
-        "phase": 0,
-        "polarity": 0,
-        "GPIO": {"sck": 21},
-        "data_pins": (14,),
-    },
-]
 
 try:
     import lcd_bus
@@ -33,6 +28,10 @@ def _make_machine_spi(item, gpio, data):
     sck = gpio.get("sck")
     mosi = gpio.get("mosi")
     miso = gpio.get("miso")
+    # lcd_bus 模式用 data_pins 當 data line (單線 = data_pins[0]);
+    # fallback 到 machine.SPI 時需把它對應到 mosi
+    if mosi is None and data:
+        mosi = data[0]
     return SPI(
         sid,
         baudrate=item.get("baudrate", 80000000),
@@ -44,10 +43,15 @@ def _make_machine_spi(item, gpio, data):
     )
 
 
-def config():
+def init_spi(sysbus=None):
+    """讀 bus.shared['SPI'] → 建 SPI → 註冊 'spi_list'"""
+    sysbus = sysbus or bus
+    cfg = sysbus.shared.get("SPI") or {}
+    if not cfg.get("enable"):
+        return []
+
     spi_list = []
-    spi_by_id = {}
-    for item in CONFIG:
+    for item in cfg.get("list", []):
         gpio = item.get("GPIO", {})
         data = item.get("data_pins")
 
@@ -64,7 +68,13 @@ def config():
                     host=item["id"],
                 )
             except Exception as e:
-                print("[spi_drv] SPI{} lcd_bus fail: {} → machine.SPI".format(item["id"], e))
+                try:
+                    from lib.log_service import get_log
+                    get_log().warn(
+                        "[spi_drv] SPI{} lcd_bus fail: {} → machine.SPI fallback "
+                        "(無 DMA queue，效能會大幅下降)".format(item["id"], e))
+                except Exception:
+                    print("[spi_drv] SPI{} lcd_bus fail: {} → machine.SPI".format(item["id"], e))
                 # 嘗試釋放 lcd_bus 可能殘留的佔用
                 if 'spi' in locals():
                     try: spi.deinit()
@@ -74,23 +84,28 @@ def config():
             spi = _make_machine_spi(item, gpio, data)
 
         spi_list.append(spi)
-        spi_by_id[item["id"]] = spi
 
-    bus.register_service("spi_list", spi_list)
-    bus.register_service("spi_by_id", spi_by_id)
-    return spi_list, spi_by_id
+    sysbus.register_service("spi_list", spi_list)
+    return spi_list
 
 
-def gpios():
+def gpios(sysbus=None):
+    """回傳此 driver 用的 {gpio: label}，供 boot 統一 claim/validate"""
+    sysbus = sysbus or bus
+    cfg = sysbus.shared.get("SPI") or {}
+    if not cfg.get("enable"):
+        return {}
+
     result = {}
-    for item in CONFIG:
+    for item in cfg.get("list", []):
         gpio = item.get("GPIO", {})
+        sid = item.get("id", "?")
         for name in ("sck", "mosi", "miso"):
             pin = gpio.get(name)
             if pin is not None:
-                result[pin] = "spi{}_{}".format(item.get("id", "?"), name)
+                result[pin] = "spi{}_{}".format(sid, name)
         data = item.get("data_pins")
         if data:
             for i, d in enumerate(data):
-                result[d] = "spi{}_d{}".format(item.get("id", "?"), i)
+                result[d] = "spi{}_d{}".format(sid, i)
     return result

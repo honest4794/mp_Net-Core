@@ -1,18 +1,22 @@
+"""
+i2c_drv.py — I2C 匯流排管理
+
+設定來源: bus.shared["I2C"]  ({enable, list})
+產物:    bus.register_service("i2c_list", [I2C_obj, ...])
+"""
 from machine import Pin, I2C
 from lib.sys_bus import bus
 
-# ESP32-S3-Touch-LCD-2.8
-# I2C0 — Sensors: QMI8658 (IMU, 0x6B), PCF85063 (RTC, 0x51)
-# I2C1 — Touch:   CST328 (0x1A)
-CONFIG = [
 
-]
+def init_i2c(sysbus=None):
+    """讀 bus.shared['I2C'] → 建 I2C → 註冊 'i2c_list'"""
+    sysbus = sysbus or bus
+    cfg = sysbus.shared.get("I2C") or {}
+    if not cfg.get("enable"):
+        return []
 
-
-def config():
     i2c_list = []
-    i2c_by_id = {}
-    for item in CONFIG:
+    for item in cfg.get("list", []):
         gpio = item.get("GPIO", {})
         i2c = I2C(
             item["id"],
@@ -21,19 +25,23 @@ def config():
             sda=Pin(gpio["sda"]) if gpio.get("sda") is not None else None,
         )
         i2c_list.append(i2c)
-        i2c_by_id[item["id"]] = i2c
 
-    bus.register_service("i2c_list", i2c_list)
-    bus.register_service("i2c_by_id", i2c_by_id)
+    sysbus.register_service("i2c_list", i2c_list)
     return i2c_list
 
 
-def gpios():
+def gpios(sysbus=None):
+    sysbus = sysbus or bus
+    cfg = sysbus.shared.get("I2C") or {}
+    if not cfg.get("enable"):
+        return {}
+
     result = {}
-    for item in CONFIG:
+    for item in cfg.get("list", []):
         gpio = item.get("GPIO", {})
+        sid = item.get("id", "?")
         for name in ("scl", "sda"):
             pin = gpio.get(name)
             if pin is not None:
-                result[pin] = "i2c{}_{}".format(item.get("id", "?"), name)
+                result[pin] = "i2c{}_{}".format(sid, name)
     return result

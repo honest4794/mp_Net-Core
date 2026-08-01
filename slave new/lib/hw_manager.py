@@ -142,9 +142,6 @@ def get(dev_type, dev_id=None):
             if lst and 0 <= dev_id < len(lst):
                 return lst[dev_id].duty()
         elif dev_type == SPI:
-            by_id = bus.get_service("spi_by_id")
-            if by_id and dev_id in by_id:
-                return by_id[dev_id]
             lst = bus.get_service("spi_list")
             if lst and 0 <= dev_id < len(lst):
                 return lst[dev_id]
@@ -199,7 +196,7 @@ def vbtn_buf():
 
 def list_all():
     rows = []
-    for name in ("pin_list", "pwm_list", "spi_list", "spi_by_id", "i2c_list",
+    for name in ("pin_list", "pwm_list", "spi_list", "i2c_list",
                  "led_list", "ws2812_list", "apa1022_list", "pca9685_list",
                  "lcd", "data_Phat", "circuit_bus_list", "st_LED"):
         svc = bus.get_service(name)

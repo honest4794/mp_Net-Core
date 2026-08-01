@@ -1,54 +1,59 @@
 """
-gt1151q_drv.py — GT1151Q 觸控驅動
-ESP32-S3 N16R8 V1.0
-I2C1 (SCL=40, SDA=41), INT=42
+gt1151q_drv.py — GT1151Q 觸控驅動 (走 I2C)
+
+設定來源: bus.shared["GT1151Q"]  ({enable, i2c, addr, int_label})
+產物:    bus.register_service("touch", tp)
 """
 from lib.sys_bus import bus
 from lib.log_service import get_log
 
-I2C_BUS = 1
-I2C_ADDR = 0x5D  # 嘗試 0x5D, 若失敗自動掃描
 
-
-def config(_cfg=None):
-    i2c_by_id = bus.get_service("i2c_by_id") or {}
-    i2c = i2c_by_id.get(I2C_BUS)
-    if i2c is None:
-        get_log().error("gt1151q: I2C{} not available".format(I2C_BUS))
+def init_gt1151q(sysbus=None):
+    sysbus = sysbus or bus
+    cfg = sysbus.shared.get("GT1151Q") or {}
+    if not cfg.get("enable"):
         return None
 
+    i2c_list = sysbus.get_service("i2c_list") or []
+    i2c_idx = cfg.get("GPIO", {}).get("i2c", 0)
+    if i2c_idx >= len(i2c_list):
+        get_log().error("gt1151q: i2c index {} not available".format(i2c_idx))
+        return None
+    i2c = i2c_list[i2c_idx]
+
     # 從 pin_by_label 拿到 INT pin
-    pin_by_label = bus.get_service("pin_by_label") or {}
-    int_pin = pin_by_label.get("touch_int")  # GPIO 42
+    pin_by_label = sysbus.get_service("pin_by_label") or {}
+    int_label = cfg.get("GPIO", {}).get("int", "touch_int")
+    int_pin = pin_by_label.get(int_label)
 
     from lib.gt1151q import GT1151Q
 
-    # 自動掃描位址
-    addr = I2C_ADDR
+    addr = cfg.get("addr", 0x5D)
+    if isinstance(addr, str):
+        addr = int(addr, 16)
     found = i2c.scan()
     if addr not in found:
         get_log().info("gt1151q: addr 0x{:02X} not in scan {}, trying auto".format(addr, [hex(a) for a in found]))
-        # 嘗試常見的觸控位址
         for try_addr in (0x5D, 0x14, 0x38, 0x5D >> 1):
             if try_addr in found:
                 addr = try_addr
                 break
         else:
-            get_log().error("gt1151q: touch IC not found on I2C{}".format(I2C_BUS))
+            get_log().error("gt1151q: touch IC not found on i2c[{}]".format(i2c_idx))
             return None
 
     tp = GT1151Q(i2c, addr, int_pin)
     if not tp.init():
         return None
 
-    bus.register_service("touch", tp)
-    bus.shared["touch_vendor"] = "GT1151Q"
-    get_log().info("gt1151q: OK (addr=0x{:02X}, int=GPIO{})".format(addr, int_pin is not None))
+    sysbus.register_service("touch", tp)
+    sysbus.shared["touch_vendor"] = "GT1151Q"
+    get_log().info("gt1151q: OK (addr=0x{:02X})".format(addr))
     return tp
 
 
-def gpios():
-    # GT1151Q 不佔主控 GPIO (INT 在 pin_drv 已註冊)
+def gpios(sysbus=None):
+    # GT1151Q 不佔主控 GPIO (INT 在 pin_drv 註冊)
     return {}
 
 

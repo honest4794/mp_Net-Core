@@ -94,10 +94,12 @@ class JpegPlayerTask(Task):
         }
 
     def _alloc_fb(self, size):
+        self._fb_from_hc = False
         try:
             import heap_caps
             buf = heap_caps.malloc(size, heap_caps.CAP_SPIRAM)
             if buf is not None:
+                self._fb_from_hc = True
                 return buf
         except Exception:
             pass
@@ -105,6 +107,7 @@ class JpegPlayerTask(Task):
             import heap_caps
             buf = heap_caps.malloc(size, heap_caps.CAP_DMA)
             if buf is not None:
+                self._fb_from_hc = True
                 return buf
         except Exception:
             pass
@@ -255,11 +258,13 @@ class JpegPlayerTask(Task):
     def on_stop(self):
         super().on_stop()
         if self._fb is not None:
-            try:
-                import heap_caps
-                heap_caps.free(self._fb)
-            except Exception:
-                pass
+            # 只有 heap_caps 分配的才用 heap_caps.free，fallback bytearray 留給 GC
+            if getattr(self, "_fb_from_hc", False):
+                try:
+                    import heap_caps
+                    heap_caps.free(self._fb)
+                except Exception:
+                    pass
             self._fb = None
         if self._source is not None:
             try:

@@ -1,54 +1,32 @@
 """
 pin_drv.py — GPIO 腳位管理
 
-餘下全部可用 GPIO 都列在下方
+設定來源: bus.shared["PIN"]  ({enable, list})
+產物:    bus.register_service("pin_list", [Pin_obj, ...])
+         bus.register_service("pin_by_label", {label: Pin_obj})
 """
 from lib.hw_manager import init_pins
-
-CONFIG = [
-    # ── TFT 控制腳 ──
-    {"GPIO": 11, "label": "tft_cs",    "mode": "OUT", "initial": 1},
-    {"GPIO": 12, "label": "tft_dc",    "mode": "OUT", "initial": 0},
-    {"GPIO": 13, "label": "tft_rst",   "mode": "OUT", "initial": 1},
-    {"GPIO": 10,  "label": "tft_bl",    "mode": "OUT", "initial": 0},
-
-    # ── Touch (CST328) 控制腳 ──
-#     {"GPIO": 2,  "label": "touch_rst", "mode": "OUT", "initial": 1},
-#     {"GPIO": 4,  "label": "touch_int", "mode": "IN",  "initial": 0, "pull": "UP"},
-
-    # ── 電源鍵 ──
-#     {"GPIO": 6,  "label": "pwr_in",    "mode": "IN",  "initial": 0, "pull": "UP"},
-#     {"GPIO": 7,  "label": "pwr_ctrl",  "mode": "OUT", "initial": 0},
-
-    # ── 電池 ADC ──
-#     {"GPIO": 8,  "label": "bat_adc",   "mode": "IN",  "initial": 0},
-    
-    # ── 可調編碼器 ──
-    { "GPIO": 42, "label": "btn",  "mode": "IN",  "initial": 0, "pull": "UP" },
-    { "GPIO": 18, "label": "encA", "mode": "IN",  "initial": 0, "pull": "UP" },
-    { "GPIO": 8,  "label": "encB", "mode": "IN",  "initial": 0, "pull": "UP" },
-    { "GPIO": 17, "label": "encC", "mode": "IN", "initial": 0, "pull": "UP" }
-
-    # ── 剩餘可用 GPIO (未分配、可自由使用) ──
-#     {"GPIO": 0,  "label": "gp0",       "mode": "IN",  "initial": 0, "pull": "UP"},
-#     {"GPIO": 9,  "label": "gp9",       "mode": "IN",  "initial": 0, "pull": "UP"},
-#     {"GPIO": 12, "label": "gp12",      "mode": "IN",  "initial": 0, "pull": "UP"},
-#     {"GPIO": 13, "label": "gp13",      "mode": "IN",  "initial": 0, "pull": "UP"},
-#     {"GPIO": 15, "label": "gp15",      "mode": "IN",  "initial": 0, "pull": "UP"},
-#     {"GPIO": 18, "label": "gp18",      "mode": "IN",  "initial": 0, "pull": "UP"},
-#     {"GPIO": 43, "label": "gp43",      "mode": "IN",  "initial": 0, "pull": "UP"},
-#     {"GPIO": 44, "label": "gp44",      "mode": "IN",  "initial": 0, "pull": "UP"},
-#     {"GPIO": 46, "label": "gp46",      "mode": "IN",  "initial": 0, "pull": "UP"},
-]
+from lib.sys_bus import bus
 
 
-def config():
-    return init_pins(CONFIG)
+def init_pin(sysbus=None):
+    """讀 bus.shared['PIN'] → 建 Pin → 註冊 pin_list / pin_by_label"""
+    sysbus = sysbus or bus
+    cfg = sysbus.shared.get("PIN") or {}
+    if not cfg.get("enable"):
+        return []
+
+    return init_pins(cfg.get("list", []))
 
 
-def gpios():
+def gpios(sysbus=None):
+    sysbus = sysbus or bus
+    cfg = sysbus.shared.get("PIN") or {}
+    if not cfg.get("enable"):
+        return {}
+
     result = {}
-    for item in CONFIG:
+    for item in cfg.get("list", []):
         gpio = item.get("GPIO")
         if gpio is not None:
             result[gpio] = item.get("label", "pin_{}".format(gpio))

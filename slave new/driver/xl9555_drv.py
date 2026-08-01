@@ -1,74 +1,60 @@
 """
-xl9555_drv.py — XL9555 IO Expander 驅動
-I2C0 (SCL=1, SDA=2), addr=0x20
+xl9555_drv.py — XL9555 IO Expander (走 I2C)
+
+設定來源: bus.shared["XL9555"]  ({enable, i2c, addr, list})
+         list item: {"IO":0, "label":"...", "mode":"OUT", "initial":1}
+產物:    bus.register_service("xl9555", xl)
+         (pins 追加進既有 pin_list / pin_by_label)
 """
 from lib.sys_bus import bus
 from lib.log_service import get_log
 
-DEV_ADDR = 0x20
 
-CONFIG = [
-    {"IO": 0,  "label": "tp_rst",    "mode": "OUT", "initial": 1},
-    {"IO": 1,  "label": "lcd_rst",   "mode": "OUT", "initial": 1},
-    {"IO": 2,  "label": "sd_cs",     "mode": "OUT", "initial": 1},
-    {"IO": 3,  "label": "bl_ctr",    "mode": "OUT", "initial": 1},
-    {"IO": 4,  "label": "led1",      "mode": "OUT", "initial": 0},
-    {"IO": 5,  "label": "exio05",    "mode": "IN",  "initial": 0},
-    {"IO": 6,  "label": "exio06",    "mode": "IN",  "initial": 0},
-    {"IO": 7,  "label": "exio07",    "mode": "IN",  "initial": 0},
-    {"IO": 8,  "label": "exio08",    "mode": "IN",  "initial": 0},
-    {"IO": 9,  "label": "exio09",    "mode": "IN",  "initial": 0},
-    {"IO": 10, "label": "exio10",    "mode": "IN",  "initial": 0},
-    {"IO": 11, "label": "exio11",    "mode": "IN",  "initial": 0},
-    {"IO": 12, "label": "exio12",    "mode": "IN",  "initial": 0},
-    {"IO": 13, "label": "exio13",    "mode": "IN",  "initial": 0},
-    {"IO": 14, "label": "exio14",    "mode": "IN",  "initial": 0},
-    {"IO": 15, "label": "exio15",    "mode": "IN",  "initial": 0},
-]
-
-
-def config(_cfg=None):
-    i2c_by_id = bus.get_service("i2c_by_id") or {}
-    i2c = i2c_by_id.get(0)
-    if i2c is None:
-        get_log().error("xl9555: I2C0 not available")
+def init_xl9555(sysbus=None):
+    sysbus = sysbus or bus
+    cfg = sysbus.shared.get("XL9555") or {}
+    if not cfg.get("enable"):
         return None
 
-    from lib.xl9555 import XL9555
-    from lib.xl9555 import PIN_OUT
-    xl = XL9555(i2c, DEV_ADDR)
+    i2c_list = sysbus.get_service("i2c_list") or []
+    i2c_idx = cfg.get("GPIO", {}).get("i2c", 0)
+    if i2c_idx >= len(i2c_list):
+        get_log().error("xl9555: i2c index {} not available".format(i2c_idx))
+        return None
+    i2c = i2c_list[i2c_idx]
+
+    dev_addr = cfg.get("addr", 0x20)
+    if isinstance(dev_addr, str):
+        dev_addr = int(dev_addr, 16)
+
+    from lib.xl9555 import XL9555, PIN_OUT
+    xl = XL9555(i2c, dev_addr)
 
     # 初始化 IO
-    for item in CONFIG:
+    for item in cfg.get("list", []):
         pin = item["IO"]
         mode = item.get("mode", "IN")
         xl.pin[pin].init(PIN_OUT if mode == "OUT" else 0)
         if mode == "OUT":
             xl.pin[pin].value(item.get("initial", 0))
 
-    bus.register_service("xl9555", xl)
+    sysbus.register_service("xl9555", xl)
 
-    # 將 xl9555 pins 追加到 bus pin_list 統一池
-    pin_list = bus.get_service("pin_list") or []
-    for item in CONFIG:
+    # 將 xl9555 pins 追加到 bus 統一池
+    pin_list = sysbus.get_service("pin_list") or []
+    pin_by_label = sysbus.get_service("pin_by_label") or {}
+    for item in cfg.get("list", []):
         p = xl.pin[item["IO"]]
         pin_list.append(p)
-    bus.register_service("pin_list", pin_list)
+        if item.get("label"):
+            pin_by_label[item["label"]] = p
+    sysbus.register_service("pin_list", pin_list)
+    sysbus.register_service("pin_by_label", pin_by_label)
 
-    # pin_by_label 也追加
-    pin_by_label = bus.get_service("pin_by_label") or {}
-    for item in CONFIG:
-        pin_by_label[item["label"]] = xl.pin[item["IO"]]
-    bus.register_service("pin_by_label", pin_by_label)
-
-    get_log().info("xl9555: OK (addr=0x{:02X})".format(DEV_ADDR))
+    get_log().info("xl9555: OK (addr=0x{:02X})".format(dev_addr))
     return xl
 
 
-def gpios():
-    result = {}
-    for item in CONFIG:
-        io = item.get("IO")
-        if io is not None:
-            result[-(io + 1)] = "xl:{}".format(item.get("label", "io{}".format(io)))
-    return result
+def gpios(sysbus=None):
+    # XL9555 走 I2C，IO 屬於擴展晶片不佔主控 GPIO
+    return {}

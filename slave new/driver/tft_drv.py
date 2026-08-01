@@ -3,7 +3,7 @@ TFT 顯示驅動配置層 — 支援 SPI / QSPI / I80 / RGB / I2C
 
 兩種呼叫方式:
   config(spi=..., dc=..., cs=..., rst=..., driver="...", ...)   ← 工廠式，明確傳參
-  boot_config(cfg)                                                ← boot 模式，接受 dict
+  init_tft(bus)                                                  ← boot 模式，從 bus.shared['TFT'] 讀
 """
 
 def config(spi, dc, cs, rst, driver="ST7789", width=240, height=320,
@@ -59,14 +59,20 @@ def config(spi, dc, cs, rst, driver="ST7789", width=240, height=320,
     return lcd
 
 
-def boot_config(cfg):
-    """boot 模式 — 接受 cfg dict，從 bus service 解析 SPI / pin"""
-    cfg = dict(cfg)  # 複製，避免 pop 影響 boot.py 原始 dict
+def init_tft(sysbus=None):
+    """boot 模式 — 從 bus.shared['TFT'] 讀設定，由 bus service 解析 SPI / pin"""
     from lib.sys_bus import bus
     from lib.bus_adapter import SpiBusAdapter
 
-    spi_by_id = bus.get_service("spi_by_id") or {}
-    pin_by_label = bus.get_service("pin_by_label") or {}
+    sysbus = sysbus or bus
+    cfg = sysbus.shared.get("TFT") or {}
+    if not cfg.get("enable"):
+        return None
+    cfg = dict(cfg)  # 複製，避免 pop 影響 bus.shared 原始 dict
+    cfg.pop("enable", None)  # enable 已判斷過，不傳給 driver class
+
+    spi_list = sysbus.get_service("spi_list") or []
+    pin_by_label = sysbus.get_service("pin_by_label") or {}
 
     pins = cfg.pop("pins", {})
     dc  = pin_by_label.get(pins.get("dc", ""))
@@ -88,7 +94,16 @@ def boot_config(cfg):
         print("[tft_drv] no power pin — display may not be powered")
 
     spi_id = cfg.pop("spi_id", 1)
-    spi = spi_by_id.get(spi_id) or (list(spi_by_id.values())[0] if spi_by_id else None)
+    # 從 spi_list 找對應 host id；找不到 fallback 第一個
+    spi = None
+    if spi_list:
+        spi_cfg = sysbus.shared.get("SPI") or {}
+        for i, item in enumerate(spi_cfg.get("list", [])):
+            if item.get("id") == spi_id and i < len(spi_list):
+                spi = spi_list[i]
+                break
+        if spi is None:
+            spi = spi_list[0]
     if spi is None:
         print("[tft_drv] no SPI bus available, skipping")
         return None
@@ -100,10 +115,10 @@ def boot_config(cfg):
     lcd = config(spi=spi, dc=dc, cs=cs, rst=rst,
                  bytes_per_pixel=bpp, adapter=adapter, **cfg)
 
-    bus.register_service("lcd", lcd)
-    bus.shared["tft_width"] = cfg["width"]
-    bus.shared["tft_height"] = cfg["height"]
-    bus.shared["tft_driver"] = cfg["driver"]
+    sysbus.register_service("lcd", lcd)
+    sysbus.shared["tft_width"] = cfg["width"]
+    sysbus.shared["tft_height"] = cfg["height"]
+    sysbus.shared["tft_driver"] = cfg["driver"]
 
     # 全黑畫面 (整幀, TFT.show 含 flush, DMA queue 確保送出)
     black = bytearray(cfg["width"] * cfg["height"] * bpp)
@@ -111,25 +126,33 @@ def boot_config(cfg):
 
     return lcd
 
-def boot_config_i80(cfg):
-    """I80 boot 模式 — 適用 ST7796 + N16R8 (XL9555 控制 RST/背光)"""
-    cfg = dict(cfg)
+def init_tft_i80(sysbus=None):
+    """I80 boot 模式 — 適用 ST7796 + N16R8 (XL9555 控制 RST/背光)
+    設定來源: bus.shared['TFT']
+    """
     from lib.sys_bus import bus
     from lib.bus_adapter import I80BusAdapter
 
-    i80 = bus.get_service("i80_bus")
+    sysbus = sysbus or bus
+    cfg = sysbus.shared.get("TFT") or {}
+    if not cfg.get("enable"):
+        return None
+    cfg = dict(cfg)
+    cfg.pop("enable", None)  # enable 已判斷過，不傳給 driver class
+
+    i80 = sysbus.get_service("i80_bus")
     if i80 is None:
         print("[tft_drv] no I80 bus available, skipping")
         return None
 
-    pin_by_label = bus.get_service("pin_by_label") or {}
+    pin_by_label = sysbus.get_service("pin_by_label") or {}
     pins = cfg.pop("pins", {})
 
     dcx = pin_by_label.get(pins.get("dcx", ""))
 
     # ── XL9555: LCD 復位 + 背光 (從 config 讀腳位) ──
     xl_cfg = cfg.pop("xl9555", {})
-    xl = bus.get_service("xl9555")
+    xl = sysbus.get_service("xl9555")
     if xl and xl_cfg:
         rst_pin = xl_cfg.get("rst")
         bl_pin = xl_cfg.get("bl")
@@ -151,10 +174,10 @@ def boot_config_i80(cfg):
     lcd = config(spi=None, dc=None, cs=None, rst=None,
                  bytes_per_pixel=bpp, adapter=adapter, **cfg)
 
-    bus.register_service("lcd", lcd)
-    bus.shared["tft_width"] = cfg["width"]
-    bus.shared["tft_height"] = cfg["height"]
-    bus.shared["tft_driver"] = cfg["driver"]
+    sysbus.register_service("lcd", lcd)
+    sysbus.shared["tft_width"] = cfg["width"]
+    sysbus.shared["tft_height"] = cfg["height"]
+    sysbus.shared["tft_driver"] = cfg["driver"]
 
     # 全黑畫面
     black = bytearray(cfg["width"] * cfg["height"] * bpp)
@@ -163,6 +186,6 @@ def boot_config_i80(cfg):
     return lcd
 
 
-def gpios():
+def gpios(sysbus=None):
     """TFT 不直接擁有 GPIO（SPI 由 spi_drv、控制腳由 pin_drv 註冊）"""
     return {}

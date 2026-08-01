@@ -1,38 +1,39 @@
+"""
+sd_drv.py — SD 卡管理
+
+設定來源: bus.shared["SDcard"]  ({enable, phat, LDO, config, GPIO})
+產物:    bus.register_service("data_Phat", phat)
+         bus.register_service("sd_raw", sd)
+"""
 import machine
 import os
 from lib.sys_bus import bus
 from lib.log_service import get_log
 
-# ESP32-S3-Touch-LCD-2.8
-# SDMMC 1-bit mode: CLK=14, CMD=17, D0=16
-# D1/D2/D3 are NC (-1 in ESP-IDF config)
-CONFIG = {
-    "phat": "/sd",
-    "LDO": {"id": 4, "mv": 3300},
-    "config": {"slot": 0, "width": 4, "freq": 40000000},
-    "GPIO": {"sck": 7, "cmd": 6, "data": [15, 16, 4, 5]},
-}
 
-def config():
-    if not CONFIG:
-        bus.register_service("data_Phat", "")
+def init_sd(sysbus=None):
+    sysbus = sysbus or bus
+    cfg = sysbus.shared.get("SDcard") or {}
+    if not cfg.get("enable"):
+        sysbus.register_service("data_Phat", "")
         return ""
 
-    phat = CONFIG.get("phat", "/sd")
+    phat = cfg.get("phat", "/sd")
 
     try:
         from esp32 import LDO
-        ldo_cfg = CONFIG.get("LDO", {})
+        ldo_cfg = cfg.get("LDO", {})
         LDO(ldo_cfg.get("id", 4), ldo_cfg.get("mv", 3300), adjustable=True)
     except Exception as e:
         get_log().error("LDO error: {}".format(e))
 
-    slot = CONFIG.get("config", {}).get("slot", 0)
+    sd_cfg = cfg.get("config", {})
+    slot = sd_cfg.get("slot", 0)
     try:
         if slot >= 2:
-            _init_sd_spi(phat)
+            _init_sd_spi(sysbus, cfg, phat)
         else:
-            _init_sd_sdio(phat)
+            _init_sd_sdio(sysbus, cfg, phat)
         get_log().info("SD card mounted on {}".format(phat))
     except Exception as e:
         get_log().error("SD card init error: {}".format(e))
@@ -40,34 +41,34 @@ def config():
             os.mkdir(phat)
         open(phat + "/local", "w").close()
 
-    bus.register_service("data_Phat", phat)
+    sysbus.register_service("data_Phat", phat)
     return phat
 
 
-def _init_sd_spi(phat):
+def _init_sd_spi(sysbus, cfg, phat):
     sd = machine.SDCard(
-        slot=CONFIG["config"].get("slot", 2),
-        sck=CONFIG["GPIO"]["sck"],
-        mosi=CONFIG["GPIO"]["cmd"],
-        miso=CONFIG["GPIO"]["data"][0],
-        cs=CONFIG["GPIO"]["data"][3],
-        freq=CONFIG["config"].get("freq", 20000000),
+        slot=cfg["config"].get("slot", 2),
+        sck=cfg["GPIO"]["sck"],
+        mosi=cfg["GPIO"]["cmd"],
+        miso=cfg["GPIO"]["data"][0],
+        cs=cfg["GPIO"]["data"][3],
+        freq=cfg["config"].get("freq", 20000000),
     )
     os.mount(sd, phat)
-    bus.register_service("sd_raw", sd)
+    sysbus.register_service("sd_raw", sd)
 
 
-def _init_sd_sdio(phat):
+def _init_sd_sdio(sysbus, cfg, phat):
     sd = machine.SDCard(
-        slot=CONFIG["config"]["slot"],
-        width=CONFIG["config"]["width"],
-        sck=CONFIG["GPIO"]["sck"],
-        cmd=CONFIG["GPIO"]["cmd"],
-        data=CONFIG["GPIO"]["data"],
-        freq=CONFIG["config"]["freq"],
+        slot=cfg["config"]["slot"],
+        width=cfg["config"]["width"],
+        sck=cfg["GPIO"]["sck"],
+        cmd=cfg["GPIO"]["cmd"],
+        data=cfg["GPIO"]["data"],
+        freq=cfg["config"]["freq"],
     )
     os.mount(sd, phat)
-    bus.register_service("sd_raw", sd)
+    sysbus.register_service("sd_raw", sd)
 
 
 def _exists(path):
@@ -78,9 +79,14 @@ def _exists(path):
     return True
 
 
-def gpios():
+def gpios(sysbus=None):
+    sysbus = sysbus or bus
+    cfg = sysbus.shared.get("SDcard") or {}
+    if not cfg.get("enable"):
+        return {}
+
     result = {}
-    gpio = CONFIG.get("GPIO", {})
+    gpio = cfg.get("GPIO", {})
     if gpio.get("sck") is not None:
         result[gpio["sck"]] = "sd_sck"
     if gpio.get("cmd") is not None:

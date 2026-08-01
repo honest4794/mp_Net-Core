@@ -18,7 +18,8 @@
         "size": 16384,
         "rx_hub_buffers": 16,
         "drop_on_full": 1,
-        "drain_reads": 1
+        "drain_reads": 1,
+        "fb_mode": "auto"
     },
     "Network": {
         "priority": ["lan", "wifi"],
@@ -48,6 +49,82 @@
         "list": [
             { "GPIO": { "uart": 0 } }
         ]
-    }
+    },
 
+    "SPI": {
+        "enable": 1,
+        "list": [
+            {
+                "id": 1,
+                "baudrate": 80000000,
+                "phase": 0,
+                "polarity": 0,
+                "GPIO": { "sck": 21, "mosi": null, "miso": null },
+                "data_pins": [14]
+            }
+        ]
+    },
+    "I2C": {
+        "enable": 0,
+        "list": []
+    },
+    "UART": {
+        "enable": 1,
+        "list": [
+            { "id": 1, "baudrate": 115200, "GPIO": { "tx": 8, "rx": 18 } }
+        ]
+    },
+    "PWM": {
+        "enable": 0,
+        "list": []
+    },
+    "I2S": {
+        "enable": 0,
+        "list": []
+    },
+    "SDcard": {
+        "enable": 1,
+        "phat": "/sd",
+        "LDO": { "id": 4, "mv": 3300 },
+        "config": { "slot": 0, "width": 4, "freq": 40000000 },
+        "GPIO": {
+            "_comment": "sck=CLK/SCK, cmd=CMD/MOSI, [D0/MISO, D1/IRQ, D2/NC, D3/CS]",
+            "sck": 7, "cmd": 6, "data": [15, 16, 4, 5]
+        }
+    },
+    "PIN": {
+        "enable": 1,
+        "list": [
+            { "GPIO": 11, "label": "tft_cs",  "mode": "OUT", "initial": 1 },
+            { "GPIO": 12, "label": "tft_dc",  "mode": "OUT", "initial": 0 },
+            { "GPIO": 13, "label": "tft_rst", "mode": "OUT", "initial": 1 },
+            { "GPIO": 10, "label": "tft_bl",  "mode": "OUT", "initial": 0 }
+        ]
+    },
+    "TFT": {
+        "enable": 1,
+        "driver": "ST7789",
+        "width": 240,
+        "height": 320,
+        "rotation": 0,
+        "color_order": "RGB",
+        "invert": 0,
+        "spi_id": 1,
+        "pixel_format": "RGB565_BE",
+        "variant": 0,
+        "pins": { "dc": "tft_dc", "cs": "tft_cs", "rst": "tft_rst", "bl": "tft_bl" }
+    },
+
+    "WS2812": {
+        "enable": 0,
+        "list": []
+    },
+    "APA102": {
+        "enable": 0,
+        "list": []
+    },
+    "PCA9685": {
+        "enable": 0,
+        "list": []
+    }
 }

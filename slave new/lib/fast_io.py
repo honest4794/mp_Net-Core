@@ -113,13 +113,14 @@ class Storage:
         self._chunk = buf_size
         self._buf_bytes = buf_size
         self._io_buf = None
+        self._io_buf_hc = False
         for sz in (buf_size, buf_size // 2 if buf_size >= 32768 else 0, 16384):
             if sz == 0: continue
             try:
                 import heap_caps
                 b = heap_caps.malloc(sz, heap_caps.CAP_DMA)
                 if b:
-                    self._io_buf = b; self._buf_bytes = sz; break
+                    self._io_buf = b; self._buf_bytes = sz; self._io_buf_hc = True; break
             except:
                 pass
         if self._io_buf is None:
@@ -237,9 +238,11 @@ class Storage:
         if self._w_open: self.write_end()
         if self._r_open: self.read_end()
         if self._io_buf is not None:
-            try:
-                import heap_caps; heap_caps.free(self._io_buf)
-            except: pass
+            # 只有 heap_caps 分配的才用 heap_caps.free；fallback bytearray 留給 GC
+            if getattr(self, "_io_buf_hc", False):
+                try:
+                    import heap_caps; heap_caps.free(self._io_buf)
+                except: pass
             self._io_buf = None
         self._c = True
 
