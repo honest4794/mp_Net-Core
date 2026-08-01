@@ -109,10 +109,10 @@ class SpiBusAdapter(BusAdapter):
                 return None
         if self._dma:
             self._dc.value(1)
-            # 大 buffer（>32KB max_transfer_sz）→ 自動分 chunk 過 bounce
-            if self._bounce is not None and len(data) > self._bounce_size:
-                return self._write_bounced(data)
-            # 正常單筆：queue 滿（RuntimeError）→ wait_all 清空後重試一次
+            # 大 buffer（>32KB max_transfer_sz）→ C 層自動 async 分 chunk 直送
+            #（內部 RAM 或 PSRAM 皆異步；不再過 Python bounce 序列化 — bounce 只
+            #  在無 C 分 chunk 支援的舊 lcd_bus / 非 lcd_bus 才有意義）
+            # queue 滿（RuntimeError）→ wait_all 清空後重試一次
             for attempt in range(2):
                 try:
                     return self._spi.write(data)
