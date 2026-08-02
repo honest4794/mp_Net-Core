@@ -1,0 +1,36 @@
+{
+  "group": "ui",
+  "cmds": [
+    {
+      "cmd": "0x4001",
+      "name": "UI_DESCRIBE",
+      "payload": [
+        {"name": "page_id", "type": "str_u16len"}
+      ]
+    },
+    {
+      "cmd": "0x4002",
+      "name": "UI_RSP",
+      "payload": [
+        {"name": "ui_json", "type": "str_u16len"}
+      ]
+    },
+    {
+      "cmd": "0x4003",
+      "name": "UI_SET",
+      "payload": [
+        {"name": "page_id", "type": "str_u16len"},
+        {"name": "widget_id", "type": "str_u16len"},
+        {"name": "value_json", "type": "str_u16len"}
+      ]
+    },
+    {
+      "cmd": "0x4004",
+      "name": "UI_GET",
+      "payload": [
+        {"name": "page_id", "type": "str_u16len"},
+        {"name": "widget_id", "type": "str_u16len"}
+      ]
+    }
+  ]
+}

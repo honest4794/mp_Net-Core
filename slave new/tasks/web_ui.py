@@ -13,7 +13,7 @@ class WebUITask(Task):
         self.sock = None
         self.clients = []
         self.app = ctx.get('app')
-        self.web_root = "web"
+        self.web_root = "ui/web"
         self._keep_alive_until = 0
         self._keep_alive_owned = False
         self._last_keep_alive_touch = 0
