@@ -27,6 +27,7 @@ from driver.pwm_drv      import init_pwm,      gpios as g_pwm
 from driver.i2s_drv      import init_i2s,      gpios as g_i2s
 from driver.sd_drv       import init_sd,       gpios as g_sd
 from driver.tft_drv      import init_tft,      gpios as g_tft
+from driver.enc_drv      import init_enc,      gpios as g_enc
 from driver.network_drv  import init_network
 
 
@@ -43,6 +44,7 @@ DRIVERS = [
     ("i2s",  g_i2s),
     ("sd",   g_sd),
     ("tft",  g_tft),
+    ("enc",  g_enc),
 ]
 
 for name, gpios_fn in DRIVERS:
@@ -66,6 +68,7 @@ init_uart(bus)
 # init_i2s(bus)
 init_sd(bus)
 init_tft(bus)
+init_enc(bus)
 init_network(bus)
 
 
