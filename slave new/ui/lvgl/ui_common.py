@@ -135,6 +135,8 @@ def font(*names):
 F_NUM_L = font("font_montserrat_22", "font_montserrat_20", "font_montserrat_18")
 F_NUM_M = font("font_montserrat_16", "font_montserrat_14")
 F_NUM_S = font("font_montserrat_12", "font_montserrat_10")
+F_NUM_XL = font("font_montserrat_28", "font_montserrat_26", "font_montserrat_24",
+                "font_montserrat_22", "font_montserrat_20")
 
 # ====== 基礎 builder ======
 

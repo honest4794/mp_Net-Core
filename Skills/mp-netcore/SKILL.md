@@ -44,7 +44,16 @@ slave/
     ├── jpeg_decode_task.py # JpegDecodeTask: JPEG 解碼
     ├── dp_buffer_task.py   # DpBufferTask: Display Buffer
     └── display_task.py     # DisplayTask: 顯示輸出
+├── ui/lvgl/                # LVGL 本地 UI（LCD 控制面板）
+│   ├── lvgl_init.py        # LVGL display 一次初始化 + bus reuse
+│   ├── board.py            # 板上對接（lcd_mode 閘門 + 輸入 + 主迴圈）
+│   ├── nav.py              # 共用三層導覽狀態機（class Nav）
+│   └── page/               # 頁面：control_panel / pca9685 / settings
+├── driver/enc_drv.py       # 硬體編碼器 driver（config ENC 區塊）
+└── ui_test_tool.py         # LVGL 獨立測試入口（import 即用）
 ```
+
+> **LVGL UI 詳細指南** → `doc/lvgl_ui_usage_latest.md`（架構/螢幕方向/字型生成/踩坑）。
 
 ## 核心設計原則
 

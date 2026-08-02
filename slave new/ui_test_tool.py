@@ -10,8 +10,8 @@
 # REPL 除錯 API(主迴圈跑時用不到,REPL 才用):
 #   ui_test_tool.pages()          # 列出已註冊頁面
 #   ui_test_tool.goto("settings") # 跳頁(主迴圈跑時也可用)
-#   ui_test_tool.peek("mon_time") # 看 bus 值
-#   ui_test_tool.set("mon_time", {"mode":2})  # 設 bus 值,看頁面反應
+#   ui_test_tool.peek("control_panel") # 看 bus 值
+#   ui_test_tool.set("control_panel", {"mode":2})  # 設 bus 值,看頁面反應
 import sys
 
 # LVGL 資源路徑
@@ -163,7 +163,7 @@ def frame(n=1):
     _log("ran {} frame(s)".format(n))
 
 
-def peek(key="mon_time", default=None):
+def peek(key="control_panel", default=None):
     """看 bus.shared[key]。"""
     from lib.sys_bus import bus
     v = bus.shared.get(key, default)
@@ -173,7 +173,7 @@ def peek(key="mon_time", default=None):
 
 def set(key, value):
     """設 bus.shared[key]=value(測試頁面讀 bus 的反應)。
-    例:set("mon_time", {"mode":2,"brightness":20})"""
+    例:set("control_panel", {"mode":2,"brightness":20})"""
     from lib.sys_bus import bus
     bus.shared[key] = value
     _log("bus.shared[{}] = {}".format(key, value))

@@ -16,11 +16,6 @@ except Exception as _e:
     print("[page] control_panel import skip:", _e)
     control_panel = None
 try:
-    from ui.lvgl.page import mon_time
-except Exception as _e:
-    print("[page] mon_time import skip:", _e)
-    mon_time = None
-try:
     from ui.lvgl.page import pca9685
 except Exception as _e:
     print("[page] pca9685 import skip:", _e)
@@ -35,7 +30,6 @@ except Exception as _e:
 # 用 if 守護:頁面 import 失敗時 PAGES 裡不會有它,跳過不報錯。
 _PAGES_MOD = [
     ("control_panel", control_panel),
-    ("mon_time", mon_time),
     ("pca9685", pca9685),
     ("settings", settings),
 ]

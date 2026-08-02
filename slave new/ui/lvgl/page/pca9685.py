@@ -19,7 +19,7 @@ _dots = []
 
 
 @register(id="pca9685", title="PCA9685", icon="sun",
-          desc="I2C PWM 檢查器", order=3, accent=0x1A73E8)
+          desc="I2C PWM 檢查器", order=2, accent=0x1A73E8)
 def build():
     global scr, _scan_btn, _mode_lb, _target_lb, _dots
     _dots = []
