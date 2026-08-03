@@ -209,6 +209,78 @@ def list_all():
     return rows
 
 
+# ══════════════════════════════════════════════════════
+# 統一輸入採樣 (HwSampleTask 用)
+#
+# 沿用 VBTN「快照進 bus」模式，把 Encoder + IN Pin 也補上同層快照。
+# 由 HwSampleTask 每 loop 週期呼叫 sample_inputs() 採樣一次，
+# 消費者（LVGL / action task 等）讀 get_input() 快照，不直接碰 GPIO。
+#
+# bus.shared["_hw_inputs"]:
+#   {"enc": [delta0, delta1, ...],   # encoder 增量(集中計算)
+#    "pin": {"encC": 0, "btn": 1},   # IN 腳當前值(按 config label)
+#    "_enc_last": [...]}             # 上次 encoder 原值(內部用)
+# ══════════════════════════════════════════════════════
+_HW_INPUTS = "_hw_inputs"
+
+
+def sample_inputs():
+    """統一採樣所有輸入硬體當前值 → 快照進 bus.shared["_hw_inputs"]。
+    由 HwSampleTask 每 loop 呼叫一次。消費者讀 get_input() 快照,不碰硬體。
+
+    Encoder: 算 delta(與上次差值),放 enc[i]   ← 邊緣計算集中在此
+    IN Pin:  讀 value,放 pin[label]            ← 按 config PIN 段的 label
+    VBTN:    已有 _vbtn,不重複(維持現狀)
+    """
+    snap = bus.shared.get(_HW_INPUTS)
+    if snap is None:
+        snap = {"enc": [], "pin": {}, "_enc_last": []}
+        bus.shared[_HW_INPUTS] = snap
+
+    # ── Encoder delta(集中邊緣計算;原本散落在 control_panel/board 各自算)──
+    enc_list = bus.get_service("enc_list") or []
+    n_enc = len(enc_list)
+    if len(snap["_enc_last"]) != n_enc:
+        # encoder 數量變動或首次:重建基準,delta 歸零
+        snap["_enc_last"] = [e.value() for e in enc_list]
+        snap["enc"] = [0] * n_enc
+    else:
+        for i in range(n_enc):
+            v = enc_list[i].value()
+            snap["enc"][i] = v - snap["_enc_last"][i]
+            snap["_enc_last"][i] = v
+
+    # ── IN Pin(只採 mode=IN 的,按 label;OUT 腳是輸出不需快照)──
+    pin_by_label = bus.get_service("pin_by_label") or {}
+    pin_cfg = (bus.shared.get("PIN") or {}).get("list") or []
+    for item in pin_cfg:
+        if str(item.get("mode", "")).upper() != "IN":
+            continue
+        label = item.get("label")
+        if label and label in pin_by_label:
+            snap["pin"][label] = pin_by_label[label].value()
+
+    return snap
+
+
+def get_input(kind, key=None, idx=None):
+    """消費者讀快照(不碰硬體)。
+       get_input("enc", idx=0)        → encoder 0 的 delta(不存在回 0)
+       get_input("pin", key="encC")   → encC 腳當前值(不存在回 None)
+    """
+    snap = bus.shared.get(_HW_INPUTS)
+    if snap is None:
+        return 0 if kind == "enc" else None
+    if kind == "enc":
+        lst = snap.get("enc", [])
+        if idx is not None and 0 <= idx < len(lst):
+            return lst[idx]
+        return 0
+    if kind == "pin":
+        return snap.get("pin", {}).get(key)
+    return None
+
+
 # -- 單例物件 --
 HW = type("HW", (), {
     "PIN": PIN, "PWM": PWM, "SPI": SPI, "I2C": I2C,
@@ -218,4 +290,6 @@ HW = type("HW", (), {
     "resolve_pin": staticmethod(resolve_pin),
     "vbtn_buf": staticmethod(vbtn_buf),
     "list_all": staticmethod(list_all),
+    "sample_inputs": staticmethod(sample_inputs),
+    "get_input": staticmethod(get_input),
 })

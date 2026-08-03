@@ -15,6 +15,12 @@ class SysBus:
     def get_service(self, name):
         return self._services.get(name)
 
+    def has_lcd(self):
+        """LCD 是否存在於 bus 上(boot.py 的 init_tft 成功才有)。
+        用來 gate 依賴 LCD 的模組(lvgl / jpeg player)。
+        沒有 LCD 時這些模組會 import 失敗或無法運作,因此整段 import/註冊都跳過。"""
+        return self.get_service("lcd") is not None
+
     def register_provider(self, key, func):
         if key in self._providers:
             return False

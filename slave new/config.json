@@ -2,7 +2,6 @@
     "scan_ignore": ["/sd"],
     "System": {
         "dual_core_mode": "0",
-        "lcd_mode": "player",
         "c_lum": 1.0,
         "hostname": "",
         "refresh_rate_ms": 1,

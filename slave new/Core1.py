@@ -13,12 +13,23 @@
 
 from lib.sys_bus import bus
 from lib.log_service import get_log
-from tasks.jpeg_player_task import JpegPlayerTask
+
+# JpegPlayerTask 依賴 TFT/LCD。沒有 LCD 時不 import,讓雙核心仍能正常啟動。
+if bus.has_lcd():
+    from tasks.jpeg_player_task import JpegPlayerTask
+else:
+    JpegPlayerTask = None
 
 
 def engine_start():
     """Core 1 入口 — 極速渲染引擎主迴圈（在獨立 thread 執行）"""
     log = get_log()
+
+    # 沒有 LCD → 整個渲染引擎跳過(Core0 控制核仍正常運作)
+    if JpegPlayerTask is None:
+        log.info("⏭ [Core1] render engine skipped — no LCD/TFT on bus")
+        return
+
     log.info("⚡ [Core1] Worker/Engine Mode — render engine")
 
     # 等待 Core0 初始化播放器共享狀態（避免啟動競態）

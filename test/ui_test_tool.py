@@ -1,7 +1,7 @@
 # ui_test_tool.py — LVGL UI 獨立測試入口
 #
 # 跟 tft_test_tool.py 同一層。假設 boot.py 已跑完(LCD 已在 bus、字型已就位)。
-# 不受 config lcd_mode 閘門限制(測試時強制起 UI)。
+# 測試用入口:import 即進主迴圈(仍需 LCD 存在)。
 #
 # ★這是一個完整、獨立、可直接操作的入口:
 #   import ui_test_tool           # 一行即可。直接進主迴圈,旋鈕+按鈕操作。

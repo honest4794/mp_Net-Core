@@ -1,14 +1,19 @@
 # ui/lvgl/board.py — 板上對接層（slave new bus 系統）
 #
-# 硬體全部透過 slave new 的 bus 系統取得,本檔不自建任何硬體:
+# 適配兩種模式(初始化與主迴圈解耦):
+#   _setup()      初始化(platform+字型+頁面+輸入),once-only(_started 守護)
+#   _loop_once()  單幀 app.step(),供調度器逐幀呼叫
+#   run()         _setup + while _loop_once(手動快速啟動 / 核心模式輕量入口)
+#
+#   任務模式: LvglTask.on_start=_setup, loop=_loop_once (TaskManager 調度)
+#   核心模式: Core_LVGL 自跑 run() 或 _setup+while _loop_once
+#
+# 硬體全部透過 bus 系統取得,本檔不自建任何硬體:
 #   顯示   bus.get_service("lcd")   → lvgl_init.get_platform()(一次初始化 + reuse)
-#   輸入   Encoder + 確認鍵(encC) + 離開鍵(btn),腳位從 config PIN 標籤解析
+#   輸入   hw_manager 快照(HwSampleTask 統一採樣)→ bus.shared["_hw_inputs"]
 #
-# LCD 模式閘門:bus.shared["System"]["lcd_mode"] == "ui" 才啟動,否則讓 LCD 給 player。
-#
-# 用法(soft reboot 後,boot.py 已跑完):
-#   import ui.lvgl.board
-#   ui.lvgl.board.run()
+# 啟動唯一前置條件:bus.has_lcd()(boot.py 的 init_tft 成功)。
+# LVGL 與 JPEG player 共用同一塊 LCD、互斥,手動決定跑哪個。
 import sys
 from lib.sys_bus import bus
 from ui.lvgl import app
@@ -22,53 +27,30 @@ if _SRC not in sys.path:
 
 
 def _make_inputs():
-    """從 bus 拿 driver 已 init 好的輸入裝置,組成 app 介面。
-    硬體全部由 driver init,UI 只取用:
-      encoder  bus.get_service("enc_list")[0]   (enc_drv 建立)
-      確認鍵   bus.get_service("pin_by_label")["encC"]  (pin_drv 建立)
-      離開鍵   bus.get_service("pin_by_label")["btn"]
-    仿 mp_LVGL/ui/lvgl_shared.py Inputs 的邊緣偵測。
-    按鈕 label 預設 encC / btn,可在 config PIN 段改名。"""
-    enc_list = bus.get_service("enc_list") or []
-    enc = enc_list[0] if enc_list else None
-    enc_last = enc.value() if enc is not None else 0
+    """從 hw_manager 快照讀輸入(bus.shared['_hw_inputs'])。
 
-    pin_by_label = bus.get_service("pin_by_label") or {}
-    confirm_pin = pin_by_label.get("encC")
-    exit_pin = pin_by_label.get("btn")
-    c_last = confirm_pin.value() if confirm_pin is not None else 1
-    e_last = exit_pin.value() if exit_pin is not None else 1
-    print("[board] inputs: enc={} encC={} btn={}".format(
-        "ok" if enc else "none",
-        "ok" if confirm_pin else "none",
-        "ok" if exit_pin else "none"))
+    delta / 邊緣計算已由 HwSampleTask 統一做完,這裡只取快照值。
+    → LVGL Core 不碰硬體,真正適配核心模式(採樣可跑在另一個 Core)。
 
+    按鈕 label 預設 encC / btn,可在 config PIN 段改名。
+    active-low: value 0 = 按下。"""
+    from lib.hw_manager import get_input
+
+    print("[board] inputs: via hw_manager snapshot (encC/btn)")
+    return _make_snapshot_inputs(get_input)
+
+
+def _make_snapshot_inputs(get_input):
+    """快照後端:三個 callable 從 bus.shared['_hw_inputs'] 取值。"""
     def enc_delta():
-        nonlocal enc_last
-        if enc is None:
-            return 0
-        v = enc.value()
-        d = v - enc_last
-        enc_last = v
-        return d
+        return get_input("enc", idx=0) or 0
 
     def confirm():
-        nonlocal c_last
-        if confirm_pin is None:
-            return False
-        v = confirm_pin.value()
-        edge = (c_last == 1 and v == 0)   # 高→低 = 按下
-        c_last = v
-        return edge
+        # active-low: 0 = 按下;回傳是否處於按下狀態
+        return get_input("pin", key="encC") == 0
 
     def exit_pressed():
-        nonlocal e_last
-        if exit_pin is None:
-            return False
-        v = exit_pin.value()
-        edge = (e_last == 1 and v == 0)
-        e_last = v
-        return edge
+        return get_input("pin", key="btn") == 0
 
     return enc_delta, confirm, exit_pressed
 
@@ -76,10 +58,9 @@ def _make_inputs():
 def run():
     """啟動 LVGL UI 主迴圈。"""
 
-    # ── LCD 模式閘門:不是 "ui" 就讓 LCD 給 player,直接返回 ──
-    sys_cfg = bus.shared.get("System", {})
-    if sys_cfg.get("lcd_mode") != "ui":
-        print("[board] lcd_mode != 'ui', UI not started (LCD kept for player)")
+    # ── LCD 存在閘門:沒有 LCD 就根本不能跑 LVGL,直接返回 ──
+    if not bus.has_lcd():
+        print("[board] no LCD on bus, LVGL UI not started")
         return
 
     try:
@@ -87,17 +68,28 @@ def run():
     except Exception:
         get_log = None
     if get_log:
-        get_log().info("[board] lcd_mode='ui', starting LVGL UI")
+        get_log().info("[board] starting LVGL UI")
 
-    _boot()
-
-
-def _boot():
-    """實際啟動(閘門通過後)。test tool 也可呼叫此函式跳過閘門。"""
+    # _setup + 自跑主迴圈(快速啟動 / 手動入口)
+    _setup()
     try:
-        from lib.log_service import get_log
-    except Exception:
-        get_log = None
+        while True:
+            _loop_once()
+    except KeyboardInterrupt:
+        print("[board] stopped")
+
+
+# ── once-only 守護:同一 boot 週期內 _setup 只跑一次(soft-reboot 安全)──
+_started = False
+
+
+def _setup():
+    """初始化(platform + 字型 + 頁面 + 輸入)。冪等:_started 後重入直接返回。
+    任務模式(LvglTask.on_start)與核心模式(Core_LVGL)共用此函式。"""
+    global _started
+    if _started:
+        return
+    _started = True
 
     # LVGL display:一次初始化 + bus reuse(對齊 i80_drv/tft_drv)
     plat = lvgl_init.get_platform()
@@ -111,7 +103,7 @@ def _boot():
         print("[board] page import fail:", e)
     app.build_all()
 
-    # 輸入:encoder + 確認 + 離開
+    # 輸入:從 hw_manager 快照讀(由 HwSampleTask 統一採樣)
     enc_delta, confirm, exit_pressed = _make_inputs()
 
     app.init({
@@ -123,20 +115,20 @@ def _boot():
         "exit": exit_pressed,
     })
     app.go("launcher")
+    print("[board] _setup done")
 
-    # ── 主迴圈(board 自跑) ──
+
+def _loop_once():
+    """單幀處理 = app.step()。供任務模式(loop)/核心模式(主迴圈)逐幀呼叫。"""
     try:
-        while True:
-            try:
-                app.step()
-            except Exception as e:
-                if get_log:
-                    get_log().error("[board] loop err: {}".format(e))
-                else:
-                    print("[board] loop err:", e)
-            _sleep(5)
-    except KeyboardInterrupt:
-        print("[board] stopped")
+        app.step()
+    except Exception as e:
+        try:
+            from lib.log_service import get_log
+            get_log().error("[board] loop err: {}".format(e))
+        except Exception:
+            print("[board] loop err:", e)
+    _sleep(5)
 
 
 def _sleep(ms):

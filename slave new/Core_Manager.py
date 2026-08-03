@@ -61,7 +61,7 @@ def launcher():
     bus.shared["log_print_levels"] = ["info", "warn", "error", "immediate"]
     bus.shared["log_subscribe"] = []
 
-    # ── Layer 0: 網路 + 通訊 + FS 掃描，最先啟動 ──
+    # ── Layer 0: 網路 + 通訊 + FS 掃描 + 硬體採樣，最先啟動 ──
     tm.register_task("log", LogTask, default_affinity=(1, 0), layer=0)
     tm.register_task("network", NetworkTask, default_affinity=(1, 0), layer=0)
 #     tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
@@ -71,31 +71,40 @@ def launcher():
     tm.register_task("bus_decode", BusDecodeTask, default_affinity=(1, 0), layer=0)
     tm.register_task("web_ui",  WebUITask,   default_affinity=(1, 0), layer=0)
     tm.register_task("fs_scan", FsScanTask,  default_affinity=(0, 1), layer=0)
+    from tasks.hw_sample_task import HwSampleTask
+    tm.register_task("hw_sample", HwSampleTask, default_affinity=(1, 0), layer=0)
 
-    # ── Layer 1: JPEG 播放器 ──
-    from tasks.jpeg_player_task import JpegPlayerTask
+    # ── Layer 1: JPEG 播放器（依賴 TFT/LCD，沒 LCD 整段跳過）──
+    if bus.has_lcd():
+        from tasks.jpeg_player_task import JpegPlayerTask
 #     tm.register_task("jpeg_player", JpegPlayerTask, default_affinity=(0, 1), layer=1)
 
-    # ══════════════════════════════════════════════════════
-    # 臨時播放參數（之後會移到 config.json）
-    # ══════════════════════════════════════════════════════
-    bus_sys["player_width"]  = 240
-    bus_sys["player_height"] = 240
-    bus_sys["player_pixel_format"] = "RGB565_LE"
-    bus.shared["jpeg_loop"] = True
-    bus.shared["jpeg_player"] = {
-        "playing": True,
-        "paused":  False,
-        "frame":   0,
-        "total":   0,
-        "source":  "",
-        "err":     "",
-        "pace_ms": 33,
-    }
-    bus.shared["jpeg_source_req"] = {
-        "source": "/jpeg/background",
-    }
-    bus.shared.setdefault("_stream_source", "/jpeg/background")
+        # ── Layer 1: LVGL UI（跟 jpeg_player 互斥，共用同一塊 LCD，二選一）──
+        from tasks.lvgl_task import LvglTask
+#     tm.register_task("lvgl", LvglTask, default_affinity=(0, 1), layer=1)
+
+        # ══════════════════════════════════════════════════════
+        # 臨時播放參數（之後會移到 config.json）
+        # ══════════════════════════════════════════════════════
+        bus_sys["player_width"]  = 240
+        bus_sys["player_height"] = 240
+        bus_sys["player_pixel_format"] = "RGB565_LE"
+        bus.shared["jpeg_loop"] = True
+        bus.shared["jpeg_player"] = {
+            "playing": True,
+            "paused":  False,
+            "frame":   0,
+            "total":   0,
+            "source":  "",
+            "err":     "",
+            "pace_ms": 33,
+        }
+        bus.shared["jpeg_source_req"] = {
+            "source": "/jpeg/background",
+        }
+        bus.shared.setdefault("_stream_source", "/jpeg/background")
+    else:
+        log.info("⏭ [CoreManager] jpeg_player skipped — no LCD/TFT on bus")
 
     tm.finalize()
 

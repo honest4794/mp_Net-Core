@@ -17,7 +17,7 @@ slave new/
 │   ├── app.py           # 平台解耦路由器（build_all 預建 screen + go 沿用）
 │   ├── launcher.py      # 動態首頁（讀 registry 產生卡片）
 │   ├── nav.py           # ★共用三層導覽狀態機（class Nav）
-│   ├── board.py         # 板上對接層（lcd_mode 閘門 + 輸入 + 主迴圈）
+│   ├── board.py         # 板上對接層（has_lcd 閘門 + 輸入 + 主迴圈）
 │   └── page/
 │       ├── __init__.py  # 集中 import（容錯：單頁失敗不拖垮其他）
 │       ├── control_panel.py  # 控制面板（模式/亮度/倒數/拍攝·可動旗標）
@@ -25,13 +25,14 @@ slave new/
 │       └── settings.py       # 系統設定
 ├── driver/enc_drv.py    # ★硬體編碼器 driver（config ENC 區塊）
 ├── ui_test_tool.py      # ★獨立測試入口（import 即用，旋鈕+按鈕操作）
-└── config.json          # System.lcd_mode / ENC / PIN(encC,btn)
+└── config.json          # TFT / ENC / PIN(encC,btn)
 ```
 
 ## 2. 啟動方式
 
 ### 正式啟動（board.run）
-- 受 `System.lcd_mode` 閘門控制：`"ui"` 才啟動 LVGL，否則 LCD 留給 player。
+- 唯一前置條件：`bus.has_lcd()`（boot.py 的 `init_tft` 成功）。
+- LVGL 與 JPEG player 共用同一塊 LCD、互斥，由你手動決定跑哪個（不再由 config 自動切換）。
 - 用法：
   ```python
   import ui.lvgl.board
@@ -39,7 +40,7 @@ slave new/
   ```
 
 ### 獨立測試入口（ui_test_tool）
-- **不受 lcd_mode 閘門限制**，import 即用（對齊 tft_test_tool 慣例）：
+- 強制起 UI（測試用，仍需 LCD 存在），import 即用（對齊 tft_test_tool 慣例）：
   ```python
   import ui_test_tool
   # 直接進主迴圈，實體旋鈕 + encC(確認) + btn(離開) 操作
@@ -83,7 +84,6 @@ def on_exit():    return nav.exit()   # True=消耗(編輯中先退編輯)；Fal
 ## 5. config 設定
 
 ```json
-"System": { "lcd_mode": "player" },        // "ui" = 啟動 LVGL；"player" = 留給 JPEG
 "ENC": {
     "enable": 1,
     "list": [ { "id": 0, "GPIO": { "a": 18, "b": 8 } } ]   // 硬體編碼器 A/B
