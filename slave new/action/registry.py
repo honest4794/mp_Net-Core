@@ -11,6 +11,7 @@ from action import heartbeat_actions
 from action import ram_bench_actions
 from action import now_actions
 from action import hw_actions
+from action import waiting_to_trash_actions
 
 # jpeg_actions 依賴 TFT/LCD(播放器寫 LCD),沒有 LCD 時跳過整段 import
 # (沒接 TFT 時 import 仍會成功,但播放毫無意義且可能拖垮雙核心啟動)。
@@ -32,3 +33,4 @@ def register_all(app):
         print("[Action] ⏭ jpeg_actions skipped — no LCD/TFT on bus")
     now_actions.register(app)
     hw_actions.register(app)
+    waiting_to_trash_actions.register(app)

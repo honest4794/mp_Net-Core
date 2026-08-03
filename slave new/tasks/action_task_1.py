@@ -271,6 +271,7 @@ class ActionTask1(Task):
             bus.shared[_ENC_DELTA_KEY] = 0
             bus.shared["_temp_brightness"] = self._temp_brightness
             bus.shared.setdefault("_motor_enabled", 1)
+            bus.shared.setdefault("_display_cmd", None)
 
             self._m1   = _resolve_pin_or(("m1",), _MOTOR_DEFAULT_PINS["m1"])
             self._m2   = _resolve_pin_or(("m2",), _MOTOR_DEFAULT_PINS["m2"])
@@ -691,6 +692,21 @@ class ActionTask1(Task):
             delta,
             max(0, min(target, _UART_BRIGHTNESS_MAX))))
 
+    def _consume_display_cmd(self):
+        """消費 bus 指令 _display_cmd（waiting_to_trash_actions 翻譯進來，或 LVGL 頁面直寫）。
+        格式: {"mode": 0-255, "brightness": 0-36}（欄位可選）。消費後清空。"""
+        cmd = bus.shared.get("_display_cmd")
+        if not cmd:
+            return
+        bus.shared["_display_cmd"] = None
+        try:
+            self.set_display_state(
+                mode=cmd.get("mode"),
+                brightness=cmd.get("brightness"),
+            )
+        except Exception as e:
+            get_log().error("[CMD] display cmd: {}".format(e))
+
     # ═══ 主迴圈 ═══
 
     def loop(self):
@@ -707,6 +723,7 @@ class ActionTask1(Task):
         # ── UART 接收 ──
         self._handle_uart_receive()
         self._consume_encoder_delta()
+        self._consume_display_cmd()
 
         now_btn = time.ticks_ms()
         self._poll_vbtn(0, now_btn)

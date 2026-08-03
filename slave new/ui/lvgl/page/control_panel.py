@@ -8,11 +8,12 @@
 #     中 倒數時間(arc 進度 + 中央時間文字)
 #     下 Bit7/Bit6 旗標狀態 + 兩個切換按鈕
 #
-# 協議對接(與 action_task_1.py 共享同一 byte):
-#   bus.shared["_display_mode"] = mode byte(Bit7=特殊, Bit6=保留, Bit5-0=模式值)
-#   bus.shared["_display_brightness"] = 亮度
-#   bus.shared["_display_time"] = 剩餘秒數(0-255)
-#   bus.shared["_display_running"] = 計時中(本頁自用,協議無此欄)
+# 協議對接(混搭環境:本頁是控制端也是被控制端):
+#   指令(控制端): _send_cmd() → bus.shared["_display_cmd"] = {"mode":..,"brightness":..}
+#                 → action_task_1._consume_display_cmd() → set_display_state() → UART 執行
+#                 跨板時走 schema 0x1501(waiting_to_trash_actions.on_ctl 翻譯進同一欄位)
+#   狀態(被控制端,顯示用): bus.shared["_display_mode/_brightness/_time"]
+#                 action_task_1 執行後寫回,本頁 update() 讀同一位置顯示
 #   control_panel dict 為本頁快取(is_running 等)
 import lvgl as lv
 from ui.lvgl.registry import register
@@ -126,6 +127,20 @@ def _panel(parent, x, y, w, h):
 
 # ═══ bus 讀寫(與 action_task_1 共享 _display_* 欄位) ═══
 
+def _send_cmd(mode=None, brightness=None):
+    """發指令給 action_task_1 via bus.shared['_display_cmd']。
+    同板直寫；跨板時由 waiting_to_trash_actions.on_ctl 翻譯進同一欄位。
+    action_task_1._consume_display_cmd() 統一消費 → set_display_state() → UART 執行。"""
+    from lib.sys_bus import bus
+    cmd = {}
+    if mode is not None:
+        cmd["mode"] = int(mode) & 0xFF
+    if brightness is not None:
+        cmd["brightness"] = int(brightness)
+    if cmd:
+        bus.shared["_display_cmd"] = cmd
+
+
 def _mode_byte():
     """讀完整 mode byte(含旗標)。"""
     from lib.sys_bus import bus
@@ -133,8 +148,9 @@ def _mode_byte():
 
 
 def _set_mode_byte(v):
-    from lib.sys_bus import bus
-    bus.shared["_display_mode"] = int(v) & 0xFF
+    """發完整 mode 指令給 action_task_1（不再直寫 _display_mode 狀態欄位）。
+    action_task_1 執行後會把最終狀態寫回 _display_mode，update() 讀回顯示。"""
+    _send_cmd(mode=int(v) & 0xFF)
 
 
 def _state():
@@ -185,12 +201,11 @@ def _refresh_bits():
 
 
 def _adj_bright(dd):
-    """編輯態 enc:調亮度。"""
-    from lib.sys_bus import bus
+    """編輯態 enc:調亮度。發指令給 action_task_1(不直寫狀態欄位)。"""
     v = max(0, min(36, _bright_sl.get_value() + dd))
     _bright_sl.set_value(v, 0)
     _bright_lb.set_text(str(v))
-    bus.shared["_display_brightness"] = v
+    _send_cmd(brightness=v)
 
 
 # ====== 頁面接口(轉發給 nav) ======
