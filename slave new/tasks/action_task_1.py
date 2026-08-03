@@ -24,9 +24,10 @@ UART Display 協定 (與 DisplayController 相容):
   - 收到 UART fram → 更新狀態, 不回傳
 
 可設定參數 (bus.shared):
-  _motor_rise_ms  (預設 5000)
-  _motor_wait_ms  (預設 500)
-  _motor_fall_ms  (預設 5000)
+  _motor_rise_ms            (預設 5000)
+  _motor_wait_ms            (預設 500)
+  _motor_fall_ms            (預設 5000)
+  _motor_startup_delay_ms   (預設 10000)
 """
 
 import time
@@ -158,11 +159,11 @@ _MOTOR_MODE_LIST = [
 ]
 
 _STATE_NAME = {
-    STATE_IDLE: "IDLE",
-    STATE_RISE: "RISE",
-    STATE_WAIT: "WAIT",
-    STATE_FALL: "FALL",
-    STATE_PRE_DELAY: "PRE_DELAY",
+    STATE_IDLE: "閒置",
+    STATE_RISE: "上升",
+    STATE_WAIT: "等待",
+    STATE_FALL: "下降",
+    STATE_PRE_DELAY: "延遲等待",
 }
 
 
@@ -200,6 +201,8 @@ class ActionTask1(Task):
         self._motor_control_source = None  # None | "manual" | "reserved"
         self._motor_start_ms = 0         # 記錄馬達啟動時間，供 STOP log 計算持續時間
         self._position = None            # 當前實體位置: None | "top" | "bottom"
+        self._startup_delay_ms = 10000   # 啟動延遲 (預設 10s)
+        self._startup_phase = 0          # 0=normal, 1=startup_pre_delay, 2=startup_fall
 
     def _is_motor_enabled(self):
         """讀取 bus.shared["_motor_enabled"]，0=禁用, 1=啟用 (預設 1)"""
@@ -255,6 +258,7 @@ class ActionTask1(Task):
             self._rise_ms = _read_cfg("_motor_rise_ms", _DEFAULT_RISE_MS)
             self._wait_ms = _read_cfg("_motor_wait_ms", _DEFAULT_WAIT_MS)
             self._fall_ms = _read_cfg("_motor_fall_ms", _DEFAULT_FALL_MS)
+            self._startup_delay_ms = _read_cfg("_motor_startup_delay_ms", 10000)
 
             self._max_mode = _MAX_MODE
             self._now_bus = bus.get_service("NowBus")
@@ -271,8 +275,9 @@ class ActionTask1(Task):
             self._m1   = _resolve_pin_or(("m1",), _MOTOR_DEFAULT_PINS["m1"])
             self._m2   = _resolve_pin_or(("m2",), _MOTOR_DEFAULT_PINS["m2"])
             self._m_en = None               # en 由硬體 pull-up，不控制
-            self._enter(STATE_IDLE)
-            get_log().immediate("[Motor] ready — IDLE")
+            self._startup_phase = 1
+            self._enter(STATE_PRE_DELAY, self._startup_delay_ms)
+            get_log().immediate("[Motor] 啟動 — 延遲等待 {}ms 後下降".format(self._startup_delay_ms))
             m1_cfg = _find_pin_cfg(("m1",))
             m2_cfg = _find_pin_cfg(("m2",))
             en_cfg = _find_pin_cfg(("m_en", "en"))
@@ -298,34 +303,37 @@ class ActionTask1(Task):
     def _enter(self, state, delay_ms=None):
         self._state = state
         now = time.ticks_ms()
+        state_name = self._motor_state_name()
 
         if state == STATE_IDLE:
             self._motor_stop()
             self._deadline = 0
             self._motor_control_source = None
+            get_log().immediate("[Motor] → 閒置")
         elif state == STATE_PRE_DELAY:
             self._motor_stop()
             self._deadline = time.ticks_add(now, delay_ms or 0)
+            get_log().immediate("[Motor] → 延遲等待 {}ms".format(delay_ms or 0))
         elif state == STATE_RISE:
             if self._is_motor_enabled():
                 self._motor_fwd()
             else:
-                get_log().immediate("[Motor] DISABLED — skip fwd")
+                get_log().immediate("[Motor] 已禁用 — 跳過正轉")
             self._deadline = time.ticks_add(now, self._rise_ms)
             self._dispatch_stream_play_from_start("motor-rise")
+            get_log().immediate("[Motor] → 上升 ({}ms)".format(self._rise_ms))
         elif state == STATE_WAIT:
             self._motor_stop()
-            if self._is_reserved_motor_control():
-                self._deadline = 0
-            else:
-                self._deadline = time.ticks_add(now, self._wait_ms)
+            self._deadline = time.ticks_add(now, self._wait_ms)
+            get_log().immediate("[Motor] → 等待 ({}ms)".format(self._wait_ms))
         elif state == STATE_FALL:
             if self._is_motor_enabled():
                 self._motor_rev()
             else:
-                get_log().immediate("[Motor] DISABLED — skip rev")
+                get_log().immediate("[Motor] 已禁用 — 跳過反轉")
             self._deadline = time.ticks_add(now, self._fall_ms)
-        self._log_runtime_state("motor->{}".format(self._motor_state_name()))
+            get_log().immediate("[Motor] → 下降 ({}ms)".format(self._fall_ms))
+        self._log_runtime_state("motor->{}".format(state_name))
 
     # ═══ 馬達控制 ═══
 
@@ -337,7 +345,7 @@ class ActionTask1(Task):
         if self._m1: self._m1.value(0)
         if self._m2: self._m2.value(0)
         # en 不主動控制，由硬體 pull-up 決定
-        get_log().immediate("[Motor] STOP  dur={}ms m1={} m2={} state→{}".format(
+        get_log().immediate("[Motor] 停止  dur={}ms m1={} m2={} state→{}".format(
             elapsed, self._m1, self._m2, self._motor_state_name()))
 
     def _motor_fwd(self):
@@ -346,7 +354,7 @@ class ActionTask1(Task):
         self._motor_start_ms = time.ticks_ms()
         if self._m1: self._m1.value(0)
         if self._m2: self._m2.value(1)
-        get_log().immediate("[Motor] FWD   begin @{}ms m1={} m2={}".format(
+        get_log().immediate("[Motor] 正轉  開始 @{}ms m1={} m2={}".format(
             self._motor_start_ms, self._m1, self._m2))
 
     def _motor_rev(self):
@@ -355,7 +363,7 @@ class ActionTask1(Task):
         self._motor_start_ms = time.ticks_ms()
         if self._m1: self._m1.value(1)
         if self._m2: self._m2.value(0)
-        get_log().immediate("[Motor] REV   begin @{}ms m1={} m2={}".format(
+        get_log().immediate("[Motor] 反轉  開始 @{}ms m1={} m2={}".format(
             self._motor_start_ms, self._m1, self._m2))
 
     # ═══ UART Display 協定 ═══
@@ -524,11 +532,11 @@ class ActionTask1(Task):
                 return  # 已在頂部，不動
             if self._state == STATE_IDLE:
                 self._motor_control_source = "reserved"
-                self._enter(STATE_RISE)
-                get_log().immediate("[Motor] RESERVED=1 → RISE (target top)")
+                self._enter(STATE_PRE_DELAY, self._startup_delay_ms)
+                get_log().immediate("[Motor] RESERVED=1 → 延遲等待後上升 (目標頂部)")
             elif self._state in (STATE_FALL, STATE_PRE_DELAY):
-                self._enter(STATE_RISE)
-                get_log().immediate("[Motor] RESERVED=1 → switch to RISE")
+                self._enter(STATE_PRE_DELAY, self._startup_delay_ms)
+                get_log().immediate("[Motor] RESERVED=1 → 延遲等待後切換上升")
         else:
             # Bit6=0 → 目標 bottom
             if self._position == "bottom":
@@ -536,10 +544,10 @@ class ActionTask1(Task):
             if self._state == STATE_IDLE:
                 self._motor_control_source = "reserved"
                 self._enter(STATE_FALL)
-                get_log().immediate("[Motor] RESERVED=0 → FALL (target bottom)")
+                get_log().immediate("[Motor] RESERVED=0 → 下降 (目標底部)")
             elif self._state in (STATE_RISE, STATE_WAIT, STATE_PRE_DELAY):
                 self._enter(STATE_FALL)
-                get_log().immediate("[Motor] RESERVED=0 → switch to FALL")
+                get_log().immediate("[Motor] RESERVED=0 → 切換下降")
 
     def _check_mode_audio(self):
         """
@@ -599,13 +607,15 @@ class ActionTask1(Task):
 
     def _handle_vbtn_short(self, btn_id):
         if btn_id == 0:
-            self._trigger_motor_action()
+            if self._state != STATE_IDLE:
+                return  # 馬達運轉中，無視短按
+            self._toggle_mode_flag(MODE_RESERVED)
         elif btn_id == 1:
             self.set_display_state(mode=self._next_mode())
 
     def _handle_vbtn_long(self, btn_id):
         if btn_id == 0:
-            self._toggle_mode_flag(MODE_RESERVED)
+            self._trigger_motor_action()
         elif btn_id == 1:
             self._toggle_mode_flag(MODE_SPECIAL)
 
@@ -706,41 +716,45 @@ class ActionTask1(Task):
         if self._state != STATE_IDLE and self._deadline > 0:
             if time.ticks_diff(now, self._deadline) >= 0:
                 if self._state == STATE_PRE_DELAY:
-                    self._enter(STATE_RISE)
+                    if self._startup_phase == 1:
+                        self._startup_phase = 2
+                        self._enter(STATE_FALL)
+                    else:
+                        self._enter(STATE_RISE)
                 elif self._state == STATE_RISE:
                     self._position = "top"
-                    if self._is_reserved_motor_control():
-                        self._enter(STATE_IDLE)   # reserved: 到頂就停
-                    else:
-                        self._enter(STATE_WAIT)
+                    self._enter(STATE_WAIT)
                 elif self._state == STATE_WAIT:
                     self._enter(STATE_FALL)
                 elif self._state == STATE_FALL:
+                    if self._startup_phase == 2:
+                        self._startup_phase = 0
                     self._position = "bottom"
                     self._enter(STATE_IDLE)
                 self.success += 1
 
     def _trigger_motor_action(self):
-        """VBTN[0] 短按: 控制電機動作"""
+        """VBTN[0] 長按: 直接控制電機升降（無延遲）"""
         if not self._is_motor_enabled():
-            get_log().immediate("[Motor] DISABLED — btn ignored")
+            get_log().immediate("[Motor] 已禁用 — 按鈕忽略")
             return
         if self._state == STATE_IDLE:
             self._motor_control_source = "manual"
             if self._position == "top":
                 self._enter(STATE_FALL)  # 在頂部 → 下降
             else:
-                self._enter(STATE_RISE)  # 在底部/未知 → 上升
+                self._enter(STATE_RISE)  # 直接上升，無延遲
         elif self._state == STATE_PRE_DELAY:
             if self._is_reserved_motor_control():
                 self._enter(STATE_IDLE)
-                get_log().info("[Motor] manual trigger cancels reserved pre-delay")
+                get_log().info("[Motor] 長按取消 reserved 延遲 → 閒置")
             else:
-                get_log().immediate("[Motor] ignore manual trigger during PRE_DELAY")
+                self._enter(STATE_FALL)
+                get_log().immediate("[Motor] 長按取消延遲 → 下降")
         elif self._state in (STATE_RISE, STATE_WAIT):
             self._enter(STATE_FALL)   # 提早下降
         elif self._state == STATE_FALL:
-            get_log().immediate("[Motor] ignore manual trigger during FALL")
+            get_log().immediate("[Motor] 下降中忽略手動觸發")
         self.success += 1
 
     def on_stop(self):
