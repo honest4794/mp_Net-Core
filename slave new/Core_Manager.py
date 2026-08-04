@@ -81,7 +81,7 @@ def launcher():
 
         # ── Layer 1: LVGL UI（跟 jpeg_player 互斥，共用同一塊 LCD，二選一）──
         from tasks.lvgl_task import LvglTask
-#     tm.register_task("lvgl", LvglTask, default_affinity=(0, 1), layer=1)
+        tm.register_task("lvgl", LvglTask, default_affinity=(0, 1), layer=1)
 
         # ══════════════════════════════════════════════════════
         # 臨時播放參數（之後會移到 config.json）

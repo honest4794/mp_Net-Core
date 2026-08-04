@@ -65,9 +65,9 @@
         ]
     },
     "I2C": {
-        "enable": 0,
+        "enable": 1,
         "list": [
-            { "id": 0, "freq": 400000, "GPIO": { "scl": 8, "sda": 7 } }
+            { "id": 0, "freq": 400000, "GPIO": { "scl": 40, "sda": 38 } }
         ]
     },
     "HUSB238": {
@@ -77,9 +77,9 @@
         "GPIO": { "i2c": 0 }
     },
     "UART": {
-        "enable": 0,
+        "enable": 1,
         "list": [
-            { "id": 1, "baudrate": 115200, "GPIO": { "tx": 8, "rx": 18 } }
+            { "id": 1, "baudrate": 115200, "GPIO": { "tx": 39, "rx": 41 } }
         ]
     },
     "PWM": {
