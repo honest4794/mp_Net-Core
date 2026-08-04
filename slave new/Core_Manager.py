@@ -80,6 +80,10 @@ def launcher():
 #     tm.register_task("jpeg_player", JpegPlayerTask, default_affinity=(0, 1), layer=1)
 
         # ── Layer 1: LVGL UI（跟 jpeg_player 互斥，共用同一塊 LCD，二選一）──
+        # affinity=(0,1)=CPU1: TFT SPI bus 獨占由 LVGL 操作。
+        # 注意:mp_lcd_bus 的 spi queue 狀態無 thread-safety 保護(spi_bus.c queue_count/queue_tail),
+        # 必須確保同一時間只有一個核心操作 TFT SPI。boot 完成後 Core 0 不再碰 TFT,
+        # 故 LVGL 獨占 CPU1 操作 SPI 無競態。
         from tasks.lvgl_task import LvglTask
         tm.register_task("lvgl", LvglTask, default_affinity=(0, 1), layer=1)
 
