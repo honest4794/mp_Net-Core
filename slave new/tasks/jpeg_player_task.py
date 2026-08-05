@@ -18,6 +18,7 @@ _SEND_CHUNK = 32 * 1024
 
 class JpegPlayerTask(Task):
     log_schema = ["fps", "block", "frame"]
+    hw = ("lcd",)   # JPEG 播放器碰 LCD/SPI1，只能跑 core0（TaskManager 會擋 core1）
 
     def __init__(self, name, ctx):
         super().__init__(name, ctx)

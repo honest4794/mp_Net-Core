@@ -66,7 +66,24 @@ class TaskManager:
     def is_layer_enabled(self, layer):
         return self._layer_enabled.get(layer, True)
 
+    def _check_affinity(self, name, task_cls, affinity):
+        """硬體歸屬防呆：宣告 hw=("lcd",) 的 task 禁止排到 core1。
+
+        lcd_bus 的 DMA queue 不是 thread-safe，LVGL/JPEG player 若跟
+        core1 的任務同時碰 SPI1 會直接崩潰，所以這裡直接擋下。"""
+        hw = tuple(getattr(task_cls, "hw", ()))
+        if "lcd" in hw and affinity[1] == 1:
+            log = get_log()
+            log.error(
+                "\u26d4 Task [{}] requires LCD/SPI(core0 only) — "
+                "affinity {} rejected, forcing (1,0)".format(name, affinity)
+            )
+            return (1, 0)
+        return affinity
+
     def register_task(self, name, task_cls, default_affinity=(0, 0), layer=0, run_once=False):
+        # 硬體歸屬檢查：LCD task 強制 core0（見 _check_affinity）
+        default_affinity = self._check_affinity(name, task_cls, default_affinity)
         self.task_classes[name] = task_cls
         self.config[name] = default_affinity
         self.layers[name] = int(layer)
@@ -115,6 +132,10 @@ class TaskManager:
         if affinity == (1, 1):
             log.error("Task [{}] cannot run on both cores simultaneously.".format(name))
             return False
+        # 硬體歸屬檢查：LCD task 禁止排到 core1（見 _check_affinity）
+        task_cls = self.task_classes.get(name)
+        if task_cls is not None:
+            affinity = self._check_affinity(name, task_cls, affinity)
         self.config[name] = affinity
         self._mark_dirty()
         log.info("Task [{}] affinity \u2192 {}".format(name, affinity))

@@ -20,6 +20,7 @@ from lib.log_service import get_log
 
 class LvglTask(Task):
     log_schema = ["lvgl_frame"]
+    hw = ("lcd",)   # LVGL 獨佔 LCD/SPI1，只能跑 core0（TaskManager 會擋 core1）
 
     def __init__(self, name, ctx):
         super().__init__(name, ctx)
