@@ -33,24 +33,25 @@ def _make_inputs():
     → LVGL Core 不碰硬體,真正適配核心模式(採樣可跑在另一個 Core)。
 
     按鈕 label 預設 encC / btn,可在 config PIN 段改名。
-    active-low: value 0 = 按下。"""
-    from lib.hw_manager import get_input
+    active-low;confirm/exit 為去抖後按壓邊緣(讀取即清除,按住不重複觸發)。"""
+    from lib.hw_manager import consume_input
 
     print("[board] inputs: via hw_manager snapshot (encC/btn)")
-    return _make_snapshot_inputs(get_input)
+    return _make_snapshot_inputs(consume_input)
 
 
-def _make_snapshot_inputs(get_input):
-    """快照後端:三個 callable 從 bus.shared['_hw_inputs'] 取值。"""
+def _make_snapshot_inputs(consume_input):
+    """快照後端:三個 callable 從 bus.shared['_hw_inputs'] 消費式取值。"""
     def enc_delta():
-        return get_input("enc", idx=0) or 0
+        # 累加 delta 讀取即清除(唯一消費者,快速轉動不掉格)
+        return consume_input("enc", idx=0) or 0
 
     def confirm():
-        # active-low: 0 = 按下;回傳是否處於按下狀態
-        return get_input("pin", key="encC") == 0
+        # 去抖後按壓邊緣(active-low 0=按下):邊緣即清,按住不會每幀重複觸發
+        return consume_input("pin", key="encC") != 0
 
     def exit_pressed():
-        return get_input("pin", key="btn") == 0
+        return consume_input("pin", key="btn") != 0
 
     return enc_delta, confirm, exit_pressed
 

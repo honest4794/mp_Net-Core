@@ -65,7 +65,7 @@ class Nav:
         kind      ITEM_INFO / ITEM_SWITCH / ITEM_ENUM / ITEM_SLIDER / ITEM_BUTTON
         on_change 該項被操作時的回呼:
                     SWITCH/ENUM/BUTTON → on_change() 無參(頁面自己切換/循環/觸發)
-                    SLIDER 編輯態 enc → on_change(delta) delta=+1/-1
+                    SLIDER 編輯態 enc → on_change(delta) delta=累加格數(±N)
         on_focus  焦點變化回呼 on_focus(focused: bool)(選用,框架預設畫焦點框)"""
         self._items.append({
             "w": w, "kind": kind,
@@ -108,11 +108,12 @@ class Nav:
             it = self._items[self._fi]
             if it["on_change"]:
                 try:
-                    it["on_change"](1 if d > 0 else -1)
+                    # 傳原始 delta(累加格數,可能 ±N):不夾成 ±1,快速轉動不掉格
+                    it["on_change"](d)
                 except Exception as e:
                     print("[nav] enc_edit err:", e)
             return
-        self._fi = (self._fi + (1 if d > 0 else -1)) % len(self._items)
+        self._fi = (self._fi + d) % len(self._items)
         self.paint()
 
     def confirm(self):

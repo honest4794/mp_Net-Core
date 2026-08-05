@@ -17,6 +17,7 @@
 虛擬按鈕緩衝存放於 bus.shared["_vbtn"] (Global 區域)，可供所有任務存取。
 """
 
+import time
 from machine import Pin
 from lib.sys_bus import bus
 
@@ -217,27 +218,36 @@ def list_all():
 # 消費者（LVGL / action task 等）讀 get_input() 快照，不直接碰 GPIO。
 #
 # bus.shared["_hw_inputs"]:
-#   {"enc": [delta0, delta1, ...],   # encoder 增量(集中計算)
-#    "pin": {"encC": 0, "btn": 1},   # IN 腳當前值(按 config label)
+#   {"enc": [delta0, delta1, ...],   # encoder 未消費累加 delta(集中累加)
+#    "pin": {"encC": 0, "btn": 1},   # IN 腳當前值(按 config label,原始未去抖)
+#    "pin_edge": {"encC": 0, "btn": 0},  # 去抖後按壓邊緣累加(active-low,消費端清除)
+#    "pin_stable": {...},            # 去抖後接受值(內部用)
+#    "_pin_state": {...},            # 去抖候選狀態 + 起始 ticks_ms(內部用)
 #    "_enc_last": [...]}             # 上次 encoder 原值(內部用)
+# enc[i] / pin_edge[label] 為「累加」語意:消費端用 consume_input 讀取即清除;
+# get_input 讀到的是尚未被消費的累加值(enc)或當前電平(pin)。
 # ══════════════════════════════════════════════════════
 _HW_INPUTS = "_hw_inputs"
+
+# IN Pin 去抖時間(ms):狀態需連續穩定超過此時間才接受(對齊舊 ControlPanelTask 30ms)
+_PIN_DEBOUNCE_MS = 30
 
 
 def sample_inputs():
     """統一採樣所有輸入硬體當前值 → 快照進 bus.shared["_hw_inputs"]。
     由 HwSampleTask 每 loop 呼叫一次。消費者讀 get_input() 快照,不碰硬體。
 
-    Encoder: 算 delta(與上次差值),放 enc[i]   ← 邊緣計算集中在此
+    Encoder: 累加 delta(與上次差值累加,消費端讀取即清) ← 邊緣計算集中在此
     IN Pin:  讀 value,放 pin[label]            ← 按 config PIN 段的 label
     VBTN:    已有 _vbtn,不重複(維持現狀)
     """
     snap = bus.shared.get(_HW_INPUTS)
     if snap is None:
-        snap = {"enc": [], "pin": {}, "_enc_last": []}
+        snap = {"enc": [], "pin": {}, "pin_edge": {}, "pin_stable": {},
+                "_pin_state": {}, "_enc_last": []}
         bus.shared[_HW_INPUTS] = snap
 
-    # ── Encoder delta(集中邊緣計算;原本散落在 control_panel/board 各自算)──
+    # ── Encoder delta(集中邊緣計算;累加供消費端一次取走,不因採樣覆寫掉格)──
     enc_list = bus.get_service("enc_list") or []
     n_enc = len(enc_list)
     if len(snap["_enc_last"]) != n_enc:
@@ -247,10 +257,24 @@ def sample_inputs():
     else:
         for i in range(n_enc):
             v = enc_list[i].value()
-            snap["enc"][i] = v - snap["_enc_last"][i]
+            d = v - snap["_enc_last"][i]
             snap["_enc_last"][i] = v
+            if d:
+                snap["enc"][i] += d
+                # 平行累加進 _enc_delta(motor 調亮度通道,與 hw_actions 的
+                # 跨板累加同 key、同語意;消費者 ActionTask1 讀取即清)。
+                # 注意:若日後重啟 ControlPanelTask(它也寫 _enc_delta),
+                # 會變成雙生產者,需二選一。
+                cur = int(bus.shared.get("_enc_delta", 0) or 0)
+                bus.shared["_enc_delta"] = cur + d
 
     # ── IN Pin(只採 mode=IN 的,按 label;OUT 腳是輸出不需快照)──
+    # 電平照樣快照進 pin;另做去抖 + 按壓邊緣累加進 pin_edge。
+    # 消費端(如 LVGL confirm/exit)用 consume_input("pin") 讀取即清,
+    # 避免「按住按鈕被每幀重複觸發」的雙擊/抖動問題。
+    snap.setdefault("pin_edge", {})
+    snap.setdefault("pin_stable", {})
+    snap.setdefault("_pin_state", {})
     pin_by_label = bus.get_service("pin_by_label") or {}
     pin_cfg = (bus.shared.get("PIN") or {}).get("list") or []
     for item in pin_cfg:
@@ -258,7 +282,23 @@ def sample_inputs():
             continue
         label = item.get("label")
         if label and label in pin_by_label:
-            snap["pin"][label] = pin_by_label[label].value()
+            v = pin_by_label[label].value()
+            snap["pin"][label] = v
+            if label not in snap["pin_stable"]:
+                # 首次:直接接受當前值,不產生邊緣
+                snap["pin_stable"][label] = v
+                snap["_pin_state"][label] = [v, time.ticks_ms()]
+                continue
+            st = snap["_pin_state"][label]
+            if st[0] != v:
+                # 狀態跳變:重啟去抖候選(彈跳期間不斷重置,穩定了才開始計時)
+                snap["_pin_state"][label] = [v, time.ticks_ms()]
+            elif v != snap["pin_stable"][label] and \
+                    time.ticks_diff(time.ticks_ms(), st[1]) >= _PIN_DEBOUNCE_MS:
+                # 新狀態穩定超過去抖時間:接受;按下(active-low v==0)記一次邊緣
+                snap["pin_stable"][label] = v
+                if v == 0:
+                    snap["pin_edge"][label] = snap["pin_edge"].get(label, 0) + 1
 
     return snap
 
@@ -281,6 +321,32 @@ def get_input(kind, key=None, idx=None):
     return None
 
 
+def consume_input(kind, key=None, idx=None):
+    """消費型讀取(讀取即清除)。目前 enc / pin 皆有累加語意:
+       consume_input("enc", idx=0)      → 讀 encoder 0 的累加 delta 並歸零
+       consume_input("pin", key="encC") → 讀 encC 的去抖按壓邊緣次數並歸零
+       (非累加型別回退到 get_input,不消費)。
+    跨核 race:採樣端(core1)「+=」與消費端(core0)「讀取→歸零」之間有極小
+    窗口,偶發少 1 次,肉眼不可見;與既有快照模式同級。"""
+    snap = bus.shared.get(_HW_INPUTS)
+    if snap is None:
+        return 0
+    if kind == "enc":
+        lst = snap.get("enc", [])
+        if idx is not None and 0 <= idx < len(lst):
+            v = lst[idx]
+            lst[idx] = 0
+            return v
+        return 0
+    if kind == "pin":
+        edges = snap.get("pin_edge", {})
+        v = edges.get(key, 0)
+        if v:
+            edges[key] = 0
+        return v
+    return get_input(kind, key=key, idx=idx)
+
+
 # -- 單例物件 --
 HW = type("HW", (), {
     "PIN": PIN, "PWM": PWM, "SPI": SPI, "I2C": I2C,
@@ -292,4 +358,5 @@ HW = type("HW", (), {
     "list_all": staticmethod(list_all),
     "sample_inputs": staticmethod(sample_inputs),
     "get_input": staticmethod(get_input),
+    "consume_input": staticmethod(consume_input),
 })

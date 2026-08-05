@@ -10,6 +10,7 @@
 # 注意:LVGL 必須跑在 CPU0(MicroPython 主執行緒)。
 #   測試確認:_thread(CPU1) + 完整 UI(多 widget)會崩潰(GC/stack 跨核競態)。
 #   與 lvgl-micropython 專案一致:Python 層只用一核,CPU1 工作在 C 層做。
+import time
 import lvgl as lv
 from lib.sys_bus import bus
 
@@ -37,6 +38,7 @@ class LvglDisp:
         self.W = _W
         self.H = _H
         self._dirty = []
+        self._last_tick = time.ticks_ms()
 
         # 送 MADCTL(讓 framebuffer 橫屏)。
         self._bus.write_cmd_data(0x36, bytes([_MADCTL]))
@@ -67,7 +69,12 @@ class LvglDisp:
 
     # ---- platform 介面(app.step 用) ----
     def tick(self):
-        lv.tick_inc(5)
+        # 真實時間差:幀時間 >5ms 時 tick_inc(5) 會讓 LVGL 內部時鐘越跑越慢
+        now = time.ticks_ms()
+        diff = time.ticks_diff(now, self._last_tick)
+        self._last_tick = now
+        if diff > 0:
+            lv.tick_inc(diff)
         lv.task_handler()
         lv.refr_now(self._disp)
 
