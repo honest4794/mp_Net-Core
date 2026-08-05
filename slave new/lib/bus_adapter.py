@@ -31,7 +31,7 @@ class BusAdapter:
 
 
 class SpiBusAdapter(BusAdapter):
-    def __init__(self, spi, dc=None, cs=None, rst=None, bounce_size=32768):
+    def __init__(self, spi, dc=None, cs=None, rst=None):
         self._spi = spi
         self._dc = dc
         self._cs = cs
@@ -39,27 +39,10 @@ class SpiBusAdapter(BusAdapter):
         self._dma = (hasattr(spi, 'wait') and hasattr(spi, 'pending')
                      and hasattr(spi, 'wait_all'))
         self._qspi = hasattr(spi, 'lane_count') and spi.lane_count() > 1
-        self._bounce_size = int(bounce_size)
-        self._bounce = None
-        if self._dma:
-            # 內建 DMA bounce buffer（內部 SRAM）— 供大 buffer / PSRAM 分 chunk 過
-            try:
-                import heap_caps
-                b = heap_caps.malloc(self._bounce_size, heap_caps.CAP_DMA)
-                if b is not None:
-                    self._bounce = b
-            except Exception:
-                self._bounce = None
 
     def close(self):
-        """釋放內建 bounce buffer（bus 不再使用時呼叫）"""
-        if self._bounce is not None:
-            try:
-                import heap_caps
-                heap_caps.free(self._bounce)
-            except Exception:
-                pass
-            self._bounce = None
+        """無內建資源需釋放（SPI 週邊 DMA 由 C 層管理）；保留介面相容。"""
+        pass
 
     def write_cmd(self, cmd):
         if self._qspi:
@@ -131,34 +114,6 @@ class SpiBusAdapter(BusAdapter):
         self._spi.write(data)
         self._cs.value(1)
         return True
-
-    def _write_bounced(self, data):
-        """大 buffer 自動分 chunk 過 bounce 送（解決 >32KB 上限 + PSRAM 直送問題）。
-        每 chunk 送後 queue 滿時 wait_all 讓出；回傳最後的 tid。"""
-        mv = memoryview(data)
-        off, rem = 0, len(mv)
-        last_tid = None
-        while rem > 0:
-            n = min(rem, self._bounce_size)
-            self._bounce[:n] = mv[off:off + n]
-            bmv = self._bounce[:n]
-            for attempt in range(2):
-                try:
-                    tid = self._spi.write(bmv)
-                    last_tid = tid if tid is not None else last_tid
-                    break
-                except RuntimeError as e:
-                    try:
-                        self._spi.wait_all()
-                    except Exception:
-                        pass
-                    if attempt == 0:
-                        continue
-                    self._log_err("write_data_async chunk", e)
-                    return None
-            off += n
-            rem -= n
-        return last_tid
 
     @staticmethod
     def _log_err(where, e):

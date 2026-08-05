@@ -28,6 +28,7 @@
 """
 
 import gc, _thread, time, ubinascii, json, os
+from lib.buffer_hub import alloc_dma, free_dma
 
 BUF_SIZE = 16384
 _sd_lock = _thread.allocate_lock()
@@ -116,13 +117,9 @@ class Storage:
         self._io_buf_hc = False
         for sz in (buf_size, buf_size // 2 if buf_size >= 32768 else 0, 16384):
             if sz == 0: continue
-            try:
-                import heap_caps
-                b = heap_caps.malloc(sz, heap_caps.CAP_DMA)
-                if b:
-                    self._io_buf = b; self._buf_bytes = sz; self._io_buf_hc = True; break
-            except:
-                pass
+            buf, is_dma = alloc_dma(sz)
+            if is_dma:
+                self._io_buf = buf; self._buf_bytes = sz; self._io_buf_hc = True; break
         if self._io_buf is None:
             self._io_buf = bytearray(buf_size)
         self._spc = self._buf_bytes // self._ss
@@ -175,11 +172,13 @@ class Storage:
         entry = self._alloc.find(name)
         if entry is None:
             raise RuntimeError("file not found: {}".format(name))
+        # 先做所有可能丟例外的檢查，通過後才動狀態——避免失敗時 _r_open 卡 True
+        crc = entry[2] if len(entry) >= 3 else None
+        if crc == "FFFFFFFF":
+            raise RuntimeError("file {} is incomplete (write interrupted)".format(name))
         self._r_open = True; self._r_file = name
         self._r_sector = entry[0]; self._r_cnt = entry[1]
-        self._r_crc = entry[2] if len(entry) >= 3 else None
-        if self._r_crc == "FFFFFFFF":
-            raise RuntimeError("file {} is incomplete (write interrupted)".format(name))
+        self._r_crc = crc
         self._r_byte = 0
         return self._r_cnt * self._ss
 
@@ -238,11 +237,8 @@ class Storage:
         if self._w_open: self.write_end()
         if self._r_open: self.read_end()
         if self._io_buf is not None:
-            # 只有 heap_caps 分配的才用 heap_caps.free；fallback bytearray 留給 GC
-            if getattr(self, "_io_buf_hc", False):
-                try:
-                    import heap_caps; heap_caps.free(self._io_buf)
-                except: pass
+            # 只有 heap_caps 分配的才需 free；fallback bytearray 留給 GC
+            free_dma(self._io_buf, getattr(self, "_io_buf_hc", False))
             self._io_buf = None
         self._c = True
 
@@ -255,15 +251,11 @@ class StreamReader:
         self._sd = sd or bus.get_service("sd_raw")
         self._ss = self._sd.info()[1]
         dma = [None] * n_bufs
-        try:
-            import heap_caps
-            for i in range(n_bufs):
-                b = heap_caps.malloc(buf_size, heap_caps.CAP_DMA)
-                if b: dma[i] = b
-        except: pass
+        hc = [False] * n_bufs
         for i in range(n_bufs):
-            if dma[i] is None: dma[i] = bytearray(buf_size)
-        self._bufs = dma; self._n = n_bufs
+            buf, is_dma = alloc_dma(buf_size)
+            dma[i] = buf; hc[i] = is_dma
+        self._bufs = dma; self._hc = hc; self._n = n_bufs
         self._w_idx = 0; self._r_idx = 0
         self._stat = [0] * n_bufs
         self._buf_size = buf_size; self._spc = buf_size // self._ss
@@ -316,5 +308,12 @@ class StreamReader:
         buf[off:off + n] = v[:n]
         self.release(); return n
 
-    def close(self): self._started = False
+    def close(self):
+        self._started = False
+        bufs = getattr(self, "_bufs", None)
+        if bufs:
+            # 釋放 DMA 槽（bytearray 槽交給 GC）；清空後冪等
+            for i in range(len(bufs)):
+                free_dma(bufs[i], self._hc[i])
+            self._bufs = []; self._hc = []
     def __del__(self): self.close()

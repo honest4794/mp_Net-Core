@@ -4,6 +4,11 @@ from lib.log_service import _viper_write_i32
 class Task:
     log_schema = []
 
+    # 硬體歸屬(防呆): 子類可宣告 hw = ("lcd",) — 碰 lcd_bus/SPI 的 task
+    # 只能跑 core0。TaskManager 的 register_task/set_affinity 會檢查,
+    # 禁止把這類 task 排到 core1(否則 lcd_bus DMA queue 跨核會崩潰)。
+    hw = ()
+
     def __init__(self, name, ctx):
         self.name = name
         self.ctx = ctx

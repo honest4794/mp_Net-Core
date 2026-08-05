@@ -62,17 +62,24 @@ def launcher():
     bus.shared["log_subscribe"] = []
 
     # ── Layer 0: 網路 + 通訊 + FS 掃描 + 硬體採樣，最先啟動 ──
+    # 核心分工（定案）:
+    #   core0(主線程) = 通訊 + UI:network / web_ui / circuit / bus_decode /
+    #     log / lvgl / motor。通訊任務單一呼叫鏈淺(<8KB,探針實測),
+    #     與 LVGL 共用主線程 16KB stack 沒有壓力。
+    #   core1(_thread) = 重活:fs_scan / hw_sample。之後 jpeg 解碼(C 層)
+    #     也可放 core1,但「顯示」部分必須回 core0 — hw=("lcd",) 防呆
+    #     (lib/task_manager.py) 會自動擋掉誤排。
     tm.register_task("log", LogTask, default_affinity=(1, 0), layer=0)
     tm.register_task("network", NetworkTask, default_affinity=(1, 0), layer=0)
 #     tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
-    tm.register_task("motor", ActionTask1, default_affinity=(1, 0), layer=0)
+#     tm.register_task("motor", ActionTask1, default_affinity=(1, 0), layer=0)
 #     tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
     tm.register_task("circuit", CircuitTask, default_affinity=(1, 0), layer=0)
     tm.register_task("bus_decode", BusDecodeTask, default_affinity=(1, 0), layer=0)
     tm.register_task("web_ui",  WebUITask,   default_affinity=(1, 0), layer=0)
     tm.register_task("fs_scan", FsScanTask,  default_affinity=(0, 1), layer=0)
     from tasks.hw_sample_task import HwSampleTask
-    tm.register_task("hw_sample", HwSampleTask, default_affinity=(1, 0), layer=0)
+    tm.register_task("hw_sample", HwSampleTask, default_affinity=(0, 1), layer=0)
 
     # ── Layer 1: JPEG 播放器（依賴 TFT/LCD，沒 LCD 整段跳過）──
     if bus.has_lcd():
@@ -80,8 +87,11 @@ def launcher():
 #     tm.register_task("jpeg_player", JpegPlayerTask, default_affinity=(0, 1), layer=1)
 
         # ── Layer 1: LVGL UI（跟 jpeg_player 互斥，共用同一塊 LCD，二選一）──
+        # affinity=(1,0)=CPU0: LVGL 完整 UI 不能在 _thread(CPU1)裡跑
+        # (MicroPython threading 限制:完整 UI 的 widget 操作在 thread 裡會崩潰)。
+        # CPU1 跑其他 task(採樣/JPEG player 等)。
         from tasks.lvgl_task import LvglTask
-#     tm.register_task("lvgl", LvglTask, default_affinity=(0, 1), layer=1)
+        tm.register_task("lvgl", LvglTask, default_affinity=(1, 0), layer=1)
 
         # ══════════════════════════════════════════════════════
         # 臨時播放參數（之後會移到 config.json）
@@ -110,6 +120,11 @@ def launcher():
 
     try:
         log.info("✨ Starting Core 1 Runner...")
+        # stack 統一 16KB（與主線程 MICROPY_TASK_STACK_SIZE 同級）：
+        #   thread_stack_probe 實測 core1 任務群(fs_scan/hw_sample 等)
+        #   單一呼叫鏈 <8KB，16KB 有餘裕；ESP32 預設只有 5KB 必崩。
+        #   將來 core1 若加 C 解碼等深鏈任務再調大。
+        _thread.stack_size(16 * 1024)
         _thread.start_new_thread(tm.runner_loop, (1,))
 
         log.info("✨ NetBus System Online: {}".format(bus.slave_id))

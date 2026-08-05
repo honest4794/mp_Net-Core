@@ -1,20 +1,15 @@
 # ui/lvgl/lvgl_init.py — LVGL display 一次初始化 + bus reuse
 #
-# 對齊 driver/i80_drv.py、driver/tft_drv.py 的 lazy-init-once 模式:
-#   get_platform() 開頭先 bus.get_service("lvgl_disp");已存在就直接 return。
+# PARTIAL mode — LVGL 渲染小 buffer(40 行),flush_cb 取像素 + swap + 送 SPI。
 #
-# 為什麼這樣做:
-#   - soft-reboot 後 LVGL C 層狀態殘留,重複 deinit/init 再 display_create
-#     會解到 garbage(MemoryError 要求配置數百 MB)→ LVGL 只能初始化一次。
-#   - LVGL display + draw buffer 只該配一次,放 bus 後 reuse,避免記憶體碎片。
+# 螢幕方向:
+#   - LVGL 自己送 MADCTL(0x60 橫屏),讓 ST7789 framebuffer 旋轉。
+#   - show 用 bus adapter 的 set_window(繞過 ST7789.set_window 的 x/y swap)。
+#   - 重要:config TFT.rotation 必須維持 0,否則 double-rotate。
 #
-# 螢幕方向(完全對齊 mp_LVGL/ui/lvgl_shared.py 參考版的做法):
-#   - LVGL 自己送 MADCTL(0x60 橫屏 / 0x00 直屏),讓 ST7789 framebuffer 旋轉。
-#   - LVGL 用旋轉後尺寸(橫屏 320×240)。
-#   - show 用 bus adapter 的 set_window(繞過 ST7789.set_window 的 x/y swap),
-#     因為 MADCTL 0x60 已讓 framebuffer 本身是橫屏,座標直接送即可。
-#   - 重要:config TFT.rotation 必須維持 0(driver 不送 MADCTL、不 swap),
-#     否則會跟 LVGL 送的 MADCTL double-rotate。
+# 注意:LVGL 必須跑在 CPU0(MicroPython 主執行緒)。
+#   測試確認:_thread(CPU1) + 完整 UI(多 widget)會崩潰(GC/stack 跨核競態)。
+#   與 lvgl-micropython 專案一致:Python 層只用一核,CPU1 工作在 C 層做。
 import lvgl as lv
 from lib.sys_bus import bus
 
@@ -43,7 +38,7 @@ class LvglDisp:
         self.H = _H
         self._dirty = []
 
-        # 送 MADCTL(讓 framebuffer 橫屏)。bus adapter 的 write_cmd_data 直接達 ST7789。
+        # 送 MADCTL(讓 framebuffer 橫屏)。
         self._bus.write_cmd_data(0x36, bytes([_MADCTL]))
 
         # LVGL 初始化:soft-reboot 殘留時先 deinit。只在此做一次;reuse 不再走這裡。
@@ -72,8 +67,6 @@ class LvglDisp:
 
     # ---- platform 介面(app.step 用) ----
     def tick(self):
-        import time
-        time.sleep_us(5000)
         lv.tick_inc(5)
         lv.task_handler()
         lv.refr_now(self._disp)
@@ -84,8 +77,6 @@ class LvglDisp:
         return rects
 
     def show(self, x1, y1, x2, y2, data):
-        # 直接用 bus adapter 的 set_window(繞過 ST7789.set_window 的 swap)。
-        # MADCTL 0x60 已讓 framebuffer 橫屏,LVGL 座標直接送。
         self._bus.set_window(x1, y1, x2, y2)
         self._bus.write_data_async(data)
         self._bus.flush()

@@ -20,6 +20,7 @@ from lib.log_service import get_log
 
 class LvglTask(Task):
     log_schema = ["lvgl_frame"]
+    hw = ("lcd",)   # LVGL 獨佔 LCD/SPI1，只能跑 core0（TaskManager 會擋 core1）
 
     def __init__(self, name, ctx):
         super().__init__(name, ctx)
@@ -38,8 +39,17 @@ class LvglTask(Task):
     def loop(self):
         if not self.running:
             return
-        from ui.lvgl import board
-        board._loop_once()      # 單幀 app.step()
+        # 直接呼叫 app.step()(不經 board._loop_once,避免其 _sleep 阻塞 runner_loop)。
+        # TaskManager 的 runner_loop 每輪結尾已 sleep_ms(0) 讓出,不需要 task 自己 sleep。
+        from ui.lvgl import app, board
+        try:
+            app.step()
+        except Exception as e:
+            try:
+                from lib.log_service import get_log
+                get_log().error("[LvglTask] loop err: {}".format(e))
+            except Exception:
+                print("[LvglTask] loop err:", e)
         self.touch += 1
 
     def on_stop(self):
