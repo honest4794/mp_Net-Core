@@ -47,14 +47,6 @@ def _free_dma(buf):
             pass
 
 
-@micropython.viper
-def _viper_copy(dst, src, n: int):
-    d = ptr8(dst)
-    s = ptr8(src)
-    for i in range(n):
-        d[i] = s[i]
-
-
 class DmaBounceBuf:
     def __init__(self, size=_DMA_BOUNCE_SIZE):
         self._buf = _alloc_dma(size)
