@@ -28,6 +28,7 @@ while True:
             print("[RX] B4 {:02X} {:02X} {:02X} FF | mode={} bri={} time={}".format(
                 mode, bri, tm, mode, bri, tm))
             uart.write(bytes(buf[i:i + 5]))   # 原樣回覆
+            print("[TX] 回覆 B4 {:02X} {:02X} {:02X} FF".format(mode, bri, tm))
             buf = buf[i + 5:]                 # 移除已處理的幀(bytearray 不支援 del 切片)
             break
         i += 1
