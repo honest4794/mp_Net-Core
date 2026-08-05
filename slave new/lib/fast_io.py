@@ -172,11 +172,13 @@ class Storage:
         entry = self._alloc.find(name)
         if entry is None:
             raise RuntimeError("file not found: {}".format(name))
+        # 先做所有可能丟例外的檢查，通過後才動狀態——避免失敗時 _r_open 卡 True
+        crc = entry[2] if len(entry) >= 3 else None
+        if crc == "FFFFFFFF":
+            raise RuntimeError("file {} is incomplete (write interrupted)".format(name))
         self._r_open = True; self._r_file = name
         self._r_sector = entry[0]; self._r_cnt = entry[1]
-        self._r_crc = entry[2] if len(entry) >= 3 else None
-        if self._r_crc == "FFFFFFFF":
-            raise RuntimeError("file {} is incomplete (write interrupted)".format(name))
+        self._r_crc = crc
         self._r_byte = 0
         return self._r_cnt * self._ss
 
