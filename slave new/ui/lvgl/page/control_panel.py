@@ -8,6 +8,15 @@
 #     中 倒數時間(arc 進度 + 中央時間文字)
 #     下 Bit7/Bit6 旗標狀態 + 兩個切換按鈕
 #
+# 本機值 + 三態顏色(送出的即時回饋,不依賴 echo):
+#   本頁維護 _local_mode/_local_bright:操作立刻更新本機值並顯示,同時送
+#   bus.shared["_display_cmd"]。echo(_display_mode/_display_brightness)
+#   是最終答案:
+#     - 列表:選中=藍;送出後 pending=琥珀;echo 出現 → 回藍
+#       (一致=成功停在該位置;不一致=超時/未成功,還原成 echo 的位置)。
+#     - LED(拍攝/可動):灰=off;pending=琥珀(已送出);echo 確認=綠。
+#   頁面不加超時:echo 不出現就一直琥珀等回覆,出現即定案。
+#
 # 協議對接(混搭環境:本頁是控制端也是被控制端):
 #   指令(控制端): _send_cmd() → bus.shared["_display_cmd"] = {"mode":..,"brightness":..}
 #                 → action_task_1._consume_display_cmd() → set_display_state() → UART 執行
@@ -33,6 +42,11 @@ _mode_btns = []
 _bright_sl = _bright_lb = _time_lb = _time_arc = _run_lb = None
 _bit7_led = _bit6_led = None
 _last_txt = {}
+# 本機值(操作即時回饋,不依賴 echo)+ pending 標記
+_local_mode = 0        # 本機最後送出/採納的 mode byte
+_local_bright = 0      # 本機最後送出/採納的亮度
+_pend_mode = False     # mode 已送出、等 echo 定案
+_pend_bright = False   # brightness 已送出、等 echo 定案
 
 
 @register(id="control_panel", title="控制面板", icon="sliders-horizontal",
@@ -41,8 +55,10 @@ def build():
     global scr, _mode_list, _mode_btns
     global _bright_sl, _bright_lb, _time_lb, _time_arc, _run_lb
     global _bit7_led, _bit6_led, _last_txt
+    global _local_mode, _local_bright, _pend_mode, _pend_bright
     _last_txt = {}
     nav.reset()
+    _init_local()
 
     scr = lv.obj(None)
     scr.set_style_bg_color(u.C(u.BG), 0)
@@ -107,9 +123,20 @@ def build():
     u.fade_in(_mode_list, dy=5, time_ms=280, delay_ms=40)
     u.fade_in(c2, dy=5, time_ms=280, delay_ms=120)
     u.fade_in(c3, dy=5, time_ms=280, delay_ms=200)
+
     _sync_list()
     nav.paint()
     return scr
+
+
+def _init_local():
+    """以 bus 現值初始化本機值(啟動時 echo 即為實際狀態,無 pending)。"""
+    global _local_mode, _local_bright, _pend_mode, _pend_bright
+    from lib.sys_bus import bus
+    _local_mode = int(bus.shared.get("_display_mode", 0)) & 0xFF
+    _local_bright = max(0, min(36, int(bus.shared.get("_display_brightness", 0))))
+    _pend_mode = False
+    _pend_bright = False
 
 
 def _panel(parent, x, y, w, h):
@@ -141,16 +168,29 @@ def _send_cmd(mode=None, brightness=None):
         bus.shared["_display_cmd"] = cmd
 
 
-def _mode_byte():
-    """讀完整 mode byte(含旗標)。"""
+def _echo_mode():
+    """讀 bus 的 _display_mode 回傳(被控制端/跨板 echo)。
+    欄位不存在(尚未有回覆)→ 回 None,不得視為已確認。"""
     from lib.sys_bus import bus
-    return int(bus.shared.get("_display_mode", 0)) & 0xFF
+    if "_display_mode" not in bus.shared:
+        return None
+    return int(bus.shared["_display_mode"]) & 0xFF
+
+
+def _mode_byte():
+    """本機 mode byte(最後送出/採納值,不依賴 echo)。"""
+    return _local_mode
 
 
 def _set_mode_byte(v):
-    """發完整 mode 指令給 action_task_1（不再直寫 _display_mode 狀態欄位）。
-    action_task_1 執行後會把最終狀態寫回 _display_mode，update() 讀回顯示。"""
-    _send_cmd(mode=int(v) & 0xFF)
+    """更新本機 mode + 送指令,標 pending(等 echo 定案後回藍/還原)。
+    順手同步 list 高亮與 LED → 點擊當下立刻顯示琥珀。"""
+    global _local_mode, _pend_mode
+    _local_mode = int(v) & 0xFF
+    _pend_mode = True
+    _send_cmd(mode=_local_mode)
+    _sync_list()
+    _refresh_bits()
 
 
 def _state():
@@ -164,10 +204,15 @@ def _state():
 
 
 def _sync_list():
-    """依 mode byte 低 6 bit 同步 list 選中高亮。"""
+    """依本機 mode byte 低 6 bit 同步 list 選中高亮。
+    編輯態或 pending → 琥珀(已送出/移動中);其餘 → 主題藍(選中)。"""
     cur = _mode_byte() & _MODE_MASK
     cur = cur % len(MODE_LABELS)
-    u.list_select(_mode_btns, cur, editing=nav.is_editing())
+    if nav.is_editing() or _pend_mode:
+        color = u.WARNING
+    else:
+        color = u.PRIMARY
+    u.list_select(_mode_btns, cur, color=color)
 
 
 def _sel_mode_delta(dd):
@@ -193,16 +238,24 @@ def _toggle_bit6():
 
 
 def _refresh_bits():
-    mb = _mode_byte()
-    b7 = bool(mb & _BIT7)
-    b6 = bool(mb & _BIT6)
-    u.led_set(_bit7_led, b7)
-    u.led_set(_bit6_led, b6)
+    """LED 三態:pending 時以本機送出值顯示(亮=琥珀等回覆);
+    無 pending 以 echo 為準(亮=綠已確認;echo 尚未回 → 灰)。"""
+    mb = _local_mode
+    echo = _echo_mode()
+    for led, flag in ((_bit7_led, _BIT7), (_bit6_led, _BIT6)):
+        if _pend_mode:
+            u.led_set(led, bool(mb & flag), on_color=u.WARNING)
+        else:
+            on = bool(echo & flag) if echo is not None else False
+            u.led_set(led, on, on_color=u.SUCCESS)
 
 
 def _adj_bright(dd):
-    """編輯態 enc:調亮度。發指令給 action_task_1(不直寫狀態欄位)。"""
-    v = max(0, min(36, _bright_sl.get_value() + dd))
+    """編輯態 enc:調亮度。更新本機值+立即顯示,送指令標 pending 等回覆。"""
+    global _local_bright, _pend_bright
+    v = max(0, min(36, _local_bright + dd))
+    _local_bright = v
+    _pend_bright = True
     _bright_sl.set_value(v, 0)
     _bright_lb.set_text(str(v))
     _send_cmd(brightness=v)
@@ -237,16 +290,11 @@ def update(run):
         return
     try:
         from lib.sys_bus import bus
-        # 模式 list(若不在 list 編輯態,跟 bus 同步)
-        if not (nav.is_editing() and nav.current_kind() == ITEM_LIST):
-            _sync_list()
+        # ── mode echo 採納:有 pending 等回覆,一致即確認轉綠;無 pending 才採納外部值 ──
+        _sync_echo_mode(bus)
+        _sync_echo_bright(bus)
         # 旗標
         _refresh_bits()
-        # 亮度
-        b = int(bus.shared.get("_display_brightness", _bright_sl.get_value()))
-        if 0 <= b <= 36 and _bright_sl.get_value() != b:
-            _bright_sl.set_value(b, 0)
-            _bright_lb.set_text(str(b))
         # 倒數時間(arc + 文字)
         t = int(bus.shared.get("_display_time", 0))
         t = max(0, min(_TIME_MAX, t))
@@ -267,3 +315,35 @@ def update(run):
             _run_lb.set_style_text_color(u.C(u.SUCCESS if r else u.TEXT3), 0)
     except Exception:
         pass
+
+
+def _sync_echo_mode(bus):
+    """mode echo 定案:echo 出現即為最終答案。
+    一致 → 成功(pending 清,列表回藍停在該位置)。
+    不一致 → 超時/未成功(採納 echo 還原,pending 清,列表回藍在原 echo 位置)。
+    echo 欄位不存在 → 尚未有回覆,維持琥珀。"""
+    global _local_mode, _pend_mode
+    echo = _echo_mode()
+    if echo is None:
+        _refresh_bits()
+        return
+    _pend_mode = False
+    if echo != _local_mode:
+        _local_mode = echo
+    _sync_list()
+    _refresh_bits()
+
+
+def _sync_echo_bright(bus):
+    """亮度 echo 定案(同 mode):出現即為最終答案,一致保留、不一致還原;
+    欄位不存在 → 維持琥珀。顯示一律以本機值為準。"""
+    global _local_bright, _pend_bright
+    if "_display_brightness" not in bus.shared:
+        return
+    echo = int(bus.shared["_display_brightness"])
+    _pend_bright = False
+    if echo != _local_bright and 0 <= echo <= 36:
+        _local_bright = echo
+    if _bright_sl.get_value() != _local_bright:
+        _bright_sl.set_value(_local_bright, 0)
+        _bright_lb.set_text(str(_local_bright))

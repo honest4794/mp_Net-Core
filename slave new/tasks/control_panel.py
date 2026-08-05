@@ -1,11 +1,15 @@
 """
-控制面板 Task — 編碼器 + 按鈕 → ESP-NOW + 虛擬按鈕
+控制面板 Task — 面板裝置（編碼器 + 按鈕 + LVGL → ESP-NOW 訊號)
 
-每組按鈕事件連續發送兩次 ESP-NOW:
-  1. 真實按鈕: type=HW.PIN(0), id=0, label="btn"|"encC",  value=state
-  2. 虛擬按鈕: type=HW.VBTN(8), id=vbtn_id, label="vbtn", value=state
-
-同時寫入本地 HW.VBTN 緩衝。
+兩模式分層（由 bus.shared["_ui_active"] 切換）:
+  LV 模式  (LVGL 在跑):實體按鈕/encoder 歸 LVGL 消費,本 task 不發 vbtn;
+           改負責把 LVGL 頁面直寫的 bus._display_cmd 轉成 0x1501 WTT_CTL 廣播。
+  按鈕模式 (LVGL 沒跑):維持原行為,每組按鈕事件發送兩次 ESP-NOW(0x1401):
+           1. 真實按鈕: type=HW.PIN(0), id=0, label="btn"|"encC",  value=state
+           2. 虛擬按鈕: type=HW.VBTN(8), id=vbtn_id, label="vbtn", value=state
+           同時寫入本地 HW.VBTN 緩衝。
+  接收:on_status(0x1502) 由 waiting_to_trash_actions 寫 _display_* Global,
+        LVGL 頁面讀同一欄位顯示(已確認/倒數)。
 """
 
 import time, struct
@@ -17,6 +21,8 @@ from lib.proto import Proto
 from lib.log_service import get_log
 
 CMD_HW = 0x1401
+CMD_WTT_CTL = 0x1501
+_NO_CHANGE = 0xFF   # WTT_CTL u8 約定: 255 = 不改該欄位
 _EX_IC_SLOT_KEY = "_ex_ic_slot"
 _EX_IC_PENDING_KEY = "_ex_ic_pending"
 _UART_SOF = 0xB4
@@ -76,6 +82,7 @@ class ControlPanelTask(Task):
         self._btns = []
         self._enc = None
         self._enc_last = 0
+        self._last_wtt = None   # 上次送出的 WTT_CTL (mode,bri),同值不重複廣播
 
     def on_start(self):
         super().on_start()
@@ -93,12 +100,14 @@ class ControlPanelTask(Task):
         self._now_bus = bus.get_service("NowBus")
         for _, vbtn_id in _VBTN_SYNC:
             HW.set(HW.VBTN, vbtn_id, 1)
-        for pin, stable, label, _ in self._btns:
-            for sync_label, vbtn_id in _VBTN_SYNC:
-                if label == sync_label:
-                    HW.set(HW.VBTN, vbtn_id, stable)
-                    self._send_vbtn(vbtn_id, stable)
-                    break
+        # LVGL 在跑時,實體按鈕歸 LVGL 消費,不廣播初始 vbtn 狀態(避免重複)
+        if not bus.shared.get("_ui_active", False):
+            for pin, stable, label, _ in self._btns:
+                for sync_label, vbtn_id in _VBTN_SYNC:
+                    if label == sync_label:
+                        HW.set(HW.VBTN, vbtn_id, stable)
+                        self._send_vbtn(vbtn_id, stable)
+                        break
         get_log().info("[CP] encA={} encB={} btn={} encC={}".format(
             _label_gpio("encA"), _label_gpio("encB"),
             _label_gpio("btn"), _label_gpio("encC")))
@@ -181,12 +190,40 @@ class ControlPanelTask(Task):
             brightness,
             time_remaining))
 
+    def _forward_display_cmd(self):
+        """消費 bus._display_cmd → 廣播 0x1501 WTT_CTL 給執行裝置(mode/bri,255=不改)。
+        LVGL 頁面同板直寫的指令由本 task 轉成 ESP-NOW 送出。
+        last-sent guard:與上次送出的 (mode,bri) 相同就不重複廣播。"""
+        cmd = bus.shared.get("_display_cmd")
+        if not cmd:
+            return
+        bus.shared["_display_cmd"] = None
+        try:
+            mode = cmd.get("mode")
+            brightness = cmd.get("brightness")
+            m = _NO_CHANGE if mode is None else int(mode) & 0xFF
+            b = _NO_CHANGE if brightness is None else max(0, min(36, int(brightness)))
+            if (m, b) == self._last_wtt:
+                return
+            if self._now_bus is not None:
+                self._now_bus.broadcast(Proto.pack(CMD_WTT_CTL, bytes([m, b])))
+            self._last_wtt = (m, b)
+            get_log().immediate("[CP][TX][0x1501] mode={:02X} bri={}".format(m, b))
+        except Exception as e:
+            get_log().error("[CP][WTT] fwd err: {}".format(e))
+
     def loop(self):
         if not self.running:
             return
 
         now = time.ticks_ms()
         self._poll_ex_ic()
+        self._forward_display_cmd()
+
+        # 兩模式分層:LVGL 在跑 → 實體按鈕/encoder 歸 LVGL 消費(hw_manager 快照),
+        # 不再廣播 vbtn/enc_delta(避免同一次按壓被兩邊各處理一次)。
+        if bus.shared.get("_ui_active", False):
+            return
 
         pos = self._enc.value()
         if pos != self._enc_last:

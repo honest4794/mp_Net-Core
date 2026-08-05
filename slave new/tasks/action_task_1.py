@@ -53,9 +53,8 @@ MODE_SPECIAL  = 0x80  # Bit 7
 MODE_RESERVED = 0x40  # Bit 6
 MODE_VALUE    = 0x3F  # Bits 5-0
 
-CMD_HW_EX_IC = 0x1403
-EX_IC_CHIP_TYPE = 0
-EX_IC_CHIP_ID = 0
+# WTT 狀態廣播(取代舊 0x1403):執行裝置 → 面板裝置,on_status 寫 _display_* Global
+CMD_WTT_STATUS = 0x1502
 _ENC_DELTA_KEY = "_enc_delta"
 
 # ═══ 腳位解析 ═══
@@ -203,6 +202,7 @@ class ActionTask1(Task):
         self._position = None            # 當前實體位置: None | "top" | "bottom"
         self._startup_delay_ms = 10000   # 啟動延遲 (預設 10s)
         self._startup_phase = 0          # 0=normal, 1=startup_pre_delay, 2=startup_fall
+        self._wtt_status_timer = 0       # 週期狀態計時(ticks_ms)
 
     def _is_motor_enabled(self):
         """讀取 bus.shared["_motor_enabled"]，0=禁用, 1=啟用 (預設 1)"""
@@ -514,6 +514,9 @@ class ActionTask1(Task):
                 self._notify_control_panel_ex_ic()
                 self._check_mode_motor()
                 self._check_mode_audio()
+            elif brightness_changed:
+                # 亮度確認(時間/倒數變動不算,避免每秒都廣播)
+                self._notify_control_panel_ex_ic()
 
     def _format_mode_bits(self, mode):
         return "{:08b}".format(mode & 0xFF)
@@ -579,24 +582,35 @@ class ActionTask1(Task):
         self.set_display_state(mode=self._display_mode ^ flag)
 
     def _notify_control_panel_ex_ic(self):
+        """模式確認後廣播 0x1502 WTT_STATUS(mode/brightness/time) 給面板裝置。
+        on_status 寫 _display_* Global → LVGL 頁面顯示已確認。取代舊 0x1403。"""
         now_bus = self._now_bus or bus.get_service("NowBus")
         if now_bus is None:
             return
         self._now_bus = now_bus
         try:
-            frame = self._build_uart_state_frame()
-            payload = bytes([EX_IC_CHIP_TYPE, EX_IC_CHIP_ID]) + frame
-            now_bus.broadcast(Proto.pack(CMD_HW_EX_IC, payload))
-            get_log().info("[NOW][TX][0x1403] chip={} id={} mod={} bit={} bri={} time={} frame={}".format(
-                EX_IC_CHIP_TYPE,
-                EX_IC_CHIP_ID,
-                self._display_mode & MODE_VALUE,
-                self._format_mode_bits(self._display_mode),
+            payload = bytes([
+                self._display_mode & 0xFF,
+                max(0, min(self._display_brightness, 255)),
+                max(0, self._display_time & 0xFF),
+            ])
+            now_bus.broadcast(Proto.pack(CMD_WTT_STATUS, payload))
+            get_log().immediate("[WTT][TX][0x1502] mod={:02X} bri={} time={}".format(
+                self._display_mode & 0xFF,
                 self._display_brightness,
-                self._display_time,
-                self._format_frame_hex(frame)))
+                self._display_time))
         except Exception as e:
-            get_log().error("[EX_IC] notify display frame failed: {}".format(e))
+            get_log().error("[WTT] status send failed: {}".format(e))
+
+    def _send_wtt_status_periodic(self, now):
+        """每秒廣播一次 0x1502 狀態(帶 time,供面板倒數同步)。預設關閉,開則
+        bus.shared["_wtt_periodic_status"] = 1。"""
+        if not bus.shared.get("_wtt_periodic_status", 0):
+            return
+        if time.ticks_diff(now, self._wtt_status_timer) < 1000:
+            return
+        self._wtt_status_timer = now
+        self._notify_control_panel_ex_ic()
 
     def _next_mode(self):
         max_mode = self._max_mode
@@ -724,6 +738,9 @@ class ActionTask1(Task):
         self._handle_uart_receive()
         self._consume_encoder_delta()
         self._consume_display_cmd()
+
+        # ── 週期狀態廣播(選用:每秒同步 time 給面板) ──
+        self._send_wtt_status_periodic(now)
 
         now_btn = time.ticks_ms()
         self._poll_vbtn(0, now_btn)

@@ -115,6 +115,9 @@ def _setup():
         "confirm": confirm,
         "exit": exit_pressed,
     })
+    # 標記 LVGL 在跑:面板 ControlPanelTask 據此切換兩模式分層
+    # (LV 模式 → 不發 vbtn;按鈕模式 → 發 vbtn),lvgl_task.on_stop 清除。
+    bus.shared["_ui_active"] = True
     app.go("launcher")
     print("[board] _setup done")
 

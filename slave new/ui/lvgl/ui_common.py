@@ -320,7 +320,7 @@ def sw_get(sw):
 def set_focus(wid, on, editing=False):
     if on:
         wid.set_style_outline_color(C(WARNING if editing else PRIMARY), 0)
-        wid.set_style_outline_width(2, 0)
+        wid.set_style_outline_width(3, 0)
         wid.set_style_outline_pad(3, 0)
     else:
         wid.set_style_outline_width(0, 0)
@@ -369,18 +369,17 @@ def led_set(led, on, on_color=SUCCESS, off_color=BORDER):
         pass
 
 
-def list_select(btns, idx, editing=False):
+def list_select(btns, idx, color=PRIMARY):
     """標示 list 第 idx 項為選中(背景色);其他項清除。
-    editing=True 時用琥珀色(編輯態),否則 PRIMARY。"""
+    color: PRIMARY(選中) / WARNING(編輯中/已送出等回覆) / SUCCESS(已確認)。"""
     n = len(btns)
     if n == 0:
         return
     idx = max(0, min(idx, n - 1))
-    sel_color = WARNING if editing else PRIMARY
     for i, b in enumerate(btns):
         try:
             if i == idx:
-                b.set_style_bg_color(C(sel_color), 0)
+                b.set_style_bg_color(C(color), 0)
                 b.set_style_text_color(C(0xFFFFFF), 0)
             else:
                 b.set_style_bg_color(C(BG), 0)

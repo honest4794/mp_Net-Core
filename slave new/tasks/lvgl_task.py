@@ -56,4 +56,9 @@ class LvglTask(Task):
         super().on_stop()
         # 不 deinit LVGL：soft-reboot 無法移除 C 層狀態，保留 bus reuse。
         # 重啟 task 時 _setup 的 _started 守護會跳過重複初始化。
+        # 清 _ui_active:讓面板 ControlPanelTask 回到按鈕模式(廣播 vbtn)。
+        try:
+            bus.shared["_ui_active"] = False
+        except Exception:
+            pass
         get_log().info("[LvglTask] stopped (LVGL state retained)")
