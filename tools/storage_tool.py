@@ -98,17 +98,25 @@ def _mp(dev):
 def _unmount(dev):
     if OS=="Darwin": R(["diskutil","unmountDisk",dev])
 
-def _fmt(dev):
+def _fmt(dev, cluster_kb=8):
+    unit = cluster_kb * 1024
     if OS=="Darwin":
         R(["diskutil","unmountDisk",dev])
-        return R(["diskutil","eraseDisk","FAT32","SDCARD","MBRFormat",dev]).returncode==0
+        r=R(["diskutil","eraseDisk","FAT32","SDCARD","MBRFormat",dev])
+        if r.returncode!=0: return False
+        # diskutil 冇得揀 cluster size,用 newfs_msdos 以指定 cluster 重做
+        R(["diskutil","unmountDisk",dev])
+        part = dev + "s1"
+        r2=R(["sudo","newfs_msdos","-F","32","-c",str(unit),part])
+        return r2.returncode==0
     elif OS=="Windows":
         n=dev.replace("PhysicalDrive","")
-        scr="select disk {n}\nclean\nconvert mbr\ncreate partition primary\nformat fs=fat32 quick label=SDCARD\nactive\nassign\nexit\n".format(n=n)
+        scr="select disk {n}\nclean\nconvert mbr\ncreate partition primary\nformat fs=fat32 quick unit={unit} label=SDCARD\nactive\nassign\nexit\n".format(n=n,unit=unit)
         tf=os.path.join(os.environ.get("TEMP",os.getcwd()),"_sdfmt.txt")
         open(tf,"w").write(scr)
         for attempt in range(2):
-            print("格式化中 (diskpart)..." if attempt==0 else "重試格式化...")
+            msg = "格式化中 (diskpart, cluster {}KB)...".format(cluster_kb) if attempt==0 else "重試格式化..."
+            print(msg)
             try:
                 r=R(["diskpart","/s",tf])
             except OSError as e:
@@ -356,12 +364,18 @@ def F(dev,cap):
     v=I("FAT MB [512]: ","512")
     if v is None: return
     f=int(v)
-    if f<=0: _fmt(dev); print("✅"); return
+    v=I("Cluster KB [8]: ","8")
+    if v is None: return
+    try: ck=int(v)
+    except: print("❌ cluster 唔係數字"); return
+    if ck not in (4,8,16,32,64):
+        print("❌ cluster 只支援 4/8/16/32/64 KB"); return
+    if f<=0: _fmt(dev,ck); print("✅"); return
     off=f*1048576//512; t=cap//512
-    print("sector:{} FAT:{}MB managed:~{:.1f}GB".format(off,off*512/1048576,(t-off)*512/1073741824))
+    print("sector:{} FAT:{}MB cluster:{}KB managed:~{:.1f}GB".format(off,off*512/1048576,ck,(t-off)*512/1073741824))
     if I("確認? (yes): ") is None: return
-    if not _fmt(dev): print("❌"); return
-    print("✅ FAT32 格式化完成")
+    if not _fmt(dev,ck): print("❌"); return
+    print("✅ FAT32 格式化完成 (cluster {}KB)".format(ck))
     m=None
     for _ in range(6):
         time.sleep(1); m=_mp(dev)
