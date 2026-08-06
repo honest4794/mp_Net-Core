@@ -82,7 +82,6 @@ class ControlPanelTask(Task):
         self._btns = []
         self._enc = None
         self._enc_last = 0
-        self._last_wtt = None   # 上次送出的 WTT_CTL (mode,bri),同值不重複廣播
 
     def on_start(self):
         super().on_start()
@@ -193,7 +192,10 @@ class ControlPanelTask(Task):
     def _forward_display_cmd(self):
         """消費 bus._display_cmd → 廣播 0x1501 WTT_CTL 給執行裝置(mode/bri,255=不改)。
         LVGL 頁面同板直寫的指令由本 task 轉成 ESP-NOW 送出。
-        last-sent guard:與上次送出的 (mode,bri) 相同就不重複廣播。"""
+        不做同值去重:本板 _display_cmd 只有使用者操作才會寫入(讀完即清),
+        每次操作都是新的 request;執行裝置端已保證每個 request 都會回 0x1502。
+        若同值去重,「重送已確認的模式」時指令被丟棄 → 接收器不會回 →
+        頁面永遠卡在琥珀等不到確認。"""
         cmd = bus.shared.get("_display_cmd")
         if not cmd:
             return
@@ -203,11 +205,8 @@ class ControlPanelTask(Task):
             brightness = cmd.get("brightness")
             m = _NO_CHANGE if mode is None else int(mode) & 0xFF
             b = _NO_CHANGE if brightness is None else max(0, min(36, int(brightness)))
-            if (m, b) == self._last_wtt:
-                return
             if self._now_bus is not None:
                 self._now_bus.broadcast(Proto.pack(CMD_WTT_CTL, bytes([m, b])))
-            self._last_wtt = (m, b)
             get_log().immediate("[CP][TX][0x1501] mode={:02X} bri={}".format(m, b))
         except Exception as e:
             get_log().error("[CP][WTT] fwd err: {}".format(e))

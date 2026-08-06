@@ -197,6 +197,7 @@ class ActionTask1(Task):
         self._mp3_state = 0        # 0=未初始化, 1=等待中, 2=完成
         self._mp3_deadline = 0
         self._uart_rx_buf = bytearray()  # UART 接收累積 buffer
+        self._ack_pending = False        # 已送出 UART 請求、等 echo 確認(同值 echo 也要回面板)
         self._motor_control_source = None  # None | "manual" | "reserved"
         self._motor_start_ms = 0         # 記錄馬達啟動時間，供 STOP log 計算持續時間
         self._position = None            # 當前實體位置: None | "top" | "bottom"
@@ -433,6 +434,8 @@ class ActionTask1(Task):
             chunk = self._uart.read()
             if chunk:
                 self._uart_rx_buf.extend(chunk)
+                get_log().immediate("[UART][RX] raw={}".format(
+                    " ".join("{:02X}".format(b) for b in chunk)))
 
             processed = 0
             i = 0
@@ -475,7 +478,7 @@ class ActionTask1(Task):
             get_log().error("[MP3] bind failed: {}".format(e))
 
     def _process_uart_cmd(self, mode, brightness, time_remaining):
-        """處理收到的 UART 幀 — 更新內部狀態，不回傳"""
+        """處理收到的 UART 幀 — 更新內部狀態；echo 即為確認，通知面板"""
         prev_mode = self._display_mode
         self._temp_mode = mode
         self._temp_brightness = brightness
@@ -505,18 +508,26 @@ class ActionTask1(Task):
                 brightness,
                 time_remaining))
             self._log_runtime_state("uart-ack")
-            # 只有收到確認模式與當前運行模式不同，才提交新模式並通知外部
-            if mode_changed:
-                get_log().info("[Mode] switch mod={} bit={} bri={}".format(
-                    self._display_mode & MODE_VALUE,
-                    self._format_mode_bits(self._display_mode),
-                    self._display_brightness))
-                self._notify_control_panel_ex_ic()
-                self._check_mode_motor()
-                self._check_mode_audio()
-            elif brightness_changed:
-                # 亮度確認(時間/倒數變動不算,避免每秒都廣播)
-                self._notify_control_panel_ex_ic()
+
+        # 回覆面板:模式/亮度有變, 或收到的是「待確認請求」的 echo。
+        # 重點:即使 echo 值與現值完全相同(同模式重送/重複 echo), 也要廣播
+        # 0x1502 讓面板結束 pending —— 這是同模式無法觸發回覆邏輯的根因。
+        if mode_changed or brightness_changed or self._ack_pending:
+            self._ack_pending = False
+            get_log().immediate("[UART] ack mod={:02X} bit={} bri={} → 0x1502 回覆面板".format(
+                self._display_mode & 0xFF,
+                self._format_mode_bits(self._display_mode),
+                self._display_brightness))
+            self._notify_control_panel_ex_ic()
+
+        # 只有收到確認模式與當前運行模式不同，才提交新模式並檢查電機/音頻
+        if mode_changed:
+            get_log().info("[Mode] switch mod={} bit={} bri={}".format(
+                self._display_mode & MODE_VALUE,
+                self._format_mode_bits(self._display_mode),
+                self._display_brightness))
+            self._check_mode_motor()
+            self._check_mode_audio()
 
     def _format_mode_bits(self, mode):
         return "{:08b}".format(mode & 0xFF)
@@ -586,6 +597,8 @@ class ActionTask1(Task):
         on_status 寫 _display_* Global → LVGL 頁面顯示已確認。取代舊 0x1403。"""
         now_bus = self._now_bus or bus.get_service("NowBus")
         if now_bus is None:
+            get_log().error("[WTT][TX][0x1502] NowBus 未註冊 — 回覆無法送出！"
+                            "檢查 NetworkTask ESP-NOW 是否啟用(config Network.ESP_now.enable)")
             return
         self._now_bus = now_bus
         try:
@@ -660,29 +673,29 @@ class ActionTask1(Task):
     def set_display_state(self, mode=None, brightness=None):
         """
         設定顯示狀態（外部呼叫用）
-        - mode/brightness 有變更時發送 UART
+        - mode/brightness 有提供時一律發送 UART(即使與現值相同:
+          同模式重送/echo 遺失重送也要走完整 request→ack 循環,否則面板收不到確認)
         - time 由 DisplayController 管理，不在此設定
         """
         target_mode = self._display_mode
         target_brightness = self._temp_brightness
-        changed = False
-        if mode is not None and target_mode != mode:
+        send = False
+        if mode is not None:
             max_mode = self._max_mode
             flags = mode & (MODE_SPECIAL | MODE_RESERVED)
             val = mode & MODE_VALUE
             if max_mode > 0 and val > max_mode:
                 mode = flags | (val % (max_mode + 1))
             target_mode = mode
-            changed = True
+            send = True
         if brightness is not None:
-            b = max(0, min(brightness, _UART_BRIGHTNESS_MAX))
-            if target_brightness != b:
-                target_brightness = b
-                changed = True
+            target_brightness = max(0, min(brightness, _UART_BRIGHTNESS_MAX))
+            send = True
 
-        if changed:
+        if send:
             self._temp_brightness = target_brightness
             bus.shared["_temp_brightness"] = self._temp_brightness
+            self._ack_pending = True    # 送出的幀即為待確認請求
             self._send_uart_state(
                 mode=target_mode,
                 brightness=target_brightness,
