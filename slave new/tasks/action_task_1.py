@@ -197,6 +197,8 @@ class ActionTask1(Task):
         self._mp3_state = 0        # 0=未初始化, 1=等待中, 2=完成
         self._mp3_deadline = 0
         self._uart_rx_buf = bytearray()  # UART 接收累積 buffer
+        self._circuit_bus = None         # 顯示 UART 對應的 CircuitBus(新架構:經 circuit 緩衝收發)
+        self._uart_read_buf = bytearray(256)  # 從 CircuitBus 緩存讀取的持久緩衝,重複使用
         self._ack_pending = False        # 已送出 UART 請求、等 echo 確認(同值 echo 也要回面板)
         self._motor_control_source = None  # None | "manual" | "reserved"
         self._motor_start_ms = 0         # 記錄馬達啟動時間，供 STOP log 計算持續時間
@@ -243,7 +245,7 @@ class ActionTask1(Task):
             return
         try:
             payload = SchemaCodec.encode(cmd_play, {"start_frame": 0})
-            self._uart.write(Proto.pack(0x300A, payload))
+            self._uart_send(Proto.pack(0x300A, payload))
             get_log().immediate("[STREAM][TX] 0x300A start=0 reason={}".format(reason))
         except Exception as e:
             get_log().error("[STREAM][TX] 0x300A failed: {}".format(e))
@@ -384,6 +386,40 @@ class ActionTask1(Task):
             get_log().info("[UART] bind uart_list[0] for display")
         except Exception as e:
             get_log().error("[UART] bind failed: {}".format(e))
+        self._try_bind_circuit_bus()
+
+    def _try_bind_circuit_bus(self):
+        """尋找顯示 UART 對應的 CircuitBus(circuit 任務已註冊時):
+        以 cb.io is self._uart 匹配同一線路物件,綁定後 UART 收發統一走該
+        CircuitBus(rx 讀緩存 / tx 走 write),不再直接碰 UART FIFO。
+        找不到回 False,由 loop 內 lazily 重試(circuit 啟動比本任務晚時也會綁上)。"""
+        if self._circuit_bus is not None or self._uart is None:
+            return self._circuit_bus is not None
+        try:
+            all_list = bus.get_service("circuit_bus_all_list")
+            if all_list:
+                for cb in all_list:
+                    if getattr(cb, "io", None) is self._uart:
+                        self._circuit_bus = cb
+                        get_log().info("[UART] bind CircuitBus '{}' for display".format(cb.label))
+                        return True
+        except Exception as e:
+            get_log().error("[UART] bind CircuitBus failed: {}".format(e))
+        return False
+
+    def _uart_send(self, data):
+        """統一發送:已綁定 CircuitBus → 走 bus.write(完整雙向通道);否則直接 uart.write。"""
+        if self._circuit_bus is not None:
+            try:
+                return self._circuit_bus.write(data)
+            except Exception as e:
+                get_log().error("[UART] circuit bus send error: {}".format(e))
+        if self._uart is not None:
+            try:
+                return self._uart.write(data)
+            except Exception:
+                return False
+        return False
 
     def _build_uart_state_frame(self, mode=None, brightness=None, time_remaining=None):
         """建立 5-byte 幀: [0xB4, mode, brightness(0-31), time, 0xFF]"""
@@ -414,7 +450,7 @@ class ActionTask1(Task):
             if time_remaining is None:
                 time_remaining = self._display_time
             data = self._build_uart_state_frame(mode=mode, brightness=brightness, time_remaining=time_remaining)
-            self._uart.write(data)
+            self._uart_send(data)
             get_log().immediate("[UART][TX] frame={} mod={} bit={} bri={} time={} motor={}".format(
                 self._format_frame_hex(data),
                 mode & MODE_VALUE,
@@ -426,17 +462,34 @@ class ActionTask1(Task):
             get_log().error("[UART] send error: {}".format(e))
 
     def _handle_uart_receive(self):
-        """輪詢 UART 接收，解析 5-byte 幀（累積 buffer，支援碎片）"""
+        """輪詢 UART 接收，解析 5-byte 幀（累積 buffer，支援碎片）。
+        已綁定 CircuitBus → 從其緩存(cache_hub)讀取(circuit 任務每輪倒資料進緩衝,
+        本任務讀自家緩存,不碰 UART FIFO、不影響其他任務);未綁定 → fallback 直接讀 UART。"""
         if self._uart is None:
             return
         try:
-            # 不依賴 any()，每圈都讀一次，避免 FIFO 漏收
-            chunk = self._uart.read()
-            if chunk:
-                self._uart_rx_buf.extend(chunk)
-                get_log().immediate("[UART][RX] raw={}".format(
-                    " ".join("{:02X}".format(b) for b in chunk)))
+            got = False
+            if self._try_bind_circuit_bus():
+                # 不依賴 any()，每圈讀完緩存全部 ready slot，避免漏收
+                while True:
+                    n = self._circuit_bus.read_into(self._uart_read_buf)
+                    if n <= 0:
+                        break
+                    self._uart_rx_buf.extend(memoryview(self._uart_read_buf)[:n])
+                    got = True
+                    get_log().immediate("[UART][RX] raw={}".format(
+                        " ".join("{:02X}".format(b) for b in memoryview(self._uart_read_buf)[:n])))
+            else:
+                # fallback:直接讀 UART(未啟動 circuit 時)
+                chunk = self._uart.read()
+                if chunk:
+                    self._uart_rx_buf.extend(chunk)
+                    got = True
+                    get_log().immediate("[UART][RX] raw={}".format(
+                        " ".join("{:02X}".format(b) for b in chunk)))
 
+            if not got:
+                return
             processed = 0
             i = 0
             while i + 4 < len(self._uart_rx_buf):

@@ -26,7 +26,16 @@ class CircuitTask(Task):
             bus.register_service("circuit_bus_by_id", {})
             return
 
-        import machine
+        # 新架構:線路物件統一由 boot/driver 建立(uart_drv.init_uart → uart_list),
+        # circuit 不再自行初始化硬體,只負責把線路包成 CircuitBus 並輪詢進緩衝。
+        uart_list = bus.get_service("uart_list")
+        if not uart_list:
+            get_log().warn("[CircuitTask] uart_list missing — skip circuit buses")
+            bus.register_service("circuit_bus_all_list", [])
+            bus.register_service("circuit_bus_all_by_id", {})
+            bus.register_service("circuit_bus_list", [])
+            bus.register_service("circuit_bus_by_id", {})
+            return
 
         all_buses = []
         all_by_id = {}
@@ -40,34 +49,10 @@ class CircuitTask(Task):
             tx = gpio.get("tx", None)
             rx = gpio.get("rx", None)
 
-            uart = None
-            try:
-                uart = machine.UART(
-                    uid,
-                    baudrate=baud,
-                    bits=8,
-                    parity=None,
-                    stop=1,
-                    tx=machine.Pin(tx) if tx is not None else None,
-                    rx=machine.Pin(rx) if rx is not None else None,
-                    timeout=0,
-                    timeout_char=0,
-                )
-            except TypeError:
-                uart = machine.UART(
-                    uid,
-                    baudrate=baud,
-                    bits=8,
-                    parity=None,
-                    stop=1,
-                    tx=tx,
-                    rx=rx,
-                    timeout=0,
-                    timeout_char=0,
-                )
-            except Exception as e:
-                get_log().error("❌ [CircuitTask] UART init failed (id={}): {}".format(uid, e))
+            if idx >= len(uart_list):
+                get_log().warn("[CircuitTask] uart_list[{}] missing for cfg id={} — skip".format(idx, uid))
                 continue
+            uart = uart_list[idx]
 
             label = "CIRCUIT-UART{}".format(uid)
             cb = CircuitBus(uart, label=label)
@@ -82,7 +67,7 @@ class CircuitTask(Task):
                 by_id[uid] = cb
                 self._ctx_by_bus_id[id(cb)] = ctx_extra
 
-        self._buses = buses
+        self._buses = all_buses   # 全部線路:每輪都 poll 進各自的緩衝線
         bus.register_service("circuit_bus_all_list", all_buses)
         bus.register_service("circuit_bus_all_by_id", all_by_id)
         bus.register_service("circuit_bus_list", buses)

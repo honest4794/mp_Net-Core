@@ -22,6 +22,7 @@ class CircuitBus:
             if slots > 0:
                 slots = min(slots, 4)
                 self.rx_hub = AtomicStreamHub(buf_size + self._hub_off, num_buffers=slots)
+        self.cache_hub = None  # 消費端緩存(rx_hub 鏡像),首次 read_into() 時惰性建立一次,永久重用
         self._drop_on_full = int(buf_cfg.get("drop_on_full", 0) or 0)
         self._drain_reads = int(buf_cfg.get("drain_reads", 1) or 0)
         if self._drain_reads <= 0:
@@ -78,10 +79,47 @@ class CircuitBus:
                 if n is None or n <= 0:
                     break
 
-                struct.pack_into("<H", view, 0, n)
-                self.rx_hub.commit()
+                self._commit(view, n)
         except Exception:
             return
+
+    def _commit(self, view, n):
+        """提交一筆資料到 rx_hub(解碼器讀);若 cache_hub 已建立則同時鏡像複製一份
+        (消費端 read_into 讀)。cache_hub 為 None 時只做原本 commit,零成本。"""
+        struct.pack_into("<H", view, 0, n)
+        self.rx_hub.commit()
+        cache = self.cache_hub
+        if cache is not None:
+            cview = cache.get_write_view()
+            if cview is not None:
+                cview[:] = view[:2 + n]  # 含 2-byte 長度標頭
+                cache.commit()
+
+    def read_into(self, target):
+        """消費端直接讀取:複製本 bus 緩存(cache_hub)的下一筆原始資料到 target。
+        回傳實際長度(不含 2-byte 長度標頭);無資料回 0。
+        cache_hub 首次呼叫時建立一次,之後永久重用(存在 self.cache_hub)。
+        cache_hub 與 rx_hub 各自 SPSC:解碼器讀 rx_hub,本方法讀 cache_hub,
+        互不影響;不碰底層 io,不影響 poll()。"""
+        cache = self.cache_hub
+        if cache is None:
+            buf_cfg = bus.shared.get("Buffer", {}) or {}
+            size = min(int(buf_cfg.get("size", 4096) or 0), 4096) + self._hub_off
+            slots = int(buf_cfg.get("u8_rx_slots", 2) or 0)
+            slots = min(slots, 4)
+            cache = AtomicStreamHub(size, num_buffers=slots)
+            self.cache_hub = cache
+        view = cache.get_read_view()
+        if view is None:
+            return 0
+        ln = view[0] | (view[1] << 8)
+        n = 0
+        if ln > 0:
+            src = memoryview(view)[2:2 + ln]
+            n = min(ln, len(target))
+            target[:n] = src[:n]
+        cache.release_read()
+        return n
 
     def write(self, data: bytes):
         if not self.connected or self.io is None:
