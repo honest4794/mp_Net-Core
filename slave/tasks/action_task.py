@@ -1,7 +1,7 @@
 import time
 from lib.task import Task
 from lib.sys_bus import bus
-from lib.hw_manager import _PIN_CACHE
+from lib.hw_manager import HW
 
 
 class ActionTask(Task):
@@ -13,28 +13,10 @@ class ActionTask(Task):
         super().on_start()
         self._pulses = []
 
-    def _resolve_pin(self, gpio):
-        """接受 GPIO 號碼或 label，回傳 Pin 物件"""
-        from machine import Pin
-        if isinstance(gpio, str):
-            cfg = bus.shared.get("PIN") or {}
-            lst = cfg.get("list") or []
-            for item in lst:
-                if isinstance(item, dict) and item.get("label") == gpio:
-                    gpio_num = int(item.get("GPIO", 0))
-                    if gpio_num in _PIN_CACHE:
-                        return _PIN_CACHE[gpio_num]
-                    return Pin(gpio_num, Pin.OUT)
-            return None
-        if gpio in _PIN_CACHE:
-            return _PIN_CACHE[gpio]
-        p = Pin(int(gpio), Pin.OUT)
-        _PIN_CACHE[int(gpio)] = p
-        return p
-
     def _start_pulse(self, gpio, value, duration_ms):
-        p = self._resolve_pin(gpio)
-        if p is None:
+        try:
+            p = HW.resolve_pin(gpio)
+        except (ValueError, TypeError):
             print("[ActionTask] pin {} not found".format(gpio))
             return
         try:
@@ -71,12 +53,14 @@ class ActionTask(Task):
             if pulse["done"]:
                 continue
             if time.ticks_diff(now, pulse["deadline"]) >= 0:
-                p = self._resolve_pin(pulse["gpio"])
-                if p is not None:
-                    try:
-                        p.value(pulse["orig_value"])
-                    except Exception as e:
-                        print("[ActionTask] {} revert err: {}".format(pulse["gpio"], e))
+                try:
+                    p = HW.resolve_pin(pulse["gpio"])
+                except (ValueError, TypeError):
+                    continue
+                try:
+                    p.value(pulse["orig_value"])
+                except Exception as e:
+                    print("[ActionTask] {} revert err: {}".format(pulse["gpio"], e))
                 print("[ActionTask] pin {} {} -> {} (done)".format(
                     pulse["gpio"], pulse["target_value"], pulse["orig_value"]))
                 pulse["done"] = True
@@ -88,10 +72,9 @@ class ActionTask(Task):
         super().on_stop()
         for pulse in self._pulses:
             if not pulse["done"]:
-                p = self._resolve_pin(pulse["gpio"])
-                if p is not None:
-                    try:
-                        p.value(pulse["orig_value"])
-                    except Exception:
-                        pass
+                try:
+                    p = HW.resolve_pin(pulse["gpio"])
+                    p.value(pulse["orig_value"])
+                except Exception:
+                    pass
         self._pulses = []

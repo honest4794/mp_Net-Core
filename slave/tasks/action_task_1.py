@@ -24,9 +24,10 @@ UART Display 協定 (與 DisplayController 相容):
   - 收到 UART fram → 更新狀態, 不回傳
 
 可設定參數 (bus.shared):
-  _motor_rise_ms  (預設 5000)
-  _motor_wait_ms  (預設 500)
-  _motor_fall_ms  (預設 5000)
+  _motor_rise_ms            (預設 5000)
+  _motor_wait_ms            (預設 500)
+  _motor_fall_ms            (預設 5000)
+  _motor_startup_delay_ms   (預設 10000)
 """
 
 import time
@@ -36,6 +37,7 @@ from lib.hw_manager import HW, _PIN_CACHE
 from lib.log_service import get_log
 from lib.mp3_tf_16p import MP3TF16P
 from lib.proto import Proto
+from lib.schema_codec import SchemaCodec
 
 # ═══ UART 協定常數 ═══
 
@@ -51,30 +53,59 @@ MODE_SPECIAL  = 0x80  # Bit 7
 MODE_RESERVED = 0x40  # Bit 6
 MODE_VALUE    = 0x3F  # Bits 5-0
 
-CMD_HW_EX_IC = 0x1403
-EX_IC_CHIP_TYPE = 0
-EX_IC_CHIP_ID = 0
+# WTT 狀態廣播(取代舊 0x1403):執行裝置 → 面板裝置,on_status 寫 _display_* Global
+CMD_WTT_STATUS = 0x1502
+_ENC_DELTA_KEY = "_enc_delta"
 
 # ═══ 腳位解析 ═══
 
 def _resolve_pin(gpio_or_label):
     from machine import Pin
     if isinstance(gpio_or_label, str):
+        pin_by_label = bus.get_service("pin_by_label")
+        if isinstance(pin_by_label, dict):
+            pin = pin_by_label.get(gpio_or_label)
+            if pin is not None:
+                print("[PIN] label='{}' → pin_by_label → GPIO{}".format(gpio_or_label, pin))
+                return pin
+
         cfg = bus.shared.get("PIN") or {}
         lst = cfg.get("list") or []
-        for item in lst:
+        pin_list = bus.get_service("pin_list") or []
+        for idx, item in enumerate(lst):
             if isinstance(item, dict) and item.get("label") == gpio_or_label:
+                if idx < len(pin_list):
+                    p = pin_list[idx]
+                    print("[PIN] label='{}' → pin_list[{}] GPIO{}".format(gpio_or_label, idx, item.get("GPIO")))
+                    return p
                 gpio_num = int(item.get("GPIO", 0))
                 if gpio_num in _PIN_CACHE:
+                    print("[PIN] label='{}' → _PIN_CACHE[{}]".format(gpio_or_label, gpio_num))
                     return _PIN_CACHE[gpio_num]
+                print("[PIN] label='{}' → new Pin({}, OUT)".format(gpio_or_label, gpio_num))
                 return Pin(gpio_num, Pin.OUT)
+        print("[PIN] label='{}' → NOT FOUND".format(gpio_or_label))
         return None
     gpio = int(gpio_or_label)
     if gpio in _PIN_CACHE:
+        print("[PIN] gpio={} → _PIN_CACHE".format(gpio))
         return _PIN_CACHE[gpio]
     p = Pin(gpio, Pin.OUT)
     _PIN_CACHE[gpio] = p
+    print("[PIN] gpio={} → new Pin(OUT) fallback".format(gpio))
     return p
+
+
+def _find_pin_cfg(labels):
+    if isinstance(labels, str):
+        labels = (labels,)
+    cfg = bus.shared.get("PIN") or {}
+    lst = cfg.get("list") or []
+    for label in labels:
+        for item in lst:
+            if isinstance(item, dict) and item.get("label") == label:
+                return item
+    return None
 
 
 # ═══ 常數 ═══
@@ -88,6 +119,7 @@ STATE_PRE_DELAY = 4   # 進入模式後, 啟動電機前的延遲
 _DEFAULT_RISE_MS = 7300
 _DEFAULT_WAIT_MS = 90000
 _DEFAULT_FALL_MS = 8000
+_BOOT_FALL_MS = 20000
 
 
 def _read_cfg(key, default):
@@ -103,11 +135,15 @@ _MOTOR_DEFAULT_PINS = {
 }
 
 
-def _resolve_pin_or(label, fallback_gpio):
-    """按 label 解析 pin，找不到則用 fallback GPIO"""
-    p = _resolve_pin(label)
-    if p is not None:
-        return p
+def _resolve_pin_or(labels, fallback_gpio):
+    """按 label/alias 解析 pin，找不到則用 fallback GPIO"""
+    if isinstance(labels, str):
+        labels = (labels,)
+    for label in labels:
+        p = _resolve_pin(label)
+        if p is not None:
+            return p
+    print("[PIN] labels={} all missed → fallback gpio={}".format(labels, fallback_gpio))
     return _resolve_pin(fallback_gpio)
 
 
@@ -120,6 +156,14 @@ _LONG_PRESS_MS = 3000
 _MOTOR_MODE_LIST = [
     (1, 0,  17700),    # mode 1: delay 500ms → RISE → wait 500ms → FALL
 ]
+
+_STATE_NAME = {
+    STATE_IDLE: "閒置",
+    STATE_RISE: "上升",
+    STATE_WAIT: "等待",
+    STATE_FALL: "下降",
+    STATE_PRE_DELAY: "延遲等待",
+}
 
 
 # ═══ ActionTask1 ═══
@@ -141,6 +185,7 @@ class ActionTask1(Task):
         self._display_mode = 0
         self._temp_mode = 0
         self._display_brightness = 0
+        self._temp_brightness = 0
         self._display_time = 0
         self._mode_list = _MOTOR_MODE_LIST[:]  # 模式列表拷貝
         self._max_mode = 0                    # on_start 時設定
@@ -152,110 +197,193 @@ class ActionTask1(Task):
         self._mp3_state = 0        # 0=未初始化, 1=等待中, 2=完成
         self._mp3_deadline = 0
         self._uart_rx_buf = bytearray()  # UART 接收累積 buffer
+        self._ack_pending = False        # 已送出 UART 請求、等 echo 確認(同值 echo 也要回面板)
+        self._motor_control_source = None  # None | "manual" | "reserved"
+        self._motor_start_ms = 0         # 記錄馬達啟動時間，供 STOP log 計算持續時間
+        self._position = None            # 當前實體位置: None | "top" | "bottom"
+        self._startup_delay_ms = 10000   # 啟動延遲 (預設 10s)
+        self._startup_phase = 0          # 0=normal, 1=startup_pre_delay, 2=startup_fall
+        self._wtt_status_timer = 0       # 週期狀態計時(ticks_ms)
+
+    def _is_motor_enabled(self):
+        """讀取 bus.shared["_motor_enabled"]，0=禁用, 1=啟用 (預設 1)"""
+        return bool(bus.shared.get("_motor_enabled", 1))
+
+    def _motor_state_name(self):
+        return _STATE_NAME.get(self._state, str(self._state))
+
+    def _log_runtime_state(self, reason, level="immediate"):
+        msg = "[State] {} mod={} bit={} bri={} time={} motor={}".format(
+            reason,
+            self._display_mode & MODE_VALUE,
+            self._format_mode_bits(self._display_mode),
+            self._display_brightness,
+            self._display_time,
+            self._motor_state_name(),
+        )
+        log = get_log()
+        if level == "info":
+            log.info(msg)
+        else:
+            log.immediate(msg)
+
+    def _dispatch_stream_play_from_start(self, reason):
+        # 透過本地 UART 發送 STREAM_PLAY (幀 0)，與 UART Display 幀共存
+        if self._uart is None:
+            get_log().warn("[STREAM][TX] UART not available — skip")
+            return
+
+        app = self.ctx.get("app") if isinstance(self.ctx, dict) else None
+        if app is None:
+            return
+
+        cmd_play = app.store.get(0x300A)
+        if not cmd_play:
+            get_log().warn("[STREAM][TX] schema 0x300A missing")
+            return
+        try:
+            payload = SchemaCodec.encode(cmd_play, {"start_frame": 0})
+            self._uart.write(Proto.pack(0x300A, payload))
+            get_log().immediate("[STREAM][TX] 0x300A start=0 reason={}".format(reason))
+        except Exception as e:
+            get_log().error("[STREAM][TX] 0x300A failed: {}".format(e))
+
+    def _is_reserved_motor_control(self):
+        return self._motor_control_source == "reserved"
 
     def on_start(self):
+        print("[MOTOR] on_start enter")   # 最原始 print，不經過 log 系統
         super().on_start()
 
-        self._rise_ms = _read_cfg("_motor_rise_ms", _DEFAULT_RISE_MS)
-        self._wait_ms = _read_cfg("_motor_wait_ms", _DEFAULT_WAIT_MS)
-        self._fall_ms = _read_cfg("_motor_fall_ms", _DEFAULT_FALL_MS)
+        try:
+            self._rise_ms = _read_cfg("_motor_rise_ms", _DEFAULT_RISE_MS)
+            self._wait_ms = _read_cfg("_motor_wait_ms", _DEFAULT_WAIT_MS)
+            self._fall_ms = _read_cfg("_motor_fall_ms", _DEFAULT_FALL_MS)
+            self._startup_delay_ms = _read_cfg("_motor_startup_delay_ms", 10000)
 
-        self._max_mode = _MAX_MODE
-        self._now_bus = bus.get_service("NowBus")
-        vbtn0 = HW.get(HW.VBTN, 0)
-        vbtn1 = HW.get(HW.VBTN, 1)
-        self._last_vbtn[0] = 1 if vbtn0 is None else int(vbtn0)
-        self._last_vbtn[1] = 1 if vbtn1 is None else int(vbtn1)
-        self._vbtn_press_time = [0, 0]
-        self._vbtn_long_triggered = [False, False]
+            self._max_mode = _MAX_MODE
+            self._now_bus = bus.get_service("NowBus")
+            vbtn0 = HW.get(HW.VBTN, 0)
+            vbtn1 = HW.get(HW.VBTN, 1)
+            self._last_vbtn[0] = 1 if vbtn0 is None else int(vbtn0)
+            self._last_vbtn[1] = 1 if vbtn1 is None else int(vbtn1)
+            self._vbtn_press_time = [0, 0]
+            self._vbtn_long_triggered = [False, False]
+            bus.shared[_ENC_DELTA_KEY] = 0
+            bus.shared["_temp_brightness"] = self._temp_brightness
+            bus.shared.setdefault("_motor_enabled", 1)
+            bus.shared.setdefault("_display_cmd", None)
 
-        self._m1   = _resolve_pin_or("m1",   _MOTOR_DEFAULT_PINS["m1"])
-        self._m2   = _resolve_pin_or("m2",   _MOTOR_DEFAULT_PINS["m2"])
-        self._m_en = _resolve_pin_or("m_en", _MOTOR_DEFAULT_PINS["m_en"])
-        self._enter(STATE_IDLE)
+            self._m1   = _resolve_pin_or(("m1",), _MOTOR_DEFAULT_PINS["m1"])
+            self._m2   = _resolve_pin_or(("m2",), _MOTOR_DEFAULT_PINS["m2"])
+            self._m_en = None               # en 由硬體 pull-up，不控制
+            self._startup_phase = 1
+            self._enter(STATE_PRE_DELAY, self._startup_delay_ms)
+            get_log().immediate("[Motor] 啟動 — 延遲等待 {}ms 後下降".format(self._startup_delay_ms))
+            m1_cfg = _find_pin_cfg(("m1",))
+            m2_cfg = _find_pin_cfg(("m2",))
+            en_cfg = _find_pin_cfg(("m_en", "en"))
+            get_log().info(
+                "[Motor] pin-map m1={} m2={} en={}".format(
+                    m1_cfg.get("GPIO") if m1_cfg else _MOTOR_DEFAULT_PINS["m1"],
+                    m2_cfg.get("GPIO") if m2_cfg else _MOTOR_DEFAULT_PINS["m2"],
+                    en_cfg.get("GPIO") if en_cfg else _MOTOR_DEFAULT_PINS["m_en"]))
 
-        get_log().info(
-            "[Motor] rise={} wait={} fall={}ms".format(
-                self._rise_ms, self._wait_ms, self._fall_ms))
+            get_log().info(
+                "[Motor] rise={} wait={} fall={}ms".format(
+                    self._rise_ms, self._wait_ms, self._fall_ms))
 
-        # 初始化 UART (從 bus.shared["UART"] 讀設定)
-        self._init_uart()
-        # 初始化 MP3-TF-16P (UART list[1], baud 9600)
-        self._init_mp3()
+            # 初始化 UART (從 bus.shared["UART"] 讀設定)
+            self._init_uart()
+            # 初始化 MP3-TF-16P (UART list[1], baud 9600)
+            self._init_mp3()
+        except Exception as e:
+            print("[MOTOR] on_start ERROR: {}".format(e))
 
     # ═══ 階段切換 ═══
 
     def _enter(self, state, delay_ms=None):
         self._state = state
         now = time.ticks_ms()
+        state_name = self._motor_state_name()
 
         if state == STATE_IDLE:
             self._motor_stop()
             self._deadline = 0
+            self._motor_control_source = None
+            get_log().immediate("[Motor] → 閒置")
         elif state == STATE_PRE_DELAY:
             self._motor_stop()
             self._deadline = time.ticks_add(now, delay_ms or 0)
+            get_log().immediate("[Motor] → 延遲等待 {}ms".format(delay_ms or 0))
         elif state == STATE_RISE:
-            self._motor_fwd()
+            if self._is_motor_enabled():
+                self._motor_fwd()
+            else:
+                get_log().immediate("[Motor] 已禁用 — 跳過正轉")
             self._deadline = time.ticks_add(now, self._rise_ms)
+            self._dispatch_stream_play_from_start("motor-rise")
+            get_log().immediate("[Motor] → 上升 ({}ms)".format(self._rise_ms))
         elif state == STATE_WAIT:
             self._motor_stop()
             self._deadline = time.ticks_add(now, self._wait_ms)
+            get_log().immediate("[Motor] → 等待 ({}ms)".format(self._wait_ms))
         elif state == STATE_FALL:
-            self._motor_rev()
+            if self._is_motor_enabled():
+                self._motor_rev()
+            else:
+                get_log().immediate("[Motor] 已禁用 — 跳過反轉")
             self._deadline = time.ticks_add(now, self._fall_ms)
+            get_log().immediate("[Motor] → 下降 ({}ms)".format(self._fall_ms))
+        self._log_runtime_state("motor->{}".format(state_name))
 
     # ═══ 馬達控制 ═══
 
     def _motor_stop(self):
+        elapsed = 0
+        if self._motor_start_ms > 0:
+            elapsed = time.ticks_diff(time.ticks_ms(), self._motor_start_ms)
+            self._motor_start_ms = 0
         if self._m1: self._m1.value(0)
         if self._m2: self._m2.value(0)
-        if self._m_en: self._m_en.value(0)
+        # en 不主動控制，由硬體 pull-up 決定
+        get_log().immediate("[Motor] 停止  dur={}ms m1={} m2={} state→{}".format(
+            elapsed, self._m1, self._m2, self._motor_state_name()))
 
     def _motor_fwd(self):
+        if not self._is_motor_enabled():
+            return
+        self._motor_start_ms = time.ticks_ms()
         if self._m1: self._m1.value(0)
         if self._m2: self._m2.value(1)
-        if self._m_en: self._m_en.value(1)
+        get_log().immediate("[Motor] 正轉  開始 @{}ms m1={} m2={}".format(
+            self._motor_start_ms, self._m1, self._m2))
 
     def _motor_rev(self):
+        if not self._is_motor_enabled():
+            return
+        self._motor_start_ms = time.ticks_ms()
         if self._m1: self._m1.value(1)
         if self._m2: self._m2.value(0)
-        if self._m_en: self._m_en.value(1)
+        get_log().immediate("[Motor] 反轉  開始 @{}ms m1={} m2={}".format(
+            self._motor_start_ms, self._m1, self._m2))
 
     # ═══ UART Display 協定 ═══
 
     def _init_uart(self):
-        """從 bus.shared["UART"].list[0] 初始化 UART"""
-        uart_cfg = bus.shared.get("UART", {}) or {}
-        if not int(uart_cfg.get("enable", 0) or 0):
+        """從 boot/driver 註冊的 uart_list[0] 綁定顯示 UART"""
+        uart_list = bus.get_service("uart_list")
+        if not uart_list:
+            get_log().warn("[UART] uart_list missing")
             return
-        lst = uart_cfg.get("list", []) or []
-        if not lst:
+        if len(uart_list) < 1:
+            get_log().warn("[UART] uart_list[0] missing")
             return
-
-        cfg = lst[0]
-        uid = int(cfg.get("id", 1) or 1)
-        baud = int(cfg.get("baudrate", 115200) or 115200)
-        gpio = cfg.get("GPIO", {}) or {}
-        tx = gpio.get("tx")
-        rx = gpio.get("rx")
-
-        import machine
         try:
-            self._uart = machine.UART(
-                uid,
-                baudrate=baud,
-                bits=8,
-                parity=None,
-                stop=1,
-                tx=machine.Pin(tx) if tx is not None else None,
-                rx=machine.Pin(rx) if rx is not None else None,
-                timeout=0,
-                timeout_char=0,
-            )
-            get_log().info("[UART] init id={} baud={} tx={} rx={}".format(uid, baud, tx, rx))
+            self._uart = uart_list[0]
+            get_log().info("[UART] bind uart_list[0] for display")
         except Exception as e:
-            get_log().error("[UART] init failed: {}".format(e))
+            get_log().error("[UART] bind failed: {}".format(e))
 
     def _build_uart_state_frame(self, mode=None, brightness=None, time_remaining=None):
         """建立 5-byte 幀: [0xB4, mode, brightness(0-31), time, 0xFF]"""
@@ -287,12 +415,13 @@ class ActionTask1(Task):
                 time_remaining = self._display_time
             data = self._build_uart_state_frame(mode=mode, brightness=brightness, time_remaining=time_remaining)
             self._uart.write(data)
-            get_log().info("[UART][TX] mod={} bit={} bri={} time={} frame={}".format(
+            get_log().immediate("[UART][TX] frame={} mod={} bit={} bri={} time={} motor={}".format(
+                self._format_frame_hex(data),
                 mode & MODE_VALUE,
                 self._format_mode_bits(mode),
                 brightness,
                 time_remaining,
-                self._format_frame_hex(data)))
+                self._motor_state_name()))
         except Exception as e:
             get_log().error("[UART] send error: {}".format(e))
 
@@ -305,6 +434,8 @@ class ActionTask1(Task):
             chunk = self._uart.read()
             if chunk:
                 self._uart_rx_buf.extend(chunk)
+                get_log().immediate("[UART][RX] raw={}".format(
+                    " ".join("{:02X}".format(b) for b in chunk)))
 
             processed = 0
             i = 0
@@ -328,44 +459,29 @@ class ActionTask1(Task):
             get_log().error("[UART] recv error: {}".format(e))
 
     def _init_mp3(self):
-        """初始化 MP3-TF-16P (從 UART list[1], baud 9600)"""
-        uart_cfg = bus.shared.get("UART", {}) or {}
-        if not int(uart_cfg.get("enable", 0) or 0):
+        """初始化 MP3-TF-16P (從 boot/driver 註冊的 uart_list[1])"""
+        uart_list = bus.get_service("uart_list")
+        if not uart_list:
+            get_log().warn("[MP3] uart_list missing")
             return
-        lst = uart_cfg.get("list", []) or []
-        if len(lst) < 2:
+        if len(uart_list) < 2:
+            get_log().warn("[MP3] uart_list[1] missing")
             return
-        cfg = lst[1]
-        uid = int(cfg.get("id", 2) or 2)
-        baud = int(cfg.get("baudrate", 9600) or 9600)
-        gpio = cfg.get("GPIO", {}) or {}
-        tx = gpio.get("tx")
-        rx = gpio.get("rx")
-        import machine
         try:
-            uart = machine.UART(
-                uid,
-                baudrate=baud,
-                bits=8,
-                parity=None,
-                stop=1,
-                tx=machine.Pin(tx) if tx is not None else None,
-                rx=machine.Pin(rx) if rx is not None else None,
-                timeout=0,
-                timeout_char=0,
-            )
+            uart = uart_list[1]
             self._mp3 = MP3TF16P(uart)
             # 上電需等模組初始化完成，用非阻塞定時器
             self._mp3_state = 1
             self._mp3_deadline = time.ticks_add(time.ticks_ms(), 1500)
-            get_log().info("[MP3] init UART{} baud={} tx={} rx={}".format(uid, baud, tx, rx))
+            get_log().info("[MP3] bind uart_list[1]")
         except Exception as e:
-            get_log().error("[MP3] init failed: {}".format(e))
+            get_log().error("[MP3] bind failed: {}".format(e))
 
     def _process_uart_cmd(self, mode, brightness, time_remaining):
-        """處理收到的 UART 幀 — 更新內部狀態，不回傳"""
+        """處理收到的 UART 幀 — 更新內部狀態；echo 即為確認，通知面板"""
         prev_mode = self._display_mode
         self._temp_mode = mode
+        self._temp_brightness = brightness
 
         mode_changed = self._temp_mode != prev_mode
         brightness_changed = self._display_brightness != brightness
@@ -384,21 +500,34 @@ class ActionTask1(Task):
             bus.shared["_display_mode"] = self._display_mode
             bus.shared["_temp_mode"] = self._temp_mode
             bus.shared["_display_brightness"] = self._display_brightness
+            bus.shared["_temp_brightness"] = self._temp_brightness
             bus.shared["_display_time"] = self._display_time
             get_log().immediate("[UART] rx mod={} bit={} bri={} time={}".format(
                 mode & MODE_VALUE,
                 self._format_mode_bits(mode),
                 brightness,
                 time_remaining))
-            # 只有收到確認模式與當前運行模式不同，才提交新模式並通知外部
-            if mode_changed:
-                get_log().info("[Mode] switch mod={} bit={} bri={}".format(
-                    self._display_mode & MODE_VALUE,
-                    self._format_mode_bits(self._display_mode),
-                    self._display_brightness))
-                self._notify_control_panel_ex_ic()
-                self._check_mode_motor()
-                self._check_mode_audio()
+            self._log_runtime_state("uart-ack")
+
+        # 回覆面板:模式/亮度有變, 或收到的是「待確認請求」的 echo。
+        # 重點:即使 echo 值與現值完全相同(同模式重送/重複 echo), 也要廣播
+        # 0x1502 讓面板結束 pending —— 這是同模式無法觸發回覆邏輯的根因。
+        if mode_changed or brightness_changed or self._ack_pending:
+            self._ack_pending = False
+            get_log().immediate("[UART] ack mod={:02X} bit={} bri={} → 0x1502 回覆面板".format(
+                self._display_mode & 0xFF,
+                self._format_mode_bits(self._display_mode),
+                self._display_brightness))
+            self._notify_control_panel_ex_ic()
+
+        # 只有收到確認模式與當前運行模式不同，才提交新模式並檢查電機/音頻
+        if mode_changed:
+            get_log().info("[Mode] switch mod={} bit={} bri={}".format(
+                self._display_mode & MODE_VALUE,
+                self._format_mode_bits(self._display_mode),
+                self._display_brightness))
+            self._check_mode_motor()
+            self._check_mode_audio()
 
     def _format_mode_bits(self, mode):
         return "{:08b}".format(mode & 0xFF)
@@ -408,31 +537,32 @@ class ActionTask1(Task):
 
     def _check_mode_motor(self):
         """
-        檢查當前 _display_mode 是否匹配電機模式列表。
-        列表格式: bus.shared["_mode_motor_list"] = [[mod, entry_delay_ms, wait_ms], ...]
-          mod            — 比對的模式值 (低位元)
-          entry_delay_ms — 進入模式後, 啟動電機前的延遲 (ms), 0=立即啟動
-          wait_ms        — RISE 結束後的 WAIT 時間 (ms)
-        RISE/FALL 時間固定 (由 bus.shared["_motor_rise_ms"] / _fall_ms 決定, 預設各 5000ms)
-        匹配時自動啟動電機序列, 可提前結束 (VBTN[1])
+        MODE_RESERVED (Bit6): 1=目標頂部, 0=目標底部
+        檢查當前位置與目標是否一致，不一致則移動。
         """
-        motor_list = self._mode_list  # 直接使用硬編碼列表
-        for entry in motor_list:
-            if not isinstance(entry, (list, tuple)) or len(entry) < 3:
-                continue
-            mod_match, entry_delay, wait = entry[0], int(entry[1]), int(entry[2])
-            if (self._display_mode & MODE_VALUE) == mod_match:
-                self._wait_ms = wait
-                if self._state == STATE_IDLE:
-                    if entry_delay > 0:
-                        self._enter(STATE_PRE_DELAY, delay_ms=entry_delay)
-                    else:
-                        self._enter(STATE_RISE)
-                else:
-                    self._enter(STATE_FALL)  # 運轉中 → 提前降下
-                get_log().info("[Motor] auto mode={} entry_delay={} wait={}".format(
-                    mod_match, entry_delay, wait))
-                break
+        reserved = bool(self._display_mode & MODE_RESERVED)
+        if reserved:
+            # Bit6=1 → 目標 top
+            if self._position == "top":
+                return  # 已在頂部，不動
+            if self._state == STATE_IDLE:
+                self._motor_control_source = "reserved"
+                self._enter(STATE_PRE_DELAY, self._startup_delay_ms)
+                get_log().immediate("[Motor] RESERVED=1 → 延遲等待後上升 (目標頂部)")
+            elif self._state in (STATE_FALL, STATE_PRE_DELAY):
+                self._enter(STATE_PRE_DELAY, self._startup_delay_ms)
+                get_log().immediate("[Motor] RESERVED=1 → 延遲等待後切換上升")
+        else:
+            # Bit6=0 → 目標 bottom
+            if self._position == "bottom":
+                return  # 已在底部，不動
+            if self._state == STATE_IDLE:
+                self._motor_control_source = "reserved"
+                self._enter(STATE_FALL)
+                get_log().immediate("[Motor] RESERVED=0 → 下降 (目標底部)")
+            elif self._state in (STATE_RISE, STATE_WAIT, STATE_PRE_DELAY):
+                self._enter(STATE_FALL)
+                get_log().immediate("[Motor] RESERVED=0 → 切換下降")
 
     def _check_mode_audio(self):
         """
@@ -463,24 +593,37 @@ class ActionTask1(Task):
         self.set_display_state(mode=self._display_mode ^ flag)
 
     def _notify_control_panel_ex_ic(self):
+        """模式確認後廣播 0x1502 WTT_STATUS(mode/brightness/time) 給面板裝置。
+        on_status 寫 _display_* Global → LVGL 頁面顯示已確認。取代舊 0x1403。"""
         now_bus = self._now_bus or bus.get_service("NowBus")
         if now_bus is None:
+            get_log().error("[WTT][TX][0x1502] NowBus 未註冊 — 回覆無法送出！"
+                            "檢查 NetworkTask ESP-NOW 是否啟用(config Network.ESP_now.enable)")
             return
         self._now_bus = now_bus
         try:
-            frame = self._build_uart_state_frame()
-            payload = bytes([EX_IC_CHIP_TYPE, EX_IC_CHIP_ID]) + frame
-            now_bus.broadcast(Proto.pack(CMD_HW_EX_IC, payload))
-            get_log().info("[NOW][TX][0x1403] chip={} id={} mod={} bit={} bri={} time={} frame={}".format(
-                EX_IC_CHIP_TYPE,
-                EX_IC_CHIP_ID,
-                self._display_mode & MODE_VALUE,
-                self._format_mode_bits(self._display_mode),
+            payload = bytes([
+                self._display_mode & 0xFF,
+                max(0, min(self._display_brightness, 255)),
+                max(0, self._display_time & 0xFF),
+            ])
+            now_bus.broadcast(Proto.pack(CMD_WTT_STATUS, payload))
+            get_log().immediate("[WTT][TX][0x1502] mod={:02X} bri={} time={}".format(
+                self._display_mode & 0xFF,
                 self._display_brightness,
-                self._display_time,
-                self._format_frame_hex(frame)))
+                self._display_time))
         except Exception as e:
-            get_log().error("[EX_IC] notify display frame failed: {}".format(e))
+            get_log().error("[WTT] status send failed: {}".format(e))
+
+    def _send_wtt_status_periodic(self, now):
+        """每秒廣播一次 0x1502 狀態(帶 time,供面板倒數同步)。預設關閉,開則
+        bus.shared["_wtt_periodic_status"] = 1。"""
+        if not bus.shared.get("_wtt_periodic_status", 0):
+            return
+        if time.ticks_diff(now, self._wtt_status_timer) < 1000:
+            return
+        self._wtt_status_timer = now
+        self._notify_control_panel_ex_ic()
 
     def _next_mode(self):
         max_mode = self._max_mode
@@ -492,13 +635,15 @@ class ActionTask1(Task):
 
     def _handle_vbtn_short(self, btn_id):
         if btn_id == 0:
-            self._trigger_motor_action()
+            if self._state != STATE_IDLE:
+                return  # 馬達運轉中，無視短按
+            self._toggle_mode_flag(MODE_RESERVED)
         elif btn_id == 1:
             self.set_display_state(mode=self._next_mode())
 
     def _handle_vbtn_long(self, btn_id):
         if btn_id == 0:
-            self._toggle_mode_flag(MODE_RESERVED)
+            self._trigger_motor_action()
         elif btn_id == 1:
             self._toggle_mode_flag(MODE_SPECIAL)
 
@@ -528,27 +673,29 @@ class ActionTask1(Task):
     def set_display_state(self, mode=None, brightness=None):
         """
         設定顯示狀態（外部呼叫用）
-        - mode/brightness 有變更時發送 UART
+        - mode/brightness 有提供時一律發送 UART(即使與現值相同:
+          同模式重送/echo 遺失重送也要走完整 request→ack 循環,否則面板收不到確認)
         - time 由 DisplayController 管理，不在此設定
         """
         target_mode = self._display_mode
-        target_brightness = self._display_brightness
-        changed = False
-        if mode is not None and target_mode != mode:
+        target_brightness = self._temp_brightness
+        send = False
+        if mode is not None:
             max_mode = self._max_mode
             flags = mode & (MODE_SPECIAL | MODE_RESERVED)
             val = mode & MODE_VALUE
             if max_mode > 0 and val > max_mode:
                 mode = flags | (val % (max_mode + 1))
             target_mode = mode
-            changed = True
+            send = True
         if brightness is not None:
-            b = max(0, min(brightness, _UART_BRIGHTNESS_MAX))
-            if target_brightness != b:
-                target_brightness = b
-                changed = True
+            target_brightness = max(0, min(brightness, _UART_BRIGHTNESS_MAX))
+            send = True
 
-        if changed:
+        if send:
+            self._temp_brightness = target_brightness
+            bus.shared["_temp_brightness"] = self._temp_brightness
+            self._ack_pending = True    # 送出的幀即為待確認請求
             self._send_uart_state(
                 mode=target_mode,
                 brightness=target_brightness,
@@ -560,6 +707,32 @@ class ActionTask1(Task):
                     target_mode & MODE_VALUE,
                     self._format_mode_bits(target_mode),
                     target_brightness))
+
+    def _consume_encoder_delta(self):
+        delta = int(bus.shared.get(_ENC_DELTA_KEY, 0) or 0)
+        if delta == 0:
+            return
+        bus.shared[_ENC_DELTA_KEY] = 0
+        target = self._temp_brightness + delta
+        self.set_display_state(brightness=target)
+        get_log().immediate("[ENC] delta={:+d} bri_req={}".format(
+            delta,
+            max(0, min(target, _UART_BRIGHTNESS_MAX))))
+
+    def _consume_display_cmd(self):
+        """消費 bus 指令 _display_cmd（waiting_to_trash_actions 翻譯進來，或 LVGL 頁面直寫）。
+        格式: {"mode": 0-255, "brightness": 0-36}（欄位可選）。消費後清空。"""
+        cmd = bus.shared.get("_display_cmd")
+        if not cmd:
+            return
+        bus.shared["_display_cmd"] = None
+        try:
+            self.set_display_state(
+                mode=cmd.get("mode"),
+                brightness=cmd.get("brightness"),
+            )
+        except Exception as e:
+            get_log().error("[CMD] display cmd: {}".format(e))
 
     # ═══ 主迴圈 ═══
 
@@ -576,6 +749,11 @@ class ActionTask1(Task):
 
         # ── UART 接收 ──
         self._handle_uart_receive()
+        self._consume_encoder_delta()
+        self._consume_display_cmd()
+
+        # ── 週期狀態廣播(選用:每秒同步 time 給面板) ──
+        self._send_wtt_status_periodic(now)
 
         now_btn = time.ticks_ms()
         self._poll_vbtn(0, now_btn)
@@ -585,21 +763,45 @@ class ActionTask1(Task):
         if self._state != STATE_IDLE and self._deadline > 0:
             if time.ticks_diff(now, self._deadline) >= 0:
                 if self._state == STATE_PRE_DELAY:
-                    self._enter(STATE_RISE)
+                    if self._startup_phase == 1:
+                        self._startup_phase = 2
+                        self._enter(STATE_FALL)
+                    else:
+                        self._enter(STATE_RISE)
                 elif self._state == STATE_RISE:
+                    self._position = "top"
                     self._enter(STATE_WAIT)
                 elif self._state == STATE_WAIT:
                     self._enter(STATE_FALL)
                 elif self._state == STATE_FALL:
+                    if self._startup_phase == 2:
+                        self._startup_phase = 0
+                    self._position = "bottom"
                     self._enter(STATE_IDLE)
                 self.success += 1
 
     def _trigger_motor_action(self):
-        """VBTN[0] 短按: 控制電機動作"""
+        """VBTN[0] 長按: 直接控制電機升降（無延遲）"""
+        if not self._is_motor_enabled():
+            get_log().immediate("[Motor] 已禁用 — 按鈕忽略")
+            return
         if self._state == STATE_IDLE:
-            self._enter(STATE_RISE)
+            self._motor_control_source = "manual"
+            if self._position == "top":
+                self._enter(STATE_FALL)  # 在頂部 → 下降
+            else:
+                self._enter(STATE_RISE)  # 直接上升，無延遲
+        elif self._state == STATE_PRE_DELAY:
+            if self._is_reserved_motor_control():
+                self._enter(STATE_IDLE)
+                get_log().info("[Motor] 長按取消 reserved 延遲 → 閒置")
+            else:
+                self._enter(STATE_FALL)
+                get_log().immediate("[Motor] 長按取消延遲 → 下降")
         elif self._state in (STATE_RISE, STATE_WAIT):
             self._enter(STATE_FALL)   # 提早下降
+        elif self._state == STATE_FALL:
+            get_log().immediate("[Motor] 下降中忽略手動觸發")
         self.success += 1
 
     def on_stop(self):

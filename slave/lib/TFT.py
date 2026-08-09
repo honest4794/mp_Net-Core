@@ -3,7 +3,7 @@ import gc
 import machine ,time
 
 def _sleep_ms(_ms):
-    return
+    time.sleep_ms(_ms)
 
 class VideoStreamReader:
     def __init__(self, filename, frame_size=1024 * 1024):
@@ -86,27 +86,53 @@ class VideoStreamReader:
 
 # ====== 通用TFT驅動類 ======
 class TFT:
-    def __init__(self, spi, dc, cs, rst, width, height, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        self.spi = spi
-        self.dc = dc
-        self.cs = cs
-        self.rst = rst
+    def __init__(self, spi=None, dc=None, cs=None, rst=None, width=240, height=320,
+                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None, variant=0,
+                 chunk_size=0):
+        if adapter is not None:
+            self._bus = adapter
+            self.spi = getattr(adapter, '_spi', None)
+            self.dc  = getattr(adapter, '_dc', None)
+            self.cs  = getattr(adapter, '_cs', None)
+            self.rst = getattr(adapter, '_rst', None)
+        else:
+            from lib.bus_adapter import SpiBusAdapter
+            self.spi = spi
+            self.dc = dc
+            self.cs = cs
+            self.rst = rst
+            if self.dc is not None:
+                self.dc.init(machine.Pin.OUT, value=0)
+            if self.cs is not None:
+                self.cs.init(machine.Pin.OUT, value=1)
+            if self.rst is not None:
+                self.rst.init(machine.Pin.OUT, value=1)
+            self._bus = SpiBusAdapter(spi, dc, cs, rst)
+
         self.width = width
         self.height = height
         self.pixel_format = pixel_format
         self.bytes_per_pixel = int(bytes_per_pixel)
         self._rotation = 0
-        self._color_order = "RGB"  # 預設顏色順序
-        self._inverted = False     # 顏色反轉狀態
-        self.write_chunk = 0
-        
-        # 初始化引腳
-        self.dc.init(machine.Pin.OUT, value=0)
-        self.cs.init(machine.Pin.OUT, value=1)
-        self.rst.init(machine.Pin.OUT, value=1)
-        
-        self.reset()
+        self._color_order = "RGB"
+        self._inverted = False
+        self._variant = variant
+
+        # ── Chunked Display 狀態 ──
+        self.chunk_size = int(chunk_size)          # 每次傳輸塊位元組數 (0=不分塊)
+        self._chunk_total = 0                      # 當前幀總塊數
+        self._chunk_done = 0                       # 已傳輸塊數
+        self._display_active = False               # begin_display 後為 True
+        if self.chunk_size > 0:
+            ppc = max(1, self.chunk_size // self.bytes_per_pixel)
+            self._chunk_total = (self.width * self.height + ppc - 1) // ppc
+
+        self._bus.reset()
         _sleep_ms(100)
+
+    def set_variant(self, variant):
+        """更新初始化深度後重新 init（子類別實作，預設無效）"""
+        self._variant = variant
     
     def _bytes_per_pixel(self):
         bpp = getattr(self, "bytes_per_pixel", 2)
@@ -122,51 +148,142 @@ class TFT:
         return bytes([self._colmod_value_for_bpp(bpp)])
     
     def reset(self):
-        """硬體重置顯示器"""
-        self.rst(0)
-        _sleep_ms(50)
-        self.rst(1)
-        _sleep_ms(50)
-    
+        self._bus.reset()
+
     def write_cmd(self, cmd):
-        """寫入命令到顯示器"""
-        self.dc(0)
-        self.cs(0)
-        self.spi.write(bytearray([cmd]))
-        self.cs(1)
-    
+        self._bus.write_cmd(cmd)
+
     def write_data(self, data):
-        """寫入數據到顯示器"""
-        self.dc(1)
-        self.cs(0)
-        self.spi.write(data)
-        self.cs(1)
-    
+        self._bus.write_data(data)
+
     def write_cmd_data(self, cmd, data):
-        """同時寫入命令和數據"""
-        self.write_cmd(cmd)
-        if data:
-            self.write_data(data)
-    
+        self._bus.write_cmd_data(cmd, data)
+
     def set_window(self, x0, y0, x1=None, y1=None):
-        """設置顯示區域窗口"""
         if x1 is None:
             x1 = x0 + self.width - 1
         if y1 is None:
             y1 = y0 + self.height - 1
-        
-        # 根據旋轉調整座標
         if self._rotation in [90, 270]:
             x0, y0, x1, y1 = y0, x0, y1, x1
-        
-        self.write_cmd(0x2A)  # 列地址設置
-        self.write_data(bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
-        
-        self.write_cmd(0x2B)  # 行地址設置
-        self.write_data(bytes([y0 >> 8, y0 & 0xFF, y1 >> 8, y1 & 0xFF]))
-        
-        self.write_cmd(0x2C)  # 內存寫入
-    
+        self._bus.set_window(x0, y0, x1, y1)
+
+    def show(self, data, x=0, y=0, w=None, h=None):
+        """顯示 pixel data — 堵塞模式 (set_window → 寫入 → flush)
+        不區分總線類型: 各 adapter 的 set_window 已處理 CASET/PASET/RAMWR 差異
+        """
+        if w is None: w = self.width
+        if h is None: h = self.height
+        self.set_window(x, y, x + w - 1, y + h - 1)
+        self._bus.write_data_async(data)
+        self._bus.flush()
+    def show_frame(self, data):
+        """Send pixel data (window must be set already)"""
+        self._bus.write_frame(data)
+
+    def show_async(self, data, x=0, y=0, w=None, h=None):
+        """DMA 異步顯示 — queue 全幀後立即返回, caller 需自行呼叫 flush()"""
+        if w is None: w = self.width
+        if h is None: h = self.height
+        self.set_window(x, y, x + w - 1, y + h - 1)
+        self._bus.write_data_async(data)
+
+    # ══════════════════════════════════════════════════════════════
+    #  Pipeline Display API — 持久視窗 + DMA chunk 平行
+    #  適用連續幀播放（如 JPEG player）：視窗只設一次，每幀只送 RAMWR。
+    # ══════════════════════════════════════════════════════════════
+
+    def begin_display(self):
+        """設定持久全螢幕視窗（CASET/PASET/RAMWR）一次。
+        之後 present() 只送 RAMWR + 資料，省去每幀重設視窗的命令開銷。"""
+        self._bus.set_window(0, 0, self.width - 1, self.height - 1)
+        self._display_active = True
+
+    def present(self, fb):
+        """送一幀到螢幕（視窗已由 begin_display 設好）。
+        流程：write_cmd(0x2C RAMWR, polling 確保送達) → write_frame_dma(分 chunk 填 queue)。
+        回傳 tid 列表；caller 需在下一幀前 flush() 等完成，實現 DMA 與解碼重疊。"""
+        self._bus.write_cmd(0x2C)               # RAMWR（polling，wait_all）
+        return self._bus.write_frame_dma(fb)    # 分 chunk DMA，回傳 tids
+
+    def present_wait(self):
+        """等所有 pending DMA 完成（每幀結尾或切換前呼叫）"""
+        self._bus.flush()
+
+    # ══════════════════════════════════════════════════════════════
+    #  Classic Write Session API — begin_write / write_pixels / end_write
+    #  (中斷 write_pixels / 非中斷 write_pixels_nonblock)
+    # ══════════════════════════════════════════════════════════════
+
+    def begin_write(self, x=0, y=0, w=None, h=None):
+        """寫入會話開始 — set_window + 重置塊計數。
+
+        類似 Adafruit beginWrite() / TFT_eSPI startWrite()。
+        由 adapter 處理 CASET/PASET/RAMWR 的螢幕差異。
+        """
+        if w is None: w = self.width
+        if h is None: h = self.height
+        self.set_window(x, y, x + w - 1, y + h - 1)
+        self._chunk_done = 0
+        total_pixels = w * h
+        if self.chunk_size > 0:
+            ppc = max(1, self.chunk_size // self.bytes_per_pixel)
+            self._chunk_total = (total_pixels + ppc - 1) // ppc
+        else:
+            self._chunk_total = 1  # 不分塊 → 單塊
+
+    def write_pixels(self, data):
+        """中斷寫入 — 將像素資料送入總線，等待傳輸完成後返回。
+
+        類似 TFT_eSPI pushPixels() / Adafruit writePixels(block=True)。
+        在 DMA 和非 DMA 總線上都可靠阻塞。
+        """
+        self._bus.write_data_async(data)
+        self._bus.flush()
+        self._chunk_done += 1
+
+    def write_pixels_nonblock(self, data):
+        """非中斷 DMA 寫入 — 嘗試將數據塊排入 DMA 隊列。
+
+        返回:
+            True  — 排隊成功，可立即準備下一塊數據
+            False — DMA 隊列已滿，需要重試同一塊數據
+
+        非 DMA 總線上永遠返回 True（write_data_async 同步完成）。
+        """
+        handle = self._bus.write_data_async(data)
+        if handle is not None:
+            self._chunk_done += 1
+            return True
+        return False
+
+    def end_write(self):
+        """寫入會話結束 — flush 剩餘 DMA 數據。
+
+        類似 Adafruit endWrite() / TFT_eSPI endWrite()。
+        """
+        self._bus.flush()
+
+    @property
+    def chunk_total(self):
+        """當前幀總塊數（begin_write 後才有效）"""
+        return self._chunk_total
+
+    @property
+    def chunk_done(self):
+        """已成功傳輸的塊數"""
+        return self._chunk_done
+
+    @property
+    def remaining(self):
+        """剩餘未傳輸的塊數"""
+        return max(0, self._chunk_total - self._chunk_done)
+
+    @property
+    def busy(self):
+        """DMA 是否仍在傳輸中（還有塊未完成）"""
+        return self._chunk_done < self._chunk_total
+
     def set_rotation(self, rotation):
         """
         設置屏幕旋轉角度
@@ -272,8 +389,13 @@ class TFT:
 
 
 class ST7735(TFT):
-    def __init__(self, spi, dc, cs, rst, width, height, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+    def __init__(self, spi=None, dc=None, cs=None, rst=None, width=240, height=240,
+                 rotation=0, color_order="RGB", invert=False,
+                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi=spi, dc=dc, cs=cs, rst=rst,
+                         width=width, height=height,
+                         pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel,
+                         adapter=adapter)
         self._rotation = rotation
         self._color_order = color_order.upper()
         self._inverted = invert
@@ -345,108 +467,193 @@ class ST7735(TFT):
 
 
 class ST7789(TFT):
-    def __init__(self, spi, dc, cs, rst, width, height, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+    """泛用 ST7789 驅動 — variant 0/1/2/3 對應不同初始化深度
+
+    所有 ST7789 variant 的硬體 register 都相同，差別只在初始化參數。
+    variant 選一個 profile，逐級疊加，由簡入繁測試：
+
+      variant=0  極簡
+        SLPOUT → COLMOD → MADCTL → INV → DISPON
+        適用：Adafruit 庫、TFT_eSPI 相容面板、IC 內部 POR 已夠用的模組
+        特點：不發任何電源/Porch/Gamma 指令，相容性最高
+
+      variant=1  基本電源
+        v0 + B2 Porch + 泛用電壓參數
+        (B7=0x35, BB=0x19, C0=0x2C, C2=0x01, C3=0x12, C4/C6/D0)
+        適用：淘寶常見 1.3/1.54/2.0/2.4 吋 ST7789 模組
+        特點：Arduino_GFX 預設值，大部份面板可亮
+
+      variant=2  完整時序
+        v1 + B0 Panel Timing + Vernon 電壓參數
+        (B7=0x75, BB=0x1A, C0=0x80, C2=0x01FF, C3=0x13)
+        適用：ESP32-S3-Touch-LCD-2.8（Vernon 面板）、對時序敏感的面板
+        特點：Waveshare 出廠值
+
+      variant=3  完整校色
+        v2 + E0/E1 Gamma Table
+        適用：需要 gamma 校正才能正確顯示的面板
+        特點：最完整初始化
+
+    vcom 參數獨立於 variant，可單獨設置 0xBB 值（預設 0x1A）。
+
+    其餘參數化 method：
+      color_order → _get_madctl_cmd()   (RGB/BGR bit)
+      invert      → _get_inversion_cmd() (0x20/0x21)
+    """
+    def __init__(self, spi=None, dc=None, cs=None, rst=None, width=240, height=320,
+                 rotation=0, color_order="RGB", invert=False,
+                 vcom=0x1A, variant=0,
+                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi=spi, dc=dc, cs=cs, rst=rst,
+                         width=width, height=height,
+                         pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel,
+                         adapter=adapter)
+        self._rotation = rotation
+        self._color_order = color_order.upper()
+        self._inverted = invert
+        self._vcom = vcom
+        self._variant = variant
+        self.init()
+
+    def init(self):
+        """根據 _variant 選擇 init profile"""
+        v = self._variant
+
+        _sleep_ms(10)
+        self.write_cmd_data(0x11, None)  # Sleep Out
+        _sleep_ms(120)
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+        self.write_cmd_data(0x3A, self._get_colmod_cmd())
+
+        # ── variant 1+ 電源／Porch 參數 ──
+        if v >= 1:
+            self.write_cmd_data(0xB2, b'\x0C\x0C\x00\x33\x33')
+            self.write_cmd_data(0xB7, b'\x75' if v >= 2 else b'\x35')
+            self.write_cmd_data(0xBB, self._get_vcom_cmd())
+            self.write_cmd_data(0xC0, b'\x80' if v >= 2 else b'\x2C')
+            self.write_cmd_data(0xC2, b'\x01\xFF' if v >= 2 else b'\x01')
+            self.write_cmd_data(0xC3, b'\x13' if v >= 2 else b'\x12')
+            self.write_cmd_data(0xC4, b'\x20')
+            self.write_cmd_data(0xC6, b'\x0F')
+            self.write_cmd_data(0xD0, b'\xA4\xA1')
+
+        # ── variant 2+ Panel Timing ──
+        if v >= 2:
+            self.write_cmd_data(0xB0, b'\x00\xE8')
+
+        # ── variant 3+ Gamma ──
+        if v >= 3:
+            self.write_cmd_data(0xE0, b'\xD0\x0D\x14\x0D\x0D\x09\x38\x44\x4E\x3A\x17\x18\x2F\x30')
+            self.write_cmd_data(0xE1, b'\xD0\x09\x0F\x08\x07\x14\x37\x44\x4D\x38\x15\x16\x2C\x2E')
+
+        self.write_cmd(self._get_inversion_cmd())
+        self.write_cmd_data(0x29, None)  # Display On
+        _sleep_ms(50)
+        self.set_window(0, 0)
+
+    def _get_madctl_cmd(self):
+        """內存訪問控制 (0x36) — 旋轉 + 顏色順序"""
+        base = {0: 0x00, 90: 0x60, 180: 0xC0, 270: 0xA0}.get(self._rotation, 0x00)
+        if self._color_order == "BGR":
+            base |= 0x08
+        return bytes([base])
+
+    def _get_vcom_cmd(self):
+        """VCOM 電壓 (0xBB) — 面板廠 tune"""
+        return bytes([self._vcom])
+
+    def _get_inversion_cmd(self):
+        """顏色反轉 (0x20/0x21)"""
+        return 0x21 if self._inverted else 0x20
+
+    def _update_rotation(self):
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+
+    def _update_color_order(self):
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+
+    def _update_inversion(self):
+        self.write_cmd(self._get_inversion_cmd())
+
+
+class ST7796(TFT):
+    """ST7796 320x480 驅動 (ESP32-S3 N16R8)"""
+    def __init__(self, spi=None, dc=None, cs=None, rst=None, width=480, height=320,
+                 rotation=0, color_order="RGB", invert=False,
+                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi=spi, dc=dc, cs=cs, rst=rst,
+                         width=width, height=height,
+                         pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel,
+                         adapter=adapter)
         self._rotation = rotation
         self._color_order = color_order.upper()
         self._inverted = invert
         self.init()
-    
+
     def init(self):
-        init_cmds = [
-            (0x01, None),       # 軟復位
-            (0x11, None),       # 退出睡眠模式
-            (0x3A, self._get_colmod_cmd()),
-            (0x36, self._get_madctl_cmd()),    # 內存訪問控制
-            (0xB2, b'\x0C\x0C\x00\x33\x33'),
-            (0xB7, b'\x35'),    # 門控制
-            (0xBB, b'\x19'),    # VCOM設置
-            (0xC0, b'\x2C'),    # LCM控制
-            (0xC2, b'\x01'),
-            (0xC3, b'\x12'),
-            (0xC4, b'\x20'),
-            (0xC6, b'\x0F'),
-            (self._get_inversion_cmd(), None), # 顏色反轉
-            (0xD0, b'\xA4\xA1'),
-            (0x29, None)        # 開啟顯示
-        ]
-        
-        for cmd, data in init_cmds:
-            self.write_cmd_data(cmd, data)
-            _sleep_ms(10)
-        
+        _sleep_ms(10)
+        self.write_cmd_data(0x01, None)  # SWRESET
+        _sleep_ms(120)
+        self.write_cmd_data(0x11, None)  # SLPOUT
+        _sleep_ms(120)
+
+        self.write_cmd_data(0xF0, b'\xC3')  # CSCON
+        self.write_cmd_data(0xF0, b'\x96')  # CSCON
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+        self.write_cmd_data(0x3A, self._get_colmod_cmd())
+
+        self.write_cmd_data(0xB7, b'\xC6')   # EM
+        self.write_cmd_data(0xB4, b'\x01')   # DIC
+        self.write_cmd_data(0xB6, b'\x80\x02\x3B')  # DFC
+        self.write_cmd_data(0xE8, b'\x40\x8A\x00\x00\x29\x19\xA5\x33')  # DOCA
+        self.write_cmd_data(0xC1, b'\x06')   # PWR2
+        self.write_cmd_data(0xC2, b'\xA7')   # PWR3
+        self.write_cmd_data(0xC5, b'\x18')   # VCMPCTL
+        _sleep_ms(120)
+
+        # Positive Gamma
+        self.write_cmd_data(0xE0, b'\xF0\x09\x0B\x06\x04\x15\x2F\x54\x42\x3C\x17\x14\x18\x1B')
+        # Negative Gamma
+        self.write_cmd_data(0xE1, b'\xF0\x09\x0B\x06\x04\x03\x2D\x43\x42\x3B\x16\x14\x17\x1B')
+        _sleep_ms(120)
+
+        self.write_cmd_data(0xF0, b'\x3C')  # CSCON
+        self.write_cmd_data(0xF0, b'\x69')  # CSCON
+        _sleep_ms(120)
+
+        self.write_cmd_data(0x29, None)  # DISPON
+        _sleep_ms(120)
         self.set_window(0, 0)
-    
+
     def _get_madctl_cmd(self):
-        """獲取內存訪問控制命令值"""
-        # ST7789 MADCTL 位定義:
-        # MY MX MV ML RGB MH - -
         rotation_settings = {
-            0: 0x00,   # 正常方向
-            90: 0x60,  # 旋轉90度
-            180: 0xC0, # 旋轉180度
-            270: 0xA0  # 旋轉270度
+            0: 0x00, 90: 0x60, 180: 0xC0, 270: 0xA0
         }
-        
         base = rotation_settings.get(self._rotation, 0x00)
-        # 設置顏色順序 (RGB/BGR)
         if self._color_order == "BGR":
-            base |= 0x08  # 設置BGR模式
-        
+            base |= 0x08
         return bytes([base])
-    
+
     def _get_inversion_cmd(self):
-        """獲取顏色反轉命令"""
         return 0x21 if self._inverted else 0x20
-    
+
     def _update_rotation(self):
-        """更新旋轉設置"""
         self.write_cmd_data(0x36, self._get_madctl_cmd())
-    
+
     def _update_color_order(self):
-        """更新顏色順序設置"""
         self.write_cmd_data(0x36, self._get_madctl_cmd())
-    
+
     def _update_inversion(self):
-        """更新顏色反轉設置"""
         self.write_cmd(self._get_inversion_cmd())
 
-
-class ST7789T3(ST7789):
-    """ST7789T3 變體驅動，可能有一些特定的初始化參數"""
-    def __init__(self, spi, dc, cs, rst, width=240, height=240, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, rotation, color_order, invert, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
-    
-    def init(self):
-        # ST7789T3 可能有不同的初始化序列
-        init_cmds = [
-            (0x01, None),       # 軟復位
-            (0x11, None),       # 退出睡眠模式
-            (0x3A, self._get_colmod_cmd()),
-            (0x36, self._get_madctl_cmd()),    # 內存訪問控制
-            (0xB2, b'\x0C\x0C\x00\x33\x33'),   # 門控制
-            (0xB7, b'\x35'),    # 門控制
-            (0xBB, b'\x1F'),    # VCOM設置 (T3可能不同)
-            (0xC0, b'\x2C'),    # LCM控制
-            (0xC2, b'\x01'),
-            (0xC3, b'\x12'),
-            (0xC4, b'\x20'),
-            (0xC6, b'\x0F'),
-            (self._get_inversion_cmd(), None), # 顏色反轉
-            (0xD0, b'\xA4\xA1'),
-            (0x29, None)        # 開啟顯示
-        ]
-        
-        for cmd, data in init_cmds:
-            self.write_cmd_data(cmd, data)
-            _sleep_ms(10)
-        
-        self.set_window(0, 0)
-
-
 class GC9A01(TFT):
-    def __init__(self, spi, dc, cs, rst, width, height, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+    def __init__(self, spi=None, dc=None, cs=None, rst=None, width=240, height=240,
+                 rotation=0, color_order="RGB", invert=False,
+                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi=spi, dc=dc, cs=cs, rst=rst,
+                         width=width, height=height,
+                         pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel,
+                         adapter=adapter)
         self._rotation = rotation
         self._color_order = color_order.upper()
         self._inverted = invert
@@ -547,21 +754,27 @@ class GC9A01(TFT):
 
 
 class ILI9341(TFT):
-    def __init__(self, spi, dc, cs, rst, width=240, height=320, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+    def __init__(self, spi=None, dc=None, cs=None, rst=None, width=240, height=320,
+                 rotation=0, color_order="RGB", invert=False,
+                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi=spi, dc=dc, cs=cs, rst=rst,
+                         width=width, height=height,
+                         pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel,
+                         adapter=adapter)
         self._rotation = rotation
         self._color_order = color_order.upper()
         self._inverted = invert
         self.init()
     
     def init(self):
-        # 硬體復位序列
-        self.rst(1)
-        _sleep_ms(5)
-        self.rst(0)
-        _sleep_ms(20)
-        self.rst(1)
-        _sleep_ms(150)
+        # 硬體復位序列 (TFT.__init__ 已透過 _bus.reset() 做過一次，此為額外二次確認)
+        if self.rst is not None:
+            self.rst.value(1)
+            _sleep_ms(5)
+            self.rst.value(0)
+            _sleep_ms(20)
+            self.rst.value(1)
+            _sleep_ms(150)
         
         # ILI9341 初始化命令序列
         init_cmds = [
@@ -634,8 +847,13 @@ class ILI9341(TFT):
         
         
 class GC9D01(TFT):
-    def __init__(self, spi, dc, cs, rst, width=240, height=240, rotation=0, color_order="RGB", invert=False, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+    def __init__(self, spi=None, dc=None, cs=None, rst=None, width=240, height=240,
+                 rotation=0, color_order="RGB", invert=False,
+                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi=spi, dc=dc, cs=cs, rst=rst,
+                         width=width, height=height,
+                         pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel,
+                         adapter=adapter)
         self._rotation = rotation
         self._color_order = color_order.upper()
         self._inverted = invert
@@ -807,8 +1025,13 @@ class GC9D01(TFT):
 
 
 class NV3030B(TFT):
-    def __init__(self, spi, dc, cs, rst, width, height, rotation=0, color_order="BGR", invert=True, pixel_format="RGB565_BE", bytes_per_pixel=2):
-        super().__init__(spi, dc, cs, rst, width, height, pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel)
+    def __init__(self, spi=None, dc=None, cs=None, rst=None, width=240, height=240,
+                 rotation=0, color_order="BGR", invert=True,
+                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi=spi, dc=dc, cs=cs, rst=rst,
+                         width=width, height=height,
+                         pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel,
+                         adapter=adapter)
         self._rotation = rotation
         self._color_order = color_order.upper()
         self._inverted = invert
@@ -831,32 +1054,7 @@ class NV3030B(TFT):
         self._win_x1 = int(x1)
         self._win_y1 = int(y1_data)
 
-        spi_q = getattr(self, '_spi_q', None)
-        if spi_q is not None:
-            spi_q.wait_all()
-            self.cs(0)
-            self.dc(0)
-            self.spi.write(bytearray([0x2A]))
-            spi_q.wait_all()
-            self.dc(1)
-            self.spi.write(bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
-            spi_q.wait_all()
-            self.dc(0)
-            self.spi.write(bytearray([0x2B]))
-            spi_q.wait_all()
-            self.dc(1)
-            self.spi.write(bytes([y0_data >> 8, y0_data & 0xFF, y1_data >> 8, y1_data & 0xFF]))
-            spi_q.wait_all()
-            self.dc(0)
-            self.spi.write(bytearray([0x2C]))
-            self.dc(1)
-            return
-        lcd_bus = getattr(self, '_lcd_bus', None)
-        if lcd_bus is not None:
-            lcd_bus.tx_param(0x2A, bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
-            lcd_bus.tx_param(0x2B, bytes([y0_data >> 8, y0_data & 0xFF, y1_data >> 8, y1_data & 0xFF]))
-            return
-
+        # 統一走 adapter（可以是 SpiBusAdapter / lcd_bus / QSPI）
         self.write_cmd(0x2A)
         self.write_data(bytes([x0 >> 8, x0 & 0xFF, x1 >> 8, x1 & 0xFF]))
         self.write_cmd(0x2B)
@@ -864,12 +1062,13 @@ class NV3030B(TFT):
         self.write_cmd(0x2C)
 
     def init(self):
-        self.rst(1)
-        time.sleep_ms(10)
-        self.rst(0)
-        time.sleep_ms(10)
-        self.rst(1)
-        time.sleep_ms(50)
+        if self.rst is not None:
+            self.rst.value(1)
+            time.sleep_ms(10)
+            self.rst.value(0)
+            time.sleep_ms(10)
+            self.rst.value(1)
+            time.sleep_ms(50)
 
         self.write_cmd_data(0x36, b'\x08')
 
@@ -937,3 +1136,85 @@ class NV3030B(TFT):
 
     def _update_inversion(self):
         self.write_cmd(self._get_inversion_cmd())
+
+
+class RM67162(TFT):
+    def __init__(self, spi=None, dc=None, cs=None, rst=None, width=240, height=536,
+                 rotation=0, color_order="RGB", invert=False,
+                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi=spi, dc=dc, cs=cs, rst=rst,
+                         width=width, height=height,
+                         pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel,
+                         adapter=adapter)
+        self._rotation = rotation
+        self._color_order = color_order.upper()
+        self._inverted = invert
+        self.init()
+
+    def _get_madctl_cmd(self):
+        rotation_settings = {0:0x00, 90:0x60, 180:0xC0, 270:0xA0}
+        base = rotation_settings.get(self._rotation, 0x00)
+        if self._color_order == "BGR":
+            base |= 0x08
+        return bytes([base])
+
+    def _update_rotation(self):
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+
+    def _update_color_order(self):
+        self.write_cmd_data(0x36, self._get_madctl_cmd())
+
+    def _update_inversion(self):
+        self.write_cmd(0x21 if self._inverted else 0x20)
+
+    def init(self):
+        """RM67162 QSPI init — 參照 Waveshare C rm67162_qspi_init[]"""
+        if self.rst is not None:
+            self.rst.value(1)
+            _sleep_ms(10)
+            self.rst.value(0)
+            _sleep_ms(300)
+            self.rst.value(1)
+            _sleep_ms(200)
+        # 重試 3 次 (C: "Initialize multiple times to prevent init failure")
+        for _ in range(3):
+            self.write_cmd_data(0x11, None)      # Sleep Out
+            _sleep_ms(120)
+            self.write_cmd_data(0x36, self._get_madctl_cmd())
+            self.write_cmd_data(0x3A, b'\x55')   # COLMOD 16-bit
+            self.write_cmd_data(0x51, b'\x00')   # Brightness 0
+            self.write_cmd_data(0x29, None)      # Display On
+            _sleep_ms(20)
+            self.write_cmd_data(0x51, b'\xD0')   # Brightness MAX
+
+
+class SH8601(TFT):
+    """Waveshare AMOLED 1.91" 536x240 QSPI (SH8601)"""
+    def __init__(self, spi=None, dc=None, cs=None, rst=None, width=536, height=240,
+                 rotation=0, color_order="RGB", invert=False,
+                 pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None):
+        super().__init__(spi=spi, dc=dc, cs=cs, rst=rst,
+                         width=width, height=height,
+                         pixel_format=pixel_format, bytes_per_pixel=bytes_per_pixel,
+                         adapter=adapter)
+        self._rotation = rotation
+        self._color_order = color_order.upper()
+        self._inverted = invert
+        self.init()
+
+    def init(self):
+        if self.rst is not None:
+            self.rst.value(1)
+            _sleep_ms(10)
+            self.rst.value(0)
+            _sleep_ms(150)
+            self.rst.value(1)
+            _sleep_ms(200)
+        self.write_cmd_data(0x11, None)
+        _sleep_ms(120)
+        self.write_cmd_data(0x36, b'\xF0')
+        self.write_cmd_data(0x3A, b'\x55')
+        self.write_cmd_data(0x2A, b'\x00\x00\x02\x17')
+        self.write_cmd_data(0x2B, b'\x00\x00\x00\xEF')
+        self.write_cmd_data(0x51, b'\xFF')
+        self.write_cmd_data(0x29, None)

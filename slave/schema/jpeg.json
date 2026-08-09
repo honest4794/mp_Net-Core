@@ -10,28 +10,11 @@
       ]
     },
     {
-      "cmd": "0x3102",
-      "name": "JPEG_CONFIG_LOAD",
-      "payload": [
-        {"name": "config_path", "type": "str_u16len"}
-      ]
-    },
-    {
       "cmd": "0x3103",
       "name": "JPEG_PLAYER_PARAMS",
       "payload": [
         {"name": "pace_ms", "type": "u16"},
-        {"name": "loop", "type": "u8"},
-        {"name": "blend_mode", "type": "u8"}
-      ]
-    },
-    {
-      "cmd": "0x3104",
-      "name": "JPEG_HOOK_CTL",
-      "payload": [
-        {"name": "enable", "type": "u8"},
-        {"name": "hook_type", "type": "u8"},
-        {"name": "config_json", "type": "str_u16len"}
+        {"name": "loop", "type": "u8"}
       ]
     },
     {
@@ -48,6 +31,13 @@
         {"name": "total", "type": "u32"},
         {"name": "fps", "type": "u16"},
         {"name": "err", "type": "str_u16len"}
+      ]
+    },
+    {
+      "cmd": "0x3107",
+      "name": "JPEG_SOURCE_SET",
+      "payload": [
+        {"name": "source", "type": "str_u16len"}
       ]
     }
   ]

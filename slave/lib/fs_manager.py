@@ -22,7 +22,29 @@ class FileSystemManager:
         self._scan_files = []
         self._scan_manifest = {}
         self._scan_idx = 0
-        
+
+        # === 統一資料層 (RAM / SD-raw / FAT) ===
+        # RAM cache：路徑前綴 /ram 的暫存區 (斷電消失)
+        self._ram = {}
+
+        # 初始化時檢查 alloc.json 決定讀寫模式
+        #   alloc.json 存在 → raw 高速模式 (fast_io.Storage)
+        #   alloc.json 不存在 → FAT 模式 (os.open/readinto)
+        self._raw_mode = False
+        self._raw = None
+        try:
+            os.stat("/sd/alloc.json")
+            from lib.sys_bus import bus
+            if bus.get_service("sd_raw") is not None:
+                from lib.fast_io import Storage
+                self._raw = Storage()
+                self._raw_mode = True
+                print("✅ [FS] SD-raw backend ready (alloc.json found)")
+        except Exception:
+            pass
+        if not self._raw_mode:
+            print("📂 [FS] FAT mode (alloc.json not found)")
+
         # Session State for File Upload
         self.session = {
             "active": False,
@@ -35,7 +57,10 @@ class FileSystemManager:
             "last_error": None,
             "last_sha_hex": ""
         }
-        
+
+        # 串流讀取狀態
+        self._str_kind = None
+
         self.load_manifest()
 
     def load_manifest(self):
@@ -265,6 +290,279 @@ class FileSystemManager:
             try: os.remove(temp_path)
             except: pass
             return False, str(e)
+
+    # ==================== Unified Data Layer ====================
+    # 路徑前綴決定目的地：
+    #   /ram/...  -> RAM cache (暫存，最快)
+    #   /sd/...   -> SD 永久儲存 (依 _raw_mode 決定走 raw 或 FAT)
+    #   其他/相對路徑 -> 預設補 /sd
+    #
+    # raw 模式 (alloc.json 存在)：讀寫直接走 fast_io.Storage
+    # FAT 模式 (alloc.json 不存在)：讀寫走 os.open/readinto
+
+    def resolve(self, path):
+        """正規化路徑前綴。回傳 (kind, full_path, raw_name)
+        kind: 'ram' | 'sd'
+        full_path: FAT 用的完整路徑 (/ram/... 或 /sd/...)
+        raw_name : SD-raw alloc 用的鍵名 (去掉 /sd 前綴)
+        """
+        p = str(path)
+        if not p.startswith("/"):
+            p = "/" + p
+        if p == "/ram" or p.startswith("/ram/"):
+            return ("ram", p, p[len("/ram"):].lstrip("/"))
+        if p == "/sd" or p.startswith("/sd/"):
+            return ("sd", p, p[len("/sd"):].lstrip("/"))
+        return ("sd", "/sd" + p, p.lstrip("/"))
+
+    def _ensure_parent(self, full_path):
+        parent = "/".join(full_path.split("/")[:-1])
+        if not parent:
+            return
+        curr = ""
+        for part in parent.split("/"):
+            if not part:
+                continue
+            curr += "/" + part
+            try:
+                os.stat(curr)
+            except Exception:
+                try:
+                    os.mkdir(curr)
+                except Exception:
+                    pass
+
+    def write(self, path, data):
+        """統一寫入：依路由 + 模式寫入，回傳 True/False。"""
+        kind, full, raw_name = self.resolve(path)
+
+        if kind == "ram":
+            self._ram[full] = bytes(data)
+            return True
+
+        if self._raw_mode and self._raw is not None and raw_name:
+            try:
+                self._raw.write_file(raw_name, data)
+                return True
+            except Exception as e:
+                print("⚠️ [FS] raw write failed:", e)
+
+        # FAT 落地
+        try:
+            self._ensure_parent(full)
+            tmp = full + ".tmp"
+            h = hashlib.sha256()
+            mv = memoryview(data)
+            with open(tmp, "wb") as f:
+                f.write(mv)
+            size = len(mv)
+            h.update(mv)
+            try:
+                os.stat(full)
+                os.remove(full)
+            except Exception:
+                pass
+            os.rename(tmp, full)
+            self.update_manifest_entry(full, size, ubinascii.hexlify(h.digest()).decode())
+            return True
+        except Exception as e:
+            print("❌ [FS] FAT write failed:", e)
+            try:
+                os.remove(full + ".tmp")
+            except Exception:
+                pass
+            return False
+
+    def read(self, path):
+        """統一讀取整個檔案。回傳 bytes 或 None。"""
+        kind, full, raw_name = self.resolve(path)
+
+        if kind == "ram":
+            return self._ram.get(full)
+
+        if self._raw_mode and self._raw is not None and raw_name:
+            try:
+                return bytes(self._raw.read_all(raw_name))
+            except Exception:
+                pass
+        try:
+            with open(full, "rb") as f:
+                return f.read()
+        except Exception:
+            return None
+
+    # ════════════════════════════════════════════════════════
+    #  串流讀取 API (begin_read / read_into / seek / tell / end_read)
+    #  行為類似 file object，內部根據路徑和模式自動路由。
+    # ════════════════════════════════════════════════════════
+
+    def begin_read(self, path):
+        """開始串流讀取。回傳總位元組數，0 表示失敗。"""
+        self._end_read()
+        kind, full, raw_name = self.resolve(path)
+
+        if kind == "ram":
+            data = self._ram.get(full)
+            if data is None:
+                return 0
+            self._str_kind = "ram"
+            self._str_data = data
+            self._str_pos = 0
+            return len(data)
+
+        if self._raw_mode and self._raw is not None and raw_name:
+            try:
+                size = self._raw.read_begin(raw_name)
+                self._str_kind = "raw"
+                return size
+            except Exception:
+                pass
+
+        try:
+            f = open(full, "rb")
+            self._str_kind = "fat"
+            self._str_fp = f
+            try:
+                st = os.stat(full)
+                return st[6]
+            except Exception:
+                return 0
+        except Exception:
+            return 0
+
+    def read_into(self, buf):
+        """讀取下一塊資料到 buf。回傳位元組數，0 表示結束。"""
+        k = self._str_kind
+        if k == "ram":
+            data = self._str_data
+            pos = self._str_pos
+            if pos >= len(data):
+                return 0
+            n = min(len(buf), len(data) - pos)
+            buf[:n] = data[pos:pos + n]
+            self._str_pos = pos + n
+            return n
+        if k == "raw":
+            return self._raw.read_into(buf)
+        if k == "fat":
+            return self._str_fp.readinto(buf)
+        return 0
+
+    def seek(self, offset):
+        """設定讀取位置 (類似 file.seek)。"""
+        k = self._str_kind
+        if k == "ram":
+            if offset < 0:
+                offset = 0
+            if offset > len(self._str_data):
+                offset = len(self._str_data)
+            self._str_pos = offset
+        elif k == "raw":
+            self._raw.seek(offset)
+        elif k == "fat":
+            self._str_fp.seek(offset)
+
+    def tell(self):
+        """回傳目前讀取位置 (類似 file.tell)。"""
+        k = self._str_kind
+        if k == "ram":
+            return self._str_pos
+        if k == "raw":
+            return self._raw.tell()
+        if k == "fat":
+            return self._str_fp.tell()
+        return 0
+
+    def end_read(self):
+        """結束串流讀取，釋放資源。"""
+        self._end_read()
+
+    def _end_read(self):
+        k = self._str_kind
+        if k == "raw":
+            try:
+                self._raw.read_end()
+            except Exception:
+                pass
+        elif k == "fat" and hasattr(self, "_str_fp"):
+            try:
+                self._str_fp.close()
+            except Exception:
+                pass
+        self._str_kind = None
+
+    def open_read(self, path):
+        """回傳可讀的 file-like 物件供串流讀取；RAM 則回 BytesIO。
+        大檔串流建議使用 begin_read / read_into / seek / tell / end_read。
+        """
+        kind, full, raw_name = self.resolve(path)
+        if kind == "ram":
+            data = self._ram.get(full)
+            if data is None:
+                return None
+            import io
+            return io.BytesIO(data)
+        try:
+            return open(full, "rb")
+        except Exception:
+            return None
+
+    def exists(self, path):
+        kind, full, raw_name = self.resolve(path)
+        if kind == "ram":
+            return full in self._ram
+        if self._raw_mode and self._raw is not None and raw_name:
+            try:
+                if self._raw._alloc.find(raw_name) is not None:
+                    return True
+            except Exception:
+                pass
+        try:
+            os.stat(full)
+            return True
+        except Exception:
+            return False
+
+    def list(self, folder="/sd"):
+        kind, full, raw_name = self.resolve(folder)
+        if kind == "ram":
+            prefix = full.rstrip("/") + "/"
+            return [k for k in self._ram if k.startswith(prefix) or k == full]
+        try:
+            return [full.rstrip("/") + "/" + n for n in os.listdir(full)]
+        except Exception:
+            return []
+
+    def list_jpegs(self, folder="/sd"):
+        from lib.media_source import list_jpegs as _lj
+        kind, full, raw_name = self.resolve(folder)
+        if kind == "ram":
+            names = [k for k in self._ram
+                     if k.lower().endswith(".jpg") or k.lower().endswith(".jpeg")]
+            names.sort()
+            return names
+        try:
+            return _lj(full)
+        except Exception:
+            return []
+
+    def remove(self, path):
+        """統一刪除：RAM / SD-raw / FAT 各自更新 table。"""
+        kind, full, raw_name = self.resolve(path)
+        if kind == "ram":
+            self._ram.pop(full, None)
+            return True
+        ok = False
+        if self._raw_mode and self._raw is not None and raw_name:
+            try:
+                if self._raw._alloc.find(raw_name) is not None:
+                    self._raw.remove(raw_name)
+                    ok = True
+            except Exception:
+                pass
+        if self.delete_file(full):
+            ok = True
+        return ok
 
     # ==================== Other Operations ====================
 

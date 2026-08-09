@@ -1,9 +1,15 @@
-from lib.ESP_Boot import *
-from lib.LEDController import *
+# boot.py
+# 硬體初始化 — config.json (扁平 {enable, list}) → driver init_xxx(bus) → bus service
+#
+# 流程:
+#   Phase 1: 各 driver gpios() 回報腳位 → bus.gpio_claim → validate (衝突檢查)
+#   Phase 2: 線性呼叫 init_xxx(bus) 建立硬體 Object 並註冊到 bus
+#
+# 要停用某 driver：註解 Phase 1 與 Phase 2 對應兩行即可。
+
 from lib.ConfigManager import *
 from lib.sys_bus import bus
-from lib.log_service import get_log
-import machine, os, ubinascii
+import ubinascii, machine
 
 try:
     bus.slave_id = ubinascii.hexlify(machine.unique_id()).decode().upper()
@@ -13,229 +19,67 @@ except Exception:
     except Exception:
         bus.slave_id = "UNKNOWN"
 
-
-def exists(path):
-    try:
-        os.stat(path)
-    except OSError:
-        return False
-    return True
-
-
-def init_bus(sysBus):
-    
-    SPI_config = sysBus.shared['SPI']
-    spi_list = []
-    spi_by_id = {}
-    if SPI_config['enable']:
-        for i in SPI_config['list']:
-            spi = machine.SPI(i['id'],
-                baudrate=i['baudrate'],
-                polarity=i['polarity'],
-                phase=i['phase'],
-                sck=machine.Pin(i['GPIO']['sck']) if i['GPIO']['sck'] else None ,
-                mosi=machine.Pin(i['GPIO']['mosi']) if i['GPIO']['mosi'] else None ,
-                miso=machine.Pin(i['GPIO']['miso']) if i['GPIO']['miso'] else None
-            )
-            spi_list.append(spi)            
-            spi_by_id[i['id']] = spi
-        sysBus.register_service("spi_list", spi_list)
-        sysBus.register_service("spi_by_id", spi_by_id)
-        
-    I2C_config = sysBus.shared['I2C']
-    i2c_list = []
-    if I2C_config['enable']:
-        for i in I2C_config['list']:
-            i2c = machine.I2C(i['id'],
-                freq=i['freq'] if i['freq'] else None,
-                scl=machine.Pin(i['GPIO']['scl']) if i['GPIO']['scl'] else None ,
-                sda=machine.Pin(i['GPIO']['sda']) if i['GPIO']['sda'] else None 
-            )
-            i2c_list.append(i2c)            
-        sysBus.register_service("i2c_list", i2c_list)
-        
-        
-    return
-
-def init_led(sysBus):
-    
-    PCA9685_config = sysBus.shared['PCA9685']
-    pca9685_list = []
-    if PCA9685_config['enable']:
-        for i in PCA9685_config['list']:
-            if sysBus.shared['I2C']['enable']:
-                try:
-                    i2c_list = sysBus.get_service("i2c_list")
-                    for i2c in i2c_list:
-                        devices = i2c.scan()
-                        get_log().info(f"I2C Scan found: {[hex(d) for d in devices]}")
-                        for addr in devices:
-                            try:
-                                if addr != 112:
-                                    pca = PCA9685(i2c, address=addr)
-                                    pca.freq(1000)
-                                    pca9685_list.append(LEDController('i2c_LED', {'led_IO': pca, 'Q': 16, 'order': 'W'}))
-                            except Exception as e:
-                                get_log().error(f"❌ PCA9685 at {hex(addr)} error: {e}")
-                except Exception as e:
-                    get_log().error(f"❌ PCA9685 at {hex(i['address'])} error: {e}")
-        sysBus.register_service("pca9685_list", pca9685_list)
-    
-    
-    WS2812_config = sysBus.shared['WS2812']
-    ws2812_list = []
-    if WS2812_config['enable']:
-        import neopixel
-        for i in WS2812_config['list']:
-            pixel = neopixel.NeoPixel(machine.Pin(i['GPIO'], machine.Pin.OUT),i['Q'])
-            ws2812_list.append(LEDController('WS2812', {'led_IO': pixel, 'Q': i['Q'], 'order': i['order']}))
-            
-        sysBus.register_service("ws2812_list", ws2812_list)
-        
-        
-    APA102_config = sysBus.shared['APA102']
-    apa1022_list = []
-    if APA102_config['enable']:
-        if sysBus.shared['SPI']['enable']:
-            for i in APA102_config['list']:
-                try:
-                    spi_list = sysBus.get_service("spi_list")
-                    apa = APA102(spi_list[i['GPIO']['spi']], num_leds=i['Q'])
-                    apa1022_list.append(LEDController('APA102', {'led_IO': apa, 'Q': i['Q'], 'order': i['order']}))
-                except Exception as e:
-                    get_log().error(f"❌ APA102 at SPI ID {i['GPIO']['spi']} error: {e}")
-                        
-        sysBus.register_service("apa1022_list", apa1022_list)
-            
-    sysBus.register_service("led_list", apa1022_list + ws2812_list + pca9685_list)
-    return
-
-def init_st(sysBus):
-    try:
-        st_LED = LEDStreamer(sysBus.get_service("led_list"))
-        st_LED.show_all()
-        sysBus.register_service("st_LED", st_LED)
-    except Exception as e:
-        get_log().error(f"❌ st_LED init error: {e}")
-    return
+from driver.spi_drv      import init_spi,      gpios as g_spi
+from driver.pin_drv      import init_pin,      gpios as g_pin
+from driver.i2c_drv      import init_i2c,      gpios as g_i2c
+from driver.uart_drv     import init_uart,     gpios as g_uart
+from driver.pwm_drv      import init_pwm,      gpios as g_pwm
+from driver.i2s_drv      import init_i2s,      gpios as g_i2s
+from driver.sd_drv       import init_sd,       gpios as g_sd
+from driver.tft_drv      import init_tft,      gpios as g_tft
+from driver.enc_drv      import init_enc,      gpios as g_enc
+from driver.network_drv  import init_network
 
 
-def init_pwm(sysBus):
-    pwm_cfg = sysBus.shared.get('PWM', {})
-    if not pwm_cfg.get('enable', 0):
-        return
-    try:
-        from machine import Pin, PWM
-        pwm_list = []
-        for item in pwm_cfg.get('list', []):
-            gpio = item.get('GPIO')
-            if gpio is None:
-                continue
-            pwm = PWM(Pin(gpio), freq=1000, duty=0)
-            pwm_list.append(pwm)
-        sysBus.register_service("pwm_list", pwm_list)
-        get_log().info(f"PWM initialized: {len(pwm_list)} channel(s)")
-    except Exception as e:
-        get_log().error(f"❌ PWM init error: {e}")
-    return
+# ══════════════════════════════════════════════════════
+# Phase 1: GPIO claim + 衝突檢查
+#   (name, gpios_fn) — driver 透過 gpios(bus) 回報自己用的腳位
+# ══════════════════════════════════════════════════════
+DRIVERS = [
+    ("spi",  g_spi),
+    ("pin",  g_pin),
+    ("i2c",  g_i2c),
+    ("uart", g_uart),
+    ("pwm",  g_pwm),
+    ("i2s",  g_i2s),
+    ("sd",   g_sd),
+    ("tft",  g_tft),
+    ("enc",  g_enc),
+]
+
+for name, gpios_fn in DRIVERS:
+    for gpio, label in gpios_fn(bus).items():
+        bus.gpio_claim(gpio, name, label)
+
+bus.gpio_validate()
+bus.gpio_dump()
 
 
-def init_pin(sysBus):
-    pin_cfg = sysBus.shared.get('PIN', {})
-    if not pin_cfg.get('enable', 0):
-        return
-    try:
-        from machine import Pin
-        pin_list = []
-        for item in pin_cfg.get('list', []):
-            gpio = item.get('GPIO')
-            if gpio is None:
-                continue
-            mode = item.get('mode', 'OUT')
-            initial = item.get('initial', 0)
-            pull = item.get('pull')
-            if mode == 'IN':
-                pull_mode = None
-                if pull == 'UP':
-                    pull_mode = Pin.PULL_UP
-                elif pull == 'DOWN':
-                    pull_mode = Pin.PULL_DOWN
-                p = Pin(gpio, Pin.IN, pull=pull_mode)
-            else:
-                p = Pin(gpio, Pin.OUT, value=1 if initial else 0)
-            pin_list.append(p)
-        sysBus.register_service("pin_list", pin_list)
-        from lib.hw_manager import _init_pin_from_list
-        _init_pin_from_list()
-        get_log().info("PIN initialized: {} pin(s)".format(len(pin_list)))
-    except Exception as e:
-        get_log().error("PIN init error: {}".format(e))
-    return
-
-
-def _init_sd_spi(config, _phat):
-    sd = machine.SDCard(
-        slot=config['config'].get('slot', 2),
-        sck=config['GPIO']['sck'],
-        mosi=config['GPIO']['cmd'],
-        miso=config['GPIO']['data'][0],
-        cs=config['GPIO']['data'][3],
-        freq=config['config'].get('freq', 20_000_000),
-    )
-    os.mount(sd, _phat)
-
-
-def _init_sd_sdio(config, _phat):
-    sd = machine.SDCard(slot=config['config']['slot'], width=config['config']['width'],
-    sck=config['GPIO']['sck'], cmd=config['GPIO']['cmd'],
-    data=config['GPIO']['data'],
-    freq=config['config']['freq'])
-    os.mount(sd, _phat)
-
-
-def init_sd(sysBus):
-    config = sysBus.shared['SDcard']
-    _phat = ''
-    if config['enable'] and not exists(config["phat"]):
-        _phat = config["phat"]
-        try:
-            from esp32 import LDO
-            ldo = LDO(config['LDO']['id'], config['LDO']['mv'], adjustable=True)
-
-        except Exception as e:
-            get_log().error(f"LEO error: {e}")
-
-        slot = config['config'].get('slot', 0)
-        try:
-            if slot >= 2:
-                _init_sd_spi(config, _phat)
-            else:
-                _init_sd_sdio(config, _phat)
-        except Exception as e:
-            get_log().error(f"❌ SD card init error: {e}")
-
-    sysBus.register_service("data_Phat", _phat)
-    return
-
-# 網路初始化已移至 NetworkTask.on_start()
-init_bus(bus)
-init_led(bus)
-init_st(bus)
-init_pwm(bus)
+# ══════════════════════════════════════════════════════
+# Phase 2: 線性硬體初始化
+#   順序: 匯流排 (spi/pin/i2c/uart) → sd → tft → network
+#   driver 內部會檢查 bus.shared["XXX"]["enable"]，未啟用即跳過
+# ══════════════════════════════════════════════════════
+init_spi(bus)
 init_pin(bus)
+init_i2c(bus)
+init_uart(bus)
+# init_pwm(bus)
+# init_i2s(bus)
 init_sd(bus)
+init_tft(bus)
+init_enc(bus)
+init_network(bus)
 
-# 將 dp_config.json 加載到 bus.shared，供各 task 直接讀取
+
+# ── 統一資料層 (fs)：永遠確保 /sd 存在 + 註冊成 service "data" ──
+import os as _os
 try:
-    import json
-    for _p in ("/dp_config.json", "/sd/dp_config.json", "./dp_config.json"):
-        try:
-            with open(_p) as _f:
-                bus.shared["dp_config"] = json.loads(_f.read())
-            break
-        except Exception:
-            continue
+    _os.stat("/sd")
 except Exception:
-    bus.shared["dp_config"] = {}
-
-# LCD 初始化已移至 DisplayTask.on_start()
+    try:
+        _os.mkdir("/sd")
+    except Exception:
+        pass
+from lib.fs_manager import fs
+bus.register_service("data", fs)

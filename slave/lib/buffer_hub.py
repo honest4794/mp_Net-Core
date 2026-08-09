@@ -1,4 +1,3 @@
-import gc
 import micropython
 
 _IDLE = micropython.const(0)
@@ -8,10 +7,11 @@ _READING = micropython.const(2)
 _HEAP_CAPS_AVAILABLE = False
 _DMA_ALLOC = None
 _DMA_FREE = None
-_DMA_BOUNCE_SIZE = 32 * 1024
 
 
 def _import_heap_caps():
+    """懶載入並快取 heap_caps 模組（全專案唯一碰 heap_caps 的地方）。
+    成功後 _DMA_ALLOC / _DMA_FREE 指向 CAP_DMA 的 malloc/free。"""
     global _HEAP_CAPS_AVAILABLE, _DMA_ALLOC, _DMA_FREE
     if _HEAP_CAPS_AVAILABLE:
         return True
@@ -28,88 +28,63 @@ def _import_heap_caps():
         return False
 
 
-def _alloc_dma(size):
+def alloc_dma(size):
+    """優先 heap_caps CAP_DMA（內部 SRAM，跨 core / 週邊 DMA 一致性佳），
+    不可用則 fallback bytearray。回傳 (buf, is_dma)：
+    - buf 永遠可用（不是 None）
+    - is_dma=True 表示需用 free_dma() 釋放；False 表示交給 GC 即可。
+
+    這是全專案取得「DMA 記憶體」的統一入口（等價於 ring 的 try_dma 需求）。
+    """
     if _import_heap_caps():
         try:
             buf = _DMA_ALLOC(size)
             if buf is not None:
-                return buf
+                return buf, True
         except Exception:
             pass
-    return None
+    return bytearray(size), False
 
 
-def _free_dma(buf):
-    if _DMA_FREE and buf is not None:
+def free_dma(buf, is_dma):
+    """釋放 alloc_dma 配出的 buf。is_dma=False 時 no-op（bytearray 交給 GC）。"""
+    if buf is not None and is_dma and _DMA_FREE:
         try:
             _DMA_FREE(buf)
         except Exception:
             pass
 
 
-@micropython.viper
-def _viper_copy(dst, src, n: int):
-    d = ptr8(dst)
-    s = ptr8(src)
-    for i in range(n):
-        d[i] = s[i]
-
-
-class DmaBounceBuf:
-    def __init__(self, size=_DMA_BOUNCE_SIZE):
-        self._buf = _alloc_dma(size)
-        self.size = size
-
-    @property
-    def available(self):
-        return self._buf is not None
-
-    def get(self):
-        return self._buf
-
-    def copy_into(self, target_mv, source_mv, n):
-        if self._buf and n <= self.size:
-            self._buf[:n] = source_mv[:n]
-            target_mv[:n] = self._buf[:n]
-        else:
-            target_mv[:n] = source_mv[:n]
-
-    def prep_for_spi(self, source_mv, n):
-        if self._buf and n <= self.size:
-            self._buf[:n] = source_mv[:n]
-            return self._buf[:n]
-        return source_mv[:n]
-
-    def close(self):
-        _free_dma(self._buf)
-        self._buf = None
-
-
 class AtomicStreamHub:
+    """單寫入者 / 單讀取者 (SPSC) 無鎖環形緩衝，供雙 CPU 以 TX/RX 一對 ring 交換資料。
+
+    兩種使用模式（涵蓋所有場景）：
+      • copy 模式：write_from(src) → read_into(dst)   — 整塊資料塞入/取出
+      • view 模式：get_write_view()→commit()          — 直接在 slot 裡操作，零拷貝
+                  get_read_view()→release_read()
+
+    try_dma=True 時 slot 配在內部 SRAM（CAP_DMA），跨 core 讀寫更快且無 cache
+    一致性問題；否則用普通 bytearray。
+    """
     IDLE = _IDLE
     READY = _READY
     READING = _READING
 
-    def __init__(self, size, num_buffers=3, try_dma=False, try_bounce=False):
-        self._dma_bufs = None
-        self._bufs = []
+    def __init__(self, size, num_buffers=3, try_dma=False):
+        self._dma_bufs = None      # 僅記錄需 free_dma 的 slot（is_dma=True 者）
+        self._bufs = []            # 底層 buffer（DMA 或 bytearray，一致為 memoryview）
         self._views = []
 
         dma_used = 0
         for i in range(num_buffers):
-            if try_dma:
-                dma_buf = _alloc_dma(size)
-                if dma_buf is not None:
-                    if self._dma_bufs is None:
-                        self._dma_bufs = []
-                    self._dma_bufs.append(dma_buf)
-                    self._bufs.append(None)
-                    self._views.append(memoryview(dma_buf))
-                    dma_used += 1
-                    continue
-            b = bytearray(size)
-            self._bufs.append(b)
-            self._views.append(memoryview(b))
+            buf, is_dma = alloc_dma(size) if try_dma else (bytearray(size), False)
+            if is_dma:
+                if self._dma_bufs is None:
+                    self._dma_bufs = []
+                self._dma_bufs.append(buf)
+                dma_used += 1
+            self._bufs.append(buf)
+            self._views.append(memoryview(buf))
 
         self._status = [_IDLE] * num_buffers
         self._w_ptr = 0
@@ -120,16 +95,7 @@ class AtomicStreamHub:
         self._last_read_idx = -1
         self._dma_count = dma_used
 
-        self._bounce = _alloc_dma(_DMA_BOUNCE_SIZE) if try_bounce else None
-
-        tag = ""
-        parts = []
-        if dma_used > 0:
-            parts.append("DMA:{}".format(dma_used))
-        if self._bounce is not None:
-            parts.append("bounce")
-        if parts:
-            tag = " [{}]".format(",".join(parts))
+        tag = " [DMA:{}]".format(dma_used) if dma_used > 0 else ""
         print("🚀 [BufferHub] Ready: {} KB total{}".format((size * num_buffers) // 1024, tag))
 
     @property
@@ -138,23 +104,25 @@ class AtomicStreamHub:
 
     @micropython.native
     def write_from(self, source):
+        """copy 模式寫入：把 source 整塊複製進當前 slot。滿了回 False。"""
         ptr = self._w_ptr
         if self._status[ptr] != _IDLE:
             return False
-        _viper_copy(self._views[ptr], source, self.size)
+        self._views[ptr][:] = source
         self._status[ptr] = _READY
         self._w_ptr = (ptr + 1) % self.num_buffers
         return True
 
     @micropython.native
     def read_into(self, target):
+        """copy 模式讀取：把當前 slot 整塊複製進 target。空了回 False。"""
         if self._last_read_idx != -1:
             self._status[self._last_read_idx] = _IDLE
             self._last_read_idx = -1
         ptr = self._r_ptr
         if self._status[ptr] != _READY:
             return False
-        _viper_copy(target, self._views[ptr], self.size)
+        target[:] = self._views[ptr]
         self._status[ptr] = _IDLE
         self._r_ptr = (ptr + 1) % self.num_buffers
         return True
@@ -176,6 +144,8 @@ class AtomicStreamHub:
 
     @micropython.native
     def get_write_view(self):
+        """view 模式寫入：取出當前 slot 的 memoryview 直接寫，完事呼叫 commit()。
+        滿了回 None。"""
         ptr = self._w_ptr
         if self._status[ptr] != _IDLE:
             return None
@@ -183,6 +153,7 @@ class AtomicStreamHub:
 
     @micropython.native
     def commit(self):
+        """把 get_write_view() 取出的 slot 標記為 READY 並推進寫指標。"""
         ptr = self._w_ptr
         if self._status[ptr] == _IDLE:
             self._status[ptr] = _READY
@@ -190,6 +161,8 @@ class AtomicStreamHub:
 
     @micropython.native
     def get_read_view(self):
+        """view 模式讀取：取出當前 READY slot 的 memoryview 直接讀，完事呼叫
+        release_read()。空了回 None。"""
         if self._last_read_idx != -1:
             self._status[self._last_read_idx] = _IDLE
             self._last_read_idx = -1
@@ -203,6 +176,7 @@ class AtomicStreamHub:
 
     @micropython.native
     def release_read(self):
+        """歸還 get_read_view() 取出的 slot。"""
         if self._last_read_idx != -1:
             self._status[self._last_read_idx] = _IDLE
             self._last_read_idx = -1
@@ -210,28 +184,15 @@ class AtomicStreamHub:
     def force_get_view(self):
         return self._views[self._r_ptr]
 
-    def bounce_into(self, dst_mv, src_mv, n):
-        if self._bounce and n <= _DMA_BOUNCE_SIZE:
-            self._bounce[:n] = src_mv[:n]
-            dst_mv[:n] = self._bounce[:n]
-        else:
-            dst_mv[:n] = src_mv[:n]
-
     @property
     def dma_count(self):
         return self._dma_count
 
-    @property
-    def has_bounce(self):
-        return self._bounce is not None
-
     def close(self):
         if self._dma_bufs:
             for b in self._dma_bufs:
-                _free_dma(b)
+                free_dma(b, True)
             self._dma_bufs = None
-        _free_dma(self._bounce)
-        self._bounce = None
         self._bufs = []
         self._views = []
         self._status = []

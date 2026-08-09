@@ -75,8 +75,6 @@ class LogTask(Task):
 
         rows = self._rows
         others = self._others
-        if not rows and not others and not self._cpu0 and not self._cpu1:
-            return
 
         now = time.ticks_ms()
         from lib.sys_bus import bus
@@ -86,6 +84,12 @@ class LogTask(Task):
         if time.ticks_diff(now, self._last_print_ms) < interval:
             return
         self._last_print_ms = now
+
+        log = get_log()
+        if not rows and not others and not self._cpu0 and not self._cpu1:
+            # 沒有訂閱任何 metrics 時，仍需定期 flush 一般 info/warn/error 日誌。
+            log.flush()
+            return
 
         tm = bus.get_service("task_manager")
         live_names = None
@@ -128,5 +132,4 @@ class LogTask(Task):
             print("[IMMEDIATE]")
             for line in out:
                 print("  - " + line)
-            log = get_log()
-            log.flush()
+        log.flush()
