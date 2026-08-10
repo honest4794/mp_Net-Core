@@ -82,6 +82,6 @@ def run():
 全部組合都失敗 → 問題在硬體層，依序檢查:
   1. SD 卡有插好? 換一張卡 / 清潔接點
   2. 三用電錶量 SD 插槽 VDD(第 4 腳) 對 GND: 必須 ≈3.3V
-     (boot 的 esp32.LDO 是 P4 API，S3 上會失敗; 若板子靠它供電 → 卡沒電)
+     (LDO 由 machine.SDCard 內部管理: P4 預設取得 channel 4，S3 無此硬體)
   3. CMD / D0-D3 到 3.3V 的外部上拉電阻 (10kΩ) 是否焊接
   4. 腳位與實際接線是否一致: sck={} cmd={} data={}""".format(sck, cmd, data))

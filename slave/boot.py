@@ -59,17 +59,50 @@ bus.gpio_dump()
 # Phase 2: 線性硬體初始化
 #   順序: 匯流排 (spi/pin/i2c/uart) → sd → tft → network
 #   driver 內部會檢查 bus.shared["XXX"]["enable"]，未啟用即跳過
+#
+#   每個 driver 獨立 try/except：單一失敗不會中斷後續 driver 與 fs 服務。
+#   失敗訊息用 immediate() (boot 期間 log_task_ready 未設 → 直接 print)，
+#   結尾再印一份 ok/FAIL 摘要 + flush() 排出 driver 內部累積的 info/warn。
+#
+#   開關 System.boot_strict:
+#     0 (預設) = best-effort，繼續開機
+#     1        = 任一 driver 失敗即 raise 中止整個 boot
 # ══════════════════════════════════════════════════════
-init_spi(bus)
-init_pin(bus)
-init_i2c(bus)
-init_uart(bus)
-# init_pwm(bus)
-# init_i2s(bus)
-init_sd(bus)
-init_tft(bus)
-init_enc(bus)
-init_network(bus)
+from lib.log_service import get_log
+
+_strict = bool(bus.shared.get("System", {}).get("boot_strict", 0))
+_boot_status = []   # [(name, "ok"/"FAIL", err_str)]
+
+
+def _init(name, fn):
+    try:
+        fn(bus)
+        _boot_status.append((name, "ok", ""))
+    except Exception as e:
+        get_log().immediate("[boot] {} FAIL: {}".format(name, e))
+        _boot_status.append((name, "FAIL", str(e)))
+        if _strict:
+            raise
+
+
+_init("spi",     init_spi)
+_init("pin",     init_pin)
+_init("i2c",     init_i2c)
+_init("uart",    init_uart)
+# _init("pwm",   init_pwm)
+# _init("i2s",   init_i2s)
+_init("sd",      init_sd)
+_init("tft",     init_tft)
+_init("enc",     init_enc)
+_init("network", init_network)
+
+_oks   = [n for n, s, _ in _boot_status if s == "ok"]
+_fails = [(n, e) for n, s, e in _boot_status if s == "FAIL"]
+print("[BOOT] ok  : {}".format(", ".join(_oks) if _oks else "(none)"))
+if _fails:
+    print("[BOOT] FAIL: {}".format(
+        ", ".join("{} ({})".format(n, e) for n, e in _fails)))
+get_log().flush()   # 排出 driver 內部 get_log().info/warn/error 累積的訊息
 
 
 # ── 統一資料層 (fs)：永遠確保 /sd 存在 + 註冊成 service "data" ──

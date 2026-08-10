@@ -2,6 +2,7 @@
     "scan_ignore": ["/sd"],
     "System": {
         "dual_core_mode": "0",
+        "boot_strict": 0,
         "c_lum": 1.0,
         "hostname": "",
         "refresh_rate_ms": 1,
@@ -99,7 +100,6 @@
     "SDcard": {
         "enable": 1,
         "phat": "/sd",
-        "LDO": { "id": 4, "mv": 3300 },
         "config": { "slot": 0, "width": 4, "freq": 40000000 },
         "GPIO": {
             "_comment": "sck=CLK/SCK, cmd=CMD/MOSI, [D0/MISO, D1/IRQ, D2/NC, D3/CS]",

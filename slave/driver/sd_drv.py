@@ -1,9 +1,12 @@
 """
 sd_drv.py — SD 卡管理
 
-設定來源: bus.shared["SDcard"]  ({enable, phat, LDO, config, GPIO})
+設定來源: bus.shared["SDcard"]  ({enable, phat, config, GPIO})
 產物:    bus.register_service("data_Phat", phat)
          bus.register_service("sd_raw", sd)
+
+LDO 電源由 machine.SDCard 內部管理 (P4 預設取得 channel 4，
+S3 無 LDO 硬體、ldo kwarg 不編譯進去)，driver 層不介入。
 """
 import machine
 import os
@@ -19,13 +22,6 @@ def init_sd(sysbus=None):
         return ""
 
     phat = cfg.get("phat", "/sd")
-
-    try:
-        from esp32 import LDO
-        ldo_cfg = cfg.get("LDO", {})
-        LDO(ldo_cfg.get("id", 4), ldo_cfg.get("mv", 3300), adjustable=True)
-    except Exception as e:
-        get_log().error("LDO error: {}".format(e))
 
     sd_cfg = cfg.get("config", {})
     slot = sd_cfg.get("slot", 0)
