@@ -361,16 +361,43 @@ def _pick_name(a,p,fs,sh,ask_name):
         return None
 
 def F(dev,cap):
+    """格式化 — 選單式:
+      模式 1 (預設): 純 FAT32 — 單一命名空間, FAT 高速, 無 alloc.json
+                    (fs_manager 自動以 FAT 模式運作)
+      模式 2:        FAT + managed area — raw 後手模式
+                    (產生 alloc.json, fs_manager 自動以 raw 模式運作)
+    """
+    print("\n格式化模式:")
+    print("  1. 純 FAT32 (推薦) — 單一命名空間, FAT 高速, 無 alloc.json")
+    print("  2. FAT + managed area — raw 後手模式 (產生 alloc.json)")
+    v=I("選擇 [1]: ","1")
+    if v is None: return
+
+    if v=="1":
+        # ── 模式 1: 純 FAT32 ──
+        v=I("Cluster KB [64]: ","64")
+        if v is None: return
+        try: ck=int(v)
+        except: print("❌ cluster 唔係數字"); return
+        if ck not in (4,8,16,32,64):
+            print("❌ cluster 只支援 4/8/16/32/64 KB"); return
+        if not _fmt(dev,ck): print("❌"); return
+        print("✅ 純 FAT32 格式化完成 (cluster {}KB) — 下次開機自動 FAT 模式".format(ck))
+        return
+
+    # ── 模式 2: FAT + managed area (raw 後手) ──
     v=I("FAT MB [512]: ","512")
     if v is None: return
-    f=int(v)
-    v=I("Cluster KB [8]: ","8")
+    try: f=int(v)
+    except: print("❌ FAT MB 唔係數字"); return
+    if f<=0:
+        print("❌ raw 模式需要 FAT MB > 0 (要純 FAT 請選模式 1)"); return
+    v=I("Cluster KB [64]: ","64")
     if v is None: return
     try: ck=int(v)
     except: print("❌ cluster 唔係數字"); return
     if ck not in (4,8,16,32,64):
         print("❌ cluster 只支援 4/8/16/32/64 KB"); return
-    if f<=0: _fmt(dev,ck); print("✅"); return
     off=f*1048576//512; t=cap//512
     print("sector:{} FAT:{}MB cluster:{}KB managed:~{:.1f}GB".format(off,off*512/1048576,ck,(t-off)*512/1073741824))
     if I("確認? (yes): ") is None: return

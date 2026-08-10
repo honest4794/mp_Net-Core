@@ -1,0 +1,154 @@
+{
+    "scan_ignore": ["/sd"],
+    "System": {
+        "dual_core_mode": "0",
+        "boot_strict": 0,
+        "c_lum": 1.0,
+        "hostname": "",
+        "refresh_rate_ms": 1,
+        "master_IP": "",
+        "master_port": 0,
+        "discovery_port": 9000,
+        "heartbeat_interval": 10000,
+        "local_fps": 40,
+        "num_leds": 336,
+        "buffer_frames": 1,
+        "log_interval_ms": 1000
+    },
+    "Buffer": {
+        "size": 16384,
+        "rx_hub_buffers": 16,
+        "drop_on_full": 1,
+        "drain_reads": 1,
+        "fb_mode": "auto"
+    },
+    "Network": {
+        "priority": ["lan", "wifi"],
+        "lan": {
+            "enable": 0,
+            "active_mode": 1,
+            "driver": "RMII",
+            "phy_addr": 1,
+            "phy_type": "IP101",
+            "GPIO": {
+                "mdc": 31, "mdio": 52, "ref_clk": 50,
+                "spi": -1, "cs": -1, "rst": -1, "int": -1
+            }
+        },
+        "wifi": {
+            "enable": 0,
+            "active_mode": 2,
+            "timeout": 300,
+            "ssid": "Home_WiFi",
+            "ssid_pw": "",
+            "mdns_name": "esp32-led-"
+        },
+        "ESP_now": { "enable": 0, "channel": 6 }
+    },
+    "CircuitDecode": {
+        "enable": 0,
+        "list": [
+            { "GPIO": { "uart": 0 } }
+        ]
+    },
+    "SPI": {
+        "enable": 1,
+        "list": [
+            {
+                "id": 2,
+                "baudrate": 80000000,
+                "phase": 0,
+                "polarity": 0,
+                "GPIO": { "sck": 40, "mosi": null, "miso": null },
+                "data_pins": [45]
+            }
+        ]
+    },
+    "I2C": {
+        "enable": 1,
+        "list": [
+            { "id": 0, "freq": 400000, "GPIO": { "scl": 10, "sda": 11 } },
+            { "id": 1, "freq": 400000, "GPIO": { "scl": 3, "sda": 1 } }
+        ]
+    },
+    "HUSB238": {
+        "enable": 0,
+        "addr": "0x08",
+        "default_voltage": null,
+        "GPIO": { "i2c": 0 }
+    },
+    "UART": {
+        "enable": 0,
+        "list": []
+    },
+    "PWM": {
+        "enable": 0,
+        "list": []
+    },
+    "ENC": {
+        "enable": 0,
+        "list": []
+    },
+    "I2S": {
+        "enable": 0,
+        "list": []
+    },
+    "SDcard": {
+        "enable": 1,
+        "phat": "/sd",
+        "config": { "slot": 1, "width": 1, "freq": 20000000 },
+        "GPIO": { "sck": 14, "cmd": 17, "data": [16] }
+    },
+    "PIN": {
+        "enable": 1,
+        "list": [
+            { "GPIO": 42, "label": "tft_cs",    "mode": "OUT", "initial": 1 },
+            { "GPIO": 41, "label": "tft_dc",    "mode": "OUT", "initial": 0 },
+            { "GPIO": 39, "label": "tft_rst",   "mode": "OUT", "initial": 1 },
+            { "GPIO": 5,  "label": "tft_bl",    "mode": "OUT", "initial": 0 },
+
+            { "GPIO": 2,  "label": "touch_rst", "mode": "OUT", "initial": 1 },
+            { "GPIO": 4,  "label": "touch_int", "mode": "IN",  "initial": 0, "pull": "UP" },
+
+            { "GPIO": 6,  "label": "pwr_in",    "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 7,  "label": "pwr_ctrl",  "mode": "OUT", "initial": 0 },
+
+            { "GPIO": 8,  "label": "bat_adc",   "mode": "IN",  "initial": 0 },
+
+            { "GPIO": 0,  "label": "gp0",       "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 9,  "label": "gp9",       "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 12, "label": "gp12",      "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 13, "label": "gp13",      "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 15, "label": "gp15",      "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 18, "label": "gp18",      "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 43, "label": "gp43",      "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 44, "label": "gp44",      "mode": "IN",  "initial": 0, "pull": "UP" },
+            { "GPIO": 46, "label": "gp46",      "mode": "IN",  "initial": 0, "pull": "UP" }
+        ]
+    },
+    "TFT": {
+        "enable": 1,
+        "driver": "ST7789",
+        "width": 240,
+        "height": 320,
+        "rotation": 0,
+        "color_order": "RGB",
+        "invert": 0,
+        "spi_id": 2,
+        "pixel_format": "RGB565_BE",
+        "variant": 2,
+        "pins": { "dc": "tft_dc", "cs": "tft_cs", "rst": "tft_rst", "bl": "tft_bl" }
+    },
+    "WS2812": {
+        "enable": 0,
+        "list": []
+    },
+    "APA102": {
+        "enable": 0,
+        "list": []
+    },
+    "PCA9685": {
+        "enable": 0,
+        "list": []
+    }
+}

@@ -124,6 +124,9 @@ class Storage:
             self._io_buf = bytearray(buf_size)
         self._spc = self._buf_bytes // self._ss
         self._buf_size = self._buf_bytes
+        # ── 固定 function 引用: 讀寫迴圈不再每次做 self._sd.xxx 屬性查找 ──
+        self._wb = self._sd.writeblocks
+        self._rb = self._sd.readblocks
         self._c = False; self._w_open = False; self._r_open = False
         self._w_file = None; self._w_sector = 0; self._w_cnt = 0
         self._w_byte = 0; self._w_total = 0
@@ -150,7 +153,7 @@ class Storage:
             n = min(total - p, self._buf_size)
             buf[:n] = src[p:p + n]
             sector = self._w_sector + self._w_byte // self._ss
-            with _sd_lock: self._sd.writeblocks(sector, buf)
+            with _sd_lock: self._wb(sector, buf)
             self._w_byte += n; p += n
         if self._w_byte >= self._w_total: self.write_end()
         return p
@@ -190,7 +193,7 @@ class Storage:
         if remaining <= 0: return 0
         sector = self._r_sector + self._r_byte // self._ss
         n_sectors = min(self._spc, (remaining + self._ss - 1) // self._ss)
-        with _sd_lock: self._sd.readblocks(sector, self._io_buf)
+        with _sd_lock: self._rb(sector, self._io_buf)
         n_bytes = min(remaining, n_sectors * self._ss)
         n_bytes = min(n_bytes, max_bytes)
         buf[off:off + n_bytes] = self._io_buf[:n_bytes]
@@ -250,6 +253,8 @@ class StreamReader:
         from lib.sys_bus import bus
         self._sd = sd or bus.get_service("sd_raw")
         self._ss = self._sd.info()[1]
+        # ── 固定 function 引用: feed 迴圈不再每次屬性查找 ──
+        self._rb = self._sd.readblocks
         dma = [None] * n_bufs
         hc = [False] * n_bufs
         for i in range(n_bufs):
@@ -276,7 +281,7 @@ class StreamReader:
     def feed(self, sector):
         if self._eof: return False
         if self._stat[self._w_idx] != 0: return False
-        self._sd.readblocks(sector, self._bufs[self._w_idx])
+        self._rb(sector, self._bufs[self._w_idx])
         self._stat[self._w_idx] = 1
         self._w_idx = (self._w_idx + 1) % self._n
         return True
