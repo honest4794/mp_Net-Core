@@ -92,7 +92,8 @@ class CircuitBus:
         if cache is not None:
             cview = cache.get_write_view()
             if cview is not None:
-                cview[:] = view[:2 + n]  # 含 2-byte 長度標頭
+                take = 2 + n  # 含 2-byte 長度標頭(mv[a:b]=mv[c:d] 兩邊長度必須相同)
+                cview[:take] = view[:take]
                 cache.commit()
 
     def read_into(self, target):
