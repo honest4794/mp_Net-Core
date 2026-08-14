@@ -200,6 +200,7 @@ class ActionTask1(Task):
         self._circuit_bus = None         # 顯示 UART 對應的 CircuitBus(新架構:經 circuit 緩衝收發)
         self._uart_read_buf = bytearray(256)  # 從 CircuitBus 緩存讀取的持久緩衝,重複使用
         self._ack_pending = False        # 已送出 UART 請求、等 echo 確認(同值 echo 也要回面板)
+        self._bright_ready = False       # 是否已收過面板第一筆指令:第一筆的 brightness 忽略
         self._motor_control_source = None  # None | "manual" | "reserved"
         self._motor_start_ms = 0         # 記錄馬達啟動時間，供 STOP log 計算持續時間
         self._position = None            # 當前實體位置: None | "top" | "bottom"
@@ -774,12 +775,22 @@ class ActionTask1(Task):
 
     def _consume_display_cmd(self):
         """消費 bus 指令 _display_cmd（waiting_to_trash_actions 翻譯進來，或 LVGL 頁面直寫）。
-        格式: {"mode": 0-255, "brightness": 0-36}（欄位可選）。消費後清空。"""
+        格式: {"mode": 0-255, "brightness": 0-36}（欄位可選）。消費後清空。
+        開機第一筆指令的 brightness 忽略:面板上線時預設亮度 0,執行板開機時
+        已先收到外部處理器的狀態(對方已發送的亮度為準),直接轉發會第一下重設對方。
+        mode 仍照常轉發(模式 0 是合法值)。"""
         cmd = bus.shared.get("_display_cmd")
         if not cmd:
             return
         bus.shared["_display_cmd"] = None
         try:
+            if not self._bright_ready and "brightness" in cmd:
+                # 第一筆:只轉發 mode,忽略 brightness(對方亮度為準)
+                self._bright_ready = True
+                get_log().immediate("[CMD] 首筆指令 — 忽略 brightness,亮度以執行板/對方為準")
+                cmd = dict(cmd)
+                cmd.pop("brightness", None)
+            self._bright_ready = True
             self.set_display_state(
                 mode=cmd.get("mode"),
                 brightness=cmd.get("brightness"),

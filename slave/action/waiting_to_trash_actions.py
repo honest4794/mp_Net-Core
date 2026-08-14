@@ -55,6 +55,9 @@ def on_status(ctx, args):
     bus.shared["_display_mode"] = mode & 0xFF
     bus.shared["_display_brightness"] = max(0, min(brightness, 36))
     bus.shared["_display_time"] = max(0, t)
+    # seq 遞增:即使時間值與上次相同(重新計時 240→240),也要讓
+    # LVGL 頁面知道「收到新幀」而重置本地倒數(光看值無法分辨同值重送)。
+    bus.shared["_display_time_seq"] = (bus.shared.get("_display_time_seq", 0) + 1) & 0xFF
     print("[WTT] status mod={:02X} bri={} time={}".format(mode & 0xFF, brightness, t))
 
 

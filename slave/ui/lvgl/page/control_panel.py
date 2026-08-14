@@ -24,6 +24,7 @@
 #   狀態(被控制端,顯示用): bus.shared["_display_mode/_brightness/_time"]
 #                 action_task_1 執行後寫回,本頁 update() 讀同一位置顯示
 #   control_panel dict 為本頁快取(is_running 等)
+import time
 import lvgl as lv
 from ui.lvgl.registry import register
 from ui.lvgl import ui_common as u
@@ -42,6 +43,16 @@ _mode_btns = []
 _bright_sl = _bright_lb = _time_lb = _time_arc = _run_lb = None
 _bit7_led = _bit6_led = None
 _last_txt = {}
+# 倒數計時(本地非阻塞,不 sleep):每輪取樣 ticks_ms 與上次對比,
+# 累積滿 1000ms 才 -1,餘數保留給下次 → frame 長短不齊也不漂移。
+# 收到新幀(_display_time_seq 變更,即使值相同=重新計時)即重置採納新值。
+_tick_last = 0        # 上次取樣 ticks_ms
+_tick_carry = 0       # 累積毫秒(滿 1000 扣一次,餘數留用)
+_tick_armed = False   # 已初始化(避免首輪以 0 當基準)
+_tick_seq = 0         # 上次見到的 _display_time_seq(變更=外部送了新幀)
+_tick_raw = 0         # 上次採納的 bus 原始值(bus 值改變 → 重新開始)
+_tick_val = 0         # 目前倒數顯示值(本地遞減)
+_tick_running = False # 是否倒數中
 # 本機值(操作即時回饋,不依賴 echo)+ pending 標記
 _local_mode = 0        # 本機最後送出/採納的 mode byte
 _local_bright = 0      # 本機最後送出/採納的亮度
@@ -57,6 +68,7 @@ def build():
     global _bit7_led, _bit6_led, _last_txt
     global _local_mode, _local_bright, _pend_mode, _pend_bright
     _last_txt = {}
+    _tick_reset()
     nav.reset()
     _init_local()
 
@@ -285,6 +297,54 @@ def on_exit():
     _sync_list()
     return consumed
 
+def _tick_reset():
+    """重設倒數追蹤(進入頁面時),下次 update 以 bus 現值重新開始。"""
+    global _tick_last, _tick_carry, _tick_armed, _tick_seq, _tick_raw, _tick_val, _tick_running
+    _tick_last = 0
+    _tick_carry = 0
+    _tick_armed = False
+    _tick_seq = 0
+    _tick_raw = 0
+    _tick_val = 0
+    _tick_running = False
+
+
+def _tick_countdown(bus):
+    """本地非阻塞倒數(不 sleep、不中斷主迴圈):
+    每輪取樣 ticks_ms 與上次取樣對比,累積滿 1000ms 就 -1,
+    餘數留在 _tick_carry 給下次 → 每幀長短不一也維持精準 1s/秒。
+    _display_time_seq 一變(收到新幀,即使值相同 = 重新計時指令)即重置採納。"""
+    global _tick_last, _tick_carry, _tick_armed, _tick_seq, _tick_raw, _tick_val, _tick_running
+    raw = int(bus.shared.get("_display_time", 0))
+    raw = max(0, min(_TIME_MAX, raw))
+    seq = int(bus.shared.get("_display_time_seq", 0))
+    now = time.ticks_ms()
+
+    if not _tick_armed or seq != _tick_seq or raw != _tick_raw:
+        # 收到新幀(seq 變)或值變:採納新值重新開始(同值重送也重置)
+        _tick_last = now
+        _tick_carry = 0
+        _tick_armed = True
+        _tick_seq = seq
+        _tick_raw = raw
+        _tick_val = raw
+        _tick_running = bool(_state().get("is_running", raw > 0))
+        return raw
+
+    # 同值持續(本地倒數中,外部未再送新幀):累積時差扣減
+    _tick_carry += time.ticks_diff(now, _tick_last)
+    _tick_last = now
+    if _tick_running and _tick_val > 0:
+        while _tick_carry >= 1000:
+            _tick_carry -= 1000
+            _tick_val -= 1
+            if _tick_val <= 0:
+                _tick_carry = 0
+                _tick_running = False
+                break
+    return max(0, _tick_val)
+
+
 def update(run):
     if run % 10 != 0:
         return
@@ -295,9 +355,8 @@ def update(run):
         _sync_echo_bright(bus)
         # 旗標
         _refresh_bits()
-        # 倒數時間(arc + 文字)
-        t = int(bus.shared.get("_display_time", 0))
-        t = max(0, min(_TIME_MAX, t))
+        # 倒數時間(arc + 文字):本地非阻塞倒數
+        t = _tick_countdown(bus)
         mtxt = "{:02d}:{:02d}".format(*divmod(t, 60))
         if _last_txt.get("time") != mtxt:
             _last_txt["time"] = mtxt
@@ -306,8 +365,8 @@ def update(run):
             _time_arc.set_value(t, 0)
         except Exception:
             pass
-        # 計時狀態
-        r = bool(_state().get("is_running", 0))
+        # 計時狀態(與倒數同一狀態源)
+        r = _tick_running
         rtxt = "計時中" if r else "待機"
         if _last_txt.get("run") != rtxt:
             _last_txt["run"] = rtxt

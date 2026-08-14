@@ -181,6 +181,8 @@ class ControlPanelTask(Task):
         bus.shared["_display_mode"] = mode
         bus.shared["_display_brightness"] = brightness
         bus.shared["_display_time"] = time_remaining
+        # seq 遞增:同值重送(重新計時)也讓 LVGL 頁面重置本地倒數
+        bus.shared["_display_time_seq"] = (bus.shared.get("_display_time_seq", 0) + 1) & 0xFF
         get_log().info("[CP][RX][0x1403] chip={} id={} mod={} bit={} bri={} time={}".format(
             chip_type,
             chip_id,

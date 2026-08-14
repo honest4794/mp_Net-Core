@@ -99,19 +99,27 @@ def _unmount(dev):
     if OS=="Darwin": R(["diskutil","unmountDisk",dev])
 
 def _fmt(dev, cluster_kb=8):
-    unit = cluster_kb * 1024
+    unit_bytes = cluster_kb * 1024
+    spc = unit_bytes // S
     if OS=="Darwin":
         R(["diskutil","unmountDisk",dev])
         r=R(["diskutil","eraseDisk","FAT32","SDCARD","MBRFormat",dev])
-        if r.returncode!=0: return False
-        # diskutil 冇得揀 cluster size,用 newfs_msdos 以指定 cluster 重做
+        if r.returncode!=0:
+            msg=(r.stderr or r.stdout or "diskutil eraseDisk failed").strip()
+            print("❌ eraseDisk 失敗: {}".format(msg))
+            return False
         R(["diskutil","unmountDisk",dev])
         part = dev + "s1"
-        r2=R(["sudo","newfs_msdos","-F","32","-c",str(unit),part])
-        return r2.returncode==0
+        r2=R(["sudo","newfs_msdos","-F","32","-c",str(spc),part])
+        if r2.returncode!=0:
+            msg=(r2.stderr or r2.stdout or "newfs_msdos failed").strip()
+            print("❌ newfs_msdos 失敗 (cluster {}KB = {} sectors/cluster): {}".format(cluster_kb,spc,msg))
+            return False
+        return True
     elif OS=="Windows":
         n=dev.replace("PhysicalDrive","")
-        scr="select disk {n}\nclean\nconvert mbr\ncreate partition primary\nformat fs=fat32 quick unit={unit} label=SDCARD\nactive\nassign\nexit\n".format(n=n,unit=unit)
+        unit_str="{}K".format(cluster_kb)
+        scr="select disk {n}\nclean\nconvert mbr\ncreate partition primary\nformat fs=fat32 quick unit={unit} label=SDCARD\nactive\nassign\nexit\n".format(n=n,unit=unit_str)
         tf=os.path.join(os.environ.get("TEMP",os.getcwd()),"_sdfmt.txt")
         open(tf,"w").write(scr)
         for attempt in range(2):
@@ -381,7 +389,7 @@ def F(dev,cap):
         except: print("❌ cluster 唔係數字"); return
         if ck not in (4,8,16,32,64):
             print("❌ cluster 只支援 4/8/16/32/64 KB"); return
-        if not _fmt(dev,ck): print("❌"); return
+        if not _fmt(dev,ck): return
         print("✅ 純 FAT32 格式化完成 (cluster {}KB) — 下次開機自動 FAT 模式".format(ck))
         return
 
@@ -401,7 +409,7 @@ def F(dev,cap):
     off=f*1048576//512; t=cap//512
     print("sector:{} FAT:{}MB cluster:{}KB managed:~{:.1f}GB".format(off,off*512/1048576,ck,(t-off)*512/1073741824))
     if I("確認? (yes): ") is None: return
-    if not _fmt(dev,ck): print("❌"); return
+    if not _fmt(dev,ck): return
     print("✅ FAT32 格式化完成 (cluster {}KB)".format(ck))
     m=None
     for _ in range(6):
