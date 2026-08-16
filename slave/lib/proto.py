@@ -21,7 +21,7 @@ else:
 if not IS_MICROPYTHON:
     import binascii
 
-SOF = b"NL"
+SOF = b"NC"
 CUR_VER = 4
 ADDR_BROADCAST = 0xFFFF
 MAX_LEN_DEFAULT = 8192
@@ -62,7 +62,7 @@ class Proto:
 
     @staticmethod
     def pack(cmd: int, payload: bytes = b"", addr: int = ADDR_BROADCAST):
-        """封裝一個 NL3 幀。
+        """封裝一個 NC4 幀。
 
         ⚠️ 生命週期契約: 回傳值是「指向共享 buffer 的 memoryview」,
            下一次呼叫 pack() 會覆蓋它。呼叫端必須「立即消費」(送出/寫入),

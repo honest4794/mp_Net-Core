@@ -49,18 +49,18 @@ try:
 except Exception as _e:
     _HAVE_PROTO = False
     Proto = None
-    sys.stderr.write("⚠️ 無法 import lib.proto ({}), NL3 協議模式將不可用\n".format(_e))
+    sys.stderr.write("⚠️ 無法 import lib.proto ({}), NC4 協議模式將不可用\n".format(_e))
 
 
-# NL3 幀常數 (與 slave/lib/proto.py 對齊)
-_NL_SOF = b"NL"
+# NC4 幀常數 (與 slave/lib/proto.py 對齊)
+_NC_SOF = b"NC"
 _NL_VER = 4
 _NL_HDR_LEN = 9
 _NL_CRC_LEN = 4
 
 
 class PyStreamParser:
-    """純 Python 版 NL3 StreamParser (不依賴 viper), 供 PC 端 CPython 用。
+    """純 Python 版 NC4 StreamParser (不依賴 viper), 供 PC 端 CPython 用。
     邏輯完全對齊 slave/lib/proto.py 的 StreamParser: 掃 SOF → 驗 ver/len → 驗 CRC32 → yield。
     用可增長的 bytearray 累積, 不像 viper 版有固定環形緩衝 (CPython 記憶體夠, 簡單就好)。"""
     import binascii as _ba
@@ -79,7 +79,7 @@ class PyStreamParser:
     def pop(self):
         """generator: yield (ver, addr, cmd, payload)。CRC 驗證失敗的幀跳過 (對齊 slave 行為)。"""
         while (len(self._buf) - 0) >= _NL_HDR_LEN:
-            idx = self._buf.find(_NL_SOF)
+            idx = self._buf.find(_NC_SOF)
             if idx < 0:
                 self._buf = bytearray()
                 return
@@ -315,16 +315,16 @@ def send_exact(conn, tx_mv, total):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  NL3 協議模式 (與 ESP 端 test/bench_net.py 對齊)
+#  NC4 協議模式 (與 ESP 端 test/bench_net.py 對齊)
 # ═══════════════════════════════════════════════════════════════
 
 def _make_proto_payload(seq, seg):
-    """模擬 NL3 schema payload: u16 seq + bytes_rest data。與 ESP 端一致。"""
+    """模擬 NC4 schema payload: u16 seq + bytes_rest data。與 ESP 端一致。"""
     return struct.pack("<H", seq & 0xFFFF) + bytes(seg)
 
 
 def recv_proto_exact(conn, rx_buf, total, parser):
-    """NL3 協議上載接收: 用 StreamParser.feed/pop 拆 ESP 送的 NL3 幀。
+    """NC4 協議上載接收: 用 StreamParser.feed/pop 拆 ESP 送的 NC4 幀。
     回傳 (received_data_bytes, elapsed_s, frames)。
     received = 解出的 payload data 累計 (扣掉每幀 seq 2B 前綴)。"""
     received = 0
@@ -351,7 +351,7 @@ def recv_proto_exact(conn, rx_buf, total, parser):
 
 
 def send_proto_exact(conn, tx_mv, total):
-    """NL3 協議下載發送: 用 Proto.pack 封裝每個 chunk 送給 ESP (ESP 用 StreamParser 拆)。
+    """NC4 協議下載發送: 用 Proto.pack 封裝每個 chunk 送給 ESP (ESP 用 StreamParser 拆)。
     回傳 (sent_data_bytes, elapsed_s, frames)。"""
     chunk = len(tx_mv)
     sent = 0
@@ -430,14 +430,14 @@ def handle_esp(conn, addr, params):
             total = int(parts[2])
 
             if proto_mode:
-                # NL3 協議模式: Proto.pack 封裝 + StreamParser 拆幀
+                # NC4 協議模式: Proto.pack 封裝 + StreamParser 拆幀
                 if direction == "dl":
                     sent, elapsed, frames = send_proto_exact(conn, tx_mv[:chunk], total)
                     pc_ok = (sent == total)
                     got = sent
                     verify = "{}幀".format(frames)
                 else:
-                    # 上載: PC 用 StreamParser 拆 ESP 送的 NL3 幀
+                    # 上載: PC 用 StreamParser 拆 ESP 送的 NC4 幀
                     parser = PyStreamParser(max_len=max(total, 65536) + 16)
                     got, elapsed, frames = recv_proto_exact(conn, rx_buf, total, parser)
                     pc_ok = (got == total)

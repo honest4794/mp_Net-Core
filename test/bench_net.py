@@ -54,7 +54,7 @@ except ImportError:
     machine = None
     network = None
 
-# NL3 協議模組 (Proto.pack 封裝 + StreamParser 拆幀), 走 lib.proto — 同 bench_sd 慣例。
+# NC4 協議模組 (Proto.pack 封裝 + StreamParser 拆幀), 走 lib.proto — 同 bench_sd 慣例。
 # 用來測「真實指令傳輸」成本: 每個 chunk 經 Proto.pack (含 9B header + CRC32 + framing)
 # 封裝, 收端用 StreamParser.feed/pop 拆解 (含 CRC 驗證)。完全模擬 slave Action 系列
 # 的封包路徑, 但用虛擬 cmd 0x18F0, 不註冊到任何 dispatcher, 不碰生產碼。
@@ -588,12 +588,12 @@ def download_burst(sock, rx_mv, total_bytes, crc=False):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  協議模式 — 完全模擬 NL3 指令傳輸 (Proto.pack 封裝 + StreamParser 拆幀)
+#  協議模式 — 完全模擬 NC4 指令傳輸 (Proto.pack 封裝 + StreamParser 拆幀)
 #  不碰生產碼, 用虛擬 cmd 0x18F0, 測的是「真實上線協議」的吞吐成本
 # ═══════════════════════════════════════════════════════════════
 
 def _make_proto_payload(seq, data_mv):
-    """模擬 NL3 schema payload: u16 seq + bytes_rest data (像 RAM_BENCH_CHUNK)。
+    """模擬 NC4 schema payload: u16 seq + bytes_rest data (像 RAM_BENCH_CHUNK)。
     用 struct.pack 前綴 + data 切片, 不依賴 SchemaCodec 的 viper 編譯。
     回傳 bytes (Proto.pack 會再包成完整幀)。"""
     # <H seq (2B) + data。這模仿 schema 的 {"seq":u16, "data":bytes_rest}
@@ -607,7 +607,7 @@ _pack_cap = 0
 
 
 def pack_into_fast(cmd, seq, data_mv, addr=0xFFFF):
-    """快版 NL3 封裝 — 直接寫進預分配 buffer, 不做 header+payload+crc 拼接。
+    """快版 NC4 封裝 — 直接寫進預分配 buffer, 不做 header+payload+crc 拼接。
 
     與 Proto.pack 的差異 (這是 74.7% 瓶頸的解法):
       Proto.pack: header + payload + crc_bytes → 三段拼接建一個新大 bytes (複製 payload)
@@ -628,7 +628,7 @@ def pack_into_fast(cmd, seq, data_mv, addr=0xFFFF):
 
     b = _pack_mv
     # 1. header (9B): SOF + ver + addr + cmd + payload_len
-    struct.pack_into("<2sBHHH", b, 0, b"NL", 4, addr, cmd, payload_len)
+    struct.pack_into("<2sBHHH", b, 0, b"NC", 4, addr, cmd, payload_len)
     # 2. payload: seq(2) + data (直接寫, 不建新 bytes)
     struct.pack_into("<H", b, 9, seq & 0xFFFF)
     b[11:11 + data_len] = data_mv
@@ -668,7 +668,7 @@ def pack_into_fast_v2(cmd, seq, data_mv, addr=0xFFFF):
 
     b = _pack_mv
     # 1. header
-    struct.pack_into("<2sBHHH", b, 0, b"NL", 4, addr, cmd, payload_len)
+    struct.pack_into("<2sBHHH", b, 0, b"NC", 4, addr, cmd, payload_len)
     # 2. payload
     struct.pack_into("<H", b, 9, seq & 0xFFFF)
     b[11:11 + data_len] = data_mv
@@ -687,12 +687,12 @@ def pack_into_fast_v2(cmd, seq, data_mv, addr=0xFFFF):
 
 
 def upload_burst_proto(sock, tx_mv, total_bytes, send_cap=0):
-    """NL3 協議上載: 每個 chunk 經 Proto.pack 封裝 (9B header + CRC32 + framing) 再送。
+    """NC4 協議上載: 每個 chunk 經 Proto.pack 封裝 (9B header + CRC32 + framing) 再送。
     完全模擬 slave Action 送封包的路徑 (Proto.pack 是 action 回報封包的標準寫法)。
 
     回傳 (sent_bytes, elapsed_ms, mem_delta, frame_count)。
     sent_bytes = 實際 payload data 累計 (不含協議 header/CRC 開銷)。
-    frame_count = 送出的 NL3 幀數 (每個 chunk 一幀)。"""
+    frame_count = 送出的 NC4 幀數 (每個 chunk 一幀)。"""
     chunk = len(tx_mv)
     gc.collect()
     mem0 = gc.mem_free()
@@ -721,7 +721,7 @@ def upload_burst_proto(sock, tx_mv, total_bytes, send_cap=0):
 
 
 def upload_burst_proto_fast(sock, tx_mv, total_bytes, send_cap=0):
-    """NL3 協議上載 (快版 pack): 用 pack_into_fast 封裝, 不做 bytes 拼接。
+    """NC4 協議上載 (快版 pack): 用 pack_into_fast 封裝, 不做 bytes 拼接。
     對比 upload_burst_proto (慢版 Proto.pack), 量化 pack 優化的效果。
     回傳 (sent_bytes, elapsed_ms, mem_delta, frame_count)。"""
     chunk = len(tx_mv)
@@ -750,14 +750,14 @@ def upload_burst_proto_fast(sock, tx_mv, total_bytes, send_cap=0):
 
 
 def download_burst_proto(sock, rx_mv, total_bytes):
-    """NL3 協議下載: 用 StreamParser.feed + pop 拆幀 (含 CRC 驗證), 模擬 BusDecodeTask
+    """NC4 協議下載: 用 StreamParser.feed + pop 拆幀 (含 CRC 驗證), 模擬 BusDecodeTask
     收封包的路徑。回傳 (recv_bytes, elapsed_ms, mem_delta, frame_count)。
 
     recv_bytes = 解出的 payload data 累計 (扣掉每幀的 seq 2B 前綴)。
     StreamParser 內建 CRC32 驗證 — 幀損會被丟棄 (pop 不 yield)。
 
     注意: max_len 用 65536 (單幀 payload 上限, u16), 不是 total — 否則會配 total 大小
-    的緩衝 (4MB), 爆分配。NL3 幀獨立, parser 只需容得下單幀。"""
+    的緩衝 (4MB), 爆分配。NC4 幀獨立, parser 只需容得下單幀。"""
     gc.collect()
     mem0 = gc.mem_free()
     t0 = time.ticks_ms()
@@ -785,11 +785,11 @@ def download_burst_proto(sock, rx_mv, total_bytes):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  瓶頸分析 — 拆解 NL3 協議各環節的 CPU 成本 (不傳輸, 純記憶體操作計時)
+#  瓶頸分析 — 拆解 NC4 協議各環節的 CPU 成本 (不傳輸, 純記憶體操作計時)
 # ═══════════════════════════════════════════════════════════════
 
 def profile_proto(chunk_size=4096, frames=500):
-    """量測 NL3 協議各環節的 CPU 成本, 找出 -77% 裡哪個最貴。
+    """量測 NC4 協議各環節的 CPU 成本, 找出 -77% 裡哪個最貴。
 
     每個環節處理 frames 個 chunk (各 chunk_size bytes), 量 ticks_us。
     環節:
@@ -889,7 +889,7 @@ def profile_proto(chunk_size=4096, frames=500):
         results["F. SchemaCodec.decode"] = "skip({})".format(e)
 
     # 印報告
-    print("\n── NL3 協議瓶頸分析 (chunk={}B, {}幀) ──".format(chunk_size, frames))
+    print("\n── NC4 協議瓶頸分析 (chunk={}B, {}幀) ──".format(chunk_size, frames))
     print("  {:>22s}  {:>10s}  {}".format("環節", "μs/幀", "佔比"))
     print("  " + "─" * 48)
     total_us = 0
@@ -930,7 +930,7 @@ def _run_matrix_once(sock, buf_kind, max_chunk, chunk_sizes, runs, total_bytes,
     direction:
       "up" — 上載 (ESP→PC): ESP 洪流 send, PC recv_into 收。控制行 BEGIN/RESULT/SKIP
       "dl" — 下載 (PC→ESP): PC 洪流 send, ESP recv_into 收。控制行 DL_BEGIN/DL_RESULT/SKIP
-    proto=True 時改走 NL3 協議 (Proto.pack 封裝 + StreamParser 拆幀), 控制行加 P_ 前綴。
+    proto=True 時改走 NC4 協議 (Proto.pack 封裝 + StreamParser 拆幀), 控制行加 P_ 前綴。
     回傳 results = [(chunk, best_ms, best_mem_delta), ...] (只含成功的 chunk)。
     每輪用同一塊 buffer (最大 chunk), 小 chunk 用 memoryview 切片重用, 全程零 churn。
     """
@@ -943,7 +943,7 @@ def _run_matrix_once(sock, buf_kind, max_chunk, chunk_sizes, runs, total_bytes,
             tx_buf[i] = i & 0xFF
 
     verb = "下載" if direction == "dl" else "上載"
-    mode = " (NL3 協議)" if proto else ""
+    mode = " (NC4 協議)" if proto else ""
     print("── {}{} buffer: {} ({}) ──".format(verb, mode, _fmt_bytes(max_chunk), label))
     if actual_kind != buf_kind:
         print("  ⚠️ 想要 {} 但拿到 {} (該類記憶體不足或不存在)".format(buf_kind, actual_kind))
@@ -1054,7 +1054,7 @@ def _print_compare_generic(all_results, total_bytes, title):
 
 
 def _print_report(total_bytes, up, dl, up_crc, dl_crc, up_proto, dl_proto, up_proto_fast, up_kind, dl_kind):
-    """最終報告: 雙向表 + 雙向+CRC 表 + NL3 協議表 + pack 優化對比表 + 摘要。
+    """最終報告: 雙向表 + 雙向+CRC 表 + NC4 協議表 + pack 優化對比表 + 摘要。
     各參數: [(chunk, best_ms, best_mem), ...] 各方向的結果 (空 list = 未測)。
     """
     print("\n" + "╔" + "═" * 62 + "╗")
@@ -1071,16 +1071,16 @@ def _print_report(total_bytes, up, dl, up_crc, dl_crc, up_proto, dl_proto, up_pr
         {"上載+CRC32": up_crc, "下載+CRC32": dl_crc},
         total_bytes, "雙向吞吐 + CRC32 校驗 (對齊 proto.py)")
 
-    # ── 報告表 3: 裸 TCP vs NL3 協議 (真實指令傳輸成本) ──
+    # ── 報告表 3: 裸 TCP vs NC4 協議 (真實指令傳輸成本) ──
     if up_proto or dl_proto:
         _print_compare_generic(
-            {"上載 NL3協議": up_proto, "下載 NL3協議": dl_proto},
-            total_bytes, "NL3 協議傳輸 (Proto.pack+StreamParser, 真實指令路徑)")
+            {"上載 NC4協議": up_proto, "下載 NC4協議": dl_proto},
+            total_bytes, "NC4 協議傳輸 (Proto.pack+StreamParser, 真實指令路徑)")
 
     # ── 報告表 4: pack 優化對比 (慢版 Proto.pack vs 快版 pack_into_fast) ──
     if up_proto_fast:
         _print_compare_generic(
-            {"NL3慢版pack": up_proto, "NL3快版pack": up_proto_fast},
+            {"NC4慢版pack": up_proto, "NC4快版pack": up_proto_fast},
             total_bytes, "pack 優化對比 (Proto.pack vs pack_into_fast, 上載)")
 
     # ── 摘要: 各方向峰值 + 各層開銷 ──
@@ -1111,16 +1111,16 @@ def _print_report(total_bytes, up, dl, up_crc, dl_crc, up_proto, dl_proto, up_pr
             dl_p, dl_c_p, (1 - dl_c_p / dl_p) * 100))
     print()
     if up_p and up_pr_p:
-        print("  上載 NL3慢版pack: {:.2f} → {:.2f} MB/s (-{:.0f}%)".format(
+        print("  上載 NC4慢版pack: {:.2f} → {:.2f} MB/s (-{:.0f}%)".format(
             up_p, up_pr_p, (1 - up_pr_p / up_p) * 100))
     if up_p and up_pr_f_p:
-        print("  上載 NL3快版pack: {:.2f} → {:.2f} MB/s (-{:.0f}%)".format(
+        print("  上載 NC4快版pack: {:.2f} → {:.2f} MB/s (-{:.0f}%)".format(
             up_p, up_pr_f_p, (1 - up_pr_f_p / up_p) * 100))
     if up_pr_p and up_pr_f_p:
         print("  pack 優化提升: {:.2f} → {:.2f} MB/s (+{:.0f}%)".format(
             up_pr_p, up_pr_f_p, (up_pr_f_p / up_pr_p - 1) * 100))
     if dl_p and dl_pr_p:
-        print("  下載 NL3 協議開銷: {:.2f} → {:.2f} MB/s (-{:.0f}%)".format(
+        print("  下載 NC4 協議開銷: {:.2f} → {:.2f} MB/s (-{:.0f}%)".format(
             dl_p, dl_pr_p, (1 - dl_pr_p / dl_p) * 100))
     print("─" * 62)
 
@@ -1161,7 +1161,7 @@ def run(total_kb=DEFAULT_TOTAL_KB,
     sys_cfg = (cfg.get("System", {}) or {})
     disc_port = int(sys_cfg.get("discovery_port", disc_port))
 
-    # ── 1b. NL3 協議瓶頸分析 (純 CPU, 不需網路; 在傳輸測試前先量化各環節成本) ──
+    # ── 1b. NC4 協議瓶頸分析 (純 CPU, 不需網路; 在傳輸測試前先量化各環節成本) ──
     profile_proto(chunk_size=4096, frames=500)
 
     # ── 2. 等 PC beacon ──
@@ -1273,9 +1273,9 @@ def run(total_kb=DEFAULT_TOTAL_KB,
         direction="dl", crc=True)
 
     # ════════════════════════════════════════════════════════════
-    #  5e. NL3 協議模式 — 真實指令傳輸 (Proto.pack 封裝 + StreamParser 拆幀)
+    #  5e. NC4 協議模式 — 真實指令傳輸 (Proto.pack 封裝 + StreamParser 拆幀)
     #      完全模擬 slave Action 的封包路徑, 用虛擬 cmd 0x18F0, 不碰生產碼。
-    #      對比裸 TCP vs 協議棧, 量化「上線 NL3」的實際成本。
+    #      對比裸 TCP vs 協議棧, 量化「上線 NC4」的實際成本。
     # ════════════════════════════════════════════════════════════
     up_proto = []
     dl_proto = []
@@ -1283,7 +1283,7 @@ def run(total_kb=DEFAULT_TOTAL_KB,
         time.sleep(0.3)
         sock.settimeout(15)
         print("╔" + "=" * 60 + "╗")
-        print("║" + "  NL3 協議模式 (Proto.pack + StreamParser)".center(40) + "║")
+        print("║" + "  NC4 協議模式 (Proto.pack + StreamParser)".center(40) + "║")
         print("╚" + "=" * 60 + "╝")
         print("── 上載 (協議封裝, 分段 ≤4KB) ──")
         up_proto = _run_matrix_once(
@@ -1296,7 +1296,7 @@ def run(total_kb=DEFAULT_TOTAL_KB,
             sock, dl_kind, max_chunk, chunk_sizes, runs, total_bytes,
             direction="dl", proto=True)
     else:
-        print("\n⚠️ 無 lib.proto 模組, 跳過 NL3 協議模式測試")
+        print("\n⚠️ 無 lib.proto 模組, 跳過 NC4 協議模式測試")
 
     # ════════════════════════════════════════════════════════════
     #  5f. 快版 pack 上載 — pack_into_fast (預分配 buffer, 零拼接)
@@ -1327,7 +1327,7 @@ def run(total_kb=DEFAULT_TOTAL_KB,
         print("\n❌ 沒有成功的量測")
         return
 
-    # ── 最終報告: 雙向表 + 雙向+CRC 表 + NL3 協議表 + pack 優化表 + 摘要 ──
+    # ── 最終報告: 雙向表 + 雙向+CRC 表 + NC4 協議表 + pack 優化表 + 摘要 ──
     _print_report(total_bytes,
                   up=up_subcapped, dl=dl_results,
                   up_crc=up_crc, dl_crc=dl_crc,
@@ -1343,9 +1343,9 @@ def run(total_kb=DEFAULT_TOTAL_KB,
                      ("下載", dl_results),
                      ("上載+CRC32", up_crc),
                      ("下載+CRC32", dl_crc),
-                     ("上載 NL3", up_proto),
-                     ("下載 NL3", dl_proto),
-                     ("上載 NL3快pack", up_proto_fast)):
+                     ("上載 NC4", up_proto),
+                     ("下載 NC4", dl_proto),
+                     ("上載 NC4快pack", up_proto_fast)):
         for row in res:
             mb = _mb_s(total_bytes, row[1])
             if best is None or mb > best[0]:
