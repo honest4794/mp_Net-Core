@@ -24,8 +24,8 @@ from lib.uart_motor import (
     UartMotor, speed_to_byte,
     SPEED_MAX, SPEED_MED, STOP,
 )
-from tools.calibrate_motor import MotorCalibrator, analyze
-from tools.calib_loader import load_calibration
+from tools.ESP.calibrate_motor import MotorCalibrator, analyze
+from tools.ESP.calib_loader import load_calibration
 
 
 class FakeUART:

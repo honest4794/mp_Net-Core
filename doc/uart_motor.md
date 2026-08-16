@@ -28,8 +28,8 @@
 - [7. 校準：三檔速度點](#7-校準三檔速度點)
   - [7.1 為什麼要校準](#71-為什麼要校準)
   - [7.2 三點內插演算法](#72-三點內插演算法)
-  - [7.3 校準工具 tools/calibrate_motor.py](#73-校準工具-toolscalibrate_motorpy)
-  - [7.4 讀回 tools/calib_loader.py](#74-讀回-toolscalib_loaderpy)
+  - [7.3 校準工具 tools/ESP/calibrate_motor.py](#73-校準工具-toolsespcalibrate_motorpy)
+  - [7.4 讀回 tools/ESP/calib_loader.py](#74-讀回-toolsespcalib_loaderpy)
 - [8. 完整使用範例](#8-完整使用範例)
 - [9. 常數參考](#9-常數參考)
 - [10. 注意事項與限制](#10-注意事項與限制)
@@ -44,11 +44,15 @@ mp_Net-Core/
 │   └── lib/
 │       └── uart_motor.py          # 核心：UartMotor 類別 + 常數 + 版本分派
 ├── tools/
-│   ├── calibrate_motor.py         # 校準工具：量三檔速度的全程時間（限位開關自動偵測）
-│   └── calib_loader.py            # 讀回校準 JSON 檔，填入 UartMotor
+│   ├── PC/                         # PC 端工具
+│   └── ESP/
+│       ├── calibrate_motor.py      # 校準工具：量三檔速度的全程時間（限位開關自動偵測）
+│       └── calib_loader.py         # 讀回校準 JSON 檔，填入 UartMotor
 ├── test/
-│   ├── test_uart_motor.py         # 核心 frame / 速度模式 / 行程模式 測試
-│   └── test_calibrate.py          # 校準工具 / 內插 / calib config 測試
+│   ├── motor/
+│   │   ├── test_uart_motor.py      # 核心 frame / 速度模式 / 行程模式 測試
+│   │   └── test_calibrate.py       # 校準工具 / 內插 / calib config 測試
+│   └── ...
 └── doc/
     └── uart_motor.md              # 本文檔
 ```
@@ -319,9 +323,9 @@ rate = 699 + (1398 - 699) × (44 - 24) / (64 - 24) = 1048
 
 **效能**：`_lookup_rate` 只在**下指令**（`move_to`/`move`）時跑一次，純整數、O(點數)。每個週期真正跑的是 `_recompute` 的單一乘法 `pos = pos0 + rate × elapsed`，與內插無關，成本極低。
 
-### 7.3 校準工具 `tools/calibrate_motor.py`
+### 7.3 校準工具 `tools/ESP/calibrate_motor.py`
 
-這是**測試/校準工具**（位於頂層 `tools/`，不屬於 `slave/` 的獨立系統）。在硬體校準台上跑，用**限位開關自動偵測**到達，量每個速度點的全程時間。
+這是**測試/校準工具**（位於 `tools/ESP/`，不屬於 `slave/` 的獨立系統）。在硬體校準台上跑，用**限位開關自動偵測**到達，量每個速度點的全程時間。
 
 ```python
 from lib.uart_motor import UartMotor
@@ -356,7 +360,7 @@ cal.save(results, "/calib")         # 寫 JSON
 
 `forward_ms` / `reverse_ms` 為 `null` 表示該方向死區。
 
-### 7.4 讀回 `tools/calib_loader.py`
+### 7.4 讀回 `tools/ESP/calib_loader.py`
 
 ```python
 from tools.calib_loader import load_calibration

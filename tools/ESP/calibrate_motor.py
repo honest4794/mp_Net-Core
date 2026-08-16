@@ -14,7 +14,7 @@ timeout 表示該速度在此方向推不動（死區），記為 null。
 
 用法（裝置上）:
     from lib.uart_motor import UartMotor
-    from tools.calibrate_motor import MotorCalibrator
+    from tools.ESP.calibrate_motor import MotorCalibrator
 
     motor = UartMotor({"version": 1, "addresses": [11], "uart": uart})
     cal = MotorCalibrator(motor, 11,

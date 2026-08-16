@@ -117,7 +117,7 @@ try:
     from slave.lib.proto import Proto, StreamParser
     from slave.lib.schema_loader import SchemaStore
     from slave.lib.schema_codec import SchemaCodec
-    from tools.PXLDv3Splitter import PXLDv3Decoder
+    from tools.PC.PXLDv3Splitter import PXLDv3Decoder
 except ImportError as e:
     print(f"❌ 導入錯誤: {e}")
     sys.exit(1)

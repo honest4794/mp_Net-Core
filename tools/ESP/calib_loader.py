@@ -6,7 +6,7 @@
 
 用法:
     from lib.uart_motor import UartMotor
-    from tools.calib_loader import load_calibration
+    from tools.ESP.calib_loader import load_calibration
 
     motor = UartMotor({...})
     load_calibration(motor, "/calib")            # 目錄：讀全部 *.json
