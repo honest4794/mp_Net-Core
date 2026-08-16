@@ -17,7 +17,7 @@ description: >
 ```
 slave/
 ├── app.py                  # 裝配層：SchemaStore + Dispatcher + 註冊所有 action
-├── boot.py                 # 硬體初始化：SPI/I2C/LED/Network/SD 註冊到 SysBus
+├── boot.py                 # 硬體初始化：SPI/I2C/pixel/Network/SD 註冊到 SysBus
 ├── main.py                 # 入口：dual_core_mode=0 → TaskManager，=1 → worker_engine 雙核心
 ├── Core_Manager.py         # taskmanager 模式：TaskManager 註冊 tasks + 調度
 ├── Core0.py / Core1.py     # worker_engine 模式：Core0 控制核(指令線路) + Core1 渲染引擎核
@@ -37,7 +37,7 @@ slave/
     ├── circuit.py          # CircuitTask: UART 實體線 bus (Core 0)
     ├── bus_decode.py       # BusDecodeTask: 封包解析 + Dispatch (Core 0)
     ├── log_task.py         # LogTask: 日誌輸出 (Core 0)
-    ├── render.py           # RenderTask: LED 渲染 (Core 1, 消費 pixel_stream)
+    ├── render.py           # RenderTask: pixel 渲染 (Core 1, 消費 pixel_stream)
     ├── jpeg_player_task.py # JpegPlayerTask: JPEG 播放器 (Core 1, 需 LCD)
     ├── web_ui.py           # WebUITask: HTTP 管理頁面
     ├── now_task.py         # NowTask: ESP-NOW
@@ -70,7 +70,7 @@ bus.register_service("pixel_stream", hub)
 hub = bus.get_service("pixel_stream")
 
 # Providers: 動態健康度回報 (lambda 延遲計算)
-bus.register_provider("fps", lambda: led_driver.get_fps())
+bus.register_provider("fps", lambda: pixel_driver.get_fps())
 
 # Shared: 輕量級狀態同步 dict
 bus.shared["brightness"] = 128
@@ -112,7 +112,7 @@ bus.shared["brightness"] = 128
 | 0x15xx | 待清理功能 | WTT_CTL, WTT_STATUS |
 | 0x18xx | 效能測試 | RAM_BENCH_START |
 | 0x20xx | 檔案傳輸 | FILE_BEGIN/CHUNK/END |
-| 0x30xx | LED 串流 | STREAM_INFO, STREAM_PLAY |
+| 0x30xx | pixel 串流 | STREAM_INFO, STREAM_PLAY |
 | 0x31xx | JPEG 播放器 | JPEG_PLAYER_CTL |
 | 0x32xx | MP4 播放器 | MP4_PLAYER_CTL |
 

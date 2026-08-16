@@ -2,7 +2,6 @@
     "scan_ignore": ["/sd"],
     "System": {
         "dual_core_mode": "0",
-        "boot_strict": 0,
         "c_lum": 1.0,
         "hostname": "",
         "refresh_rate_ms": 1,
@@ -51,6 +50,7 @@
             { "GPIO": { "uart": 0 } }
         ]
     },
+
     "SPI": {
         "enable": 1,
         "list": [
@@ -70,7 +70,12 @@
             { "id": 0, "freq": 400000, "GPIO": { "scl": 40, "sda": 38 } }
         ]
     },
-    
+    "HUSB238": {
+        "enable": 0,
+        "addr": "0x08",
+        "default_voltage": null,
+        "GPIO": { "i2c": 0 }
+    },
     "UART": {
         "enable": 1,
         "list": [
@@ -79,11 +84,14 @@
     },
     "PWM": {
         "enable": 0,
+        "list": []
+    },
+    "ENC": {
+        "enable": 1,
         "list": [
-            {"GPIO":0,"dArc":0,"type":0}
+            { "id": 0, "GPIO": { "a": 18, "b": 8 } }
         ]
     },
-
     "I2S": {
         "enable": 0,
         "list": []
@@ -91,6 +99,7 @@
     "SDcard": {
         "enable": 1,
         "phat": "/sd",
+        "LDO": { "id": 4, "mv": 3300 },
         "config": { "slot": 0, "width": 4, "freq": 40000000 },
         "GPIO": {
             "_comment": "sck=CLK/SCK, cmd=CMD/MOSI, [D0/MISO, D1/IRQ, D2/NC, D3/CS]",
@@ -108,12 +117,6 @@
             { "GPIO": 42, "label": "btn",     "mode": "IN",  "initial": 0, "pull": "UP" }
         ]
     },
-    "ENC": {
-        "enable": 1,
-        "list": [
-            { "id": 0, "GPIO": { "a": 18, "b": 8 } }
-        ]
-    },
     "TFT": {
         "enable": 1,
         "driver": "ST7789",
@@ -127,32 +130,17 @@
         "variant": 0,
         "pins": { "dc": "tft_dc", "cs": "tft_cs", "rst": "tft_rst", "bl": "tft_bl" }
     },
-    "HUSB238": {
-        "enable": 0,
-        "addr": "0x08",
-        "default_voltage": null,
-        "GPIO": { "i2c": 0 }
-    },
+
     "WS2812": {
         "enable": 0,
-        "list": [
-            {"GPIO":15,"Q":10,"order":"GRB"},
-            {"GPIO":16,"Q":10,"order":"GRB"},
-            {"GPIO":17,"Q":10,"order":"GRB"}
-        ]
+        "list": []
     },
     "APA102": {
         "enable": 0,
-        "list": [
-            {"GPIO":{"spi":0 },"Q":290,"order":"BGRW"}
-        ]
+        "list": []
     },
     "PCA9685": {
         "enable": 0,
-        "list": [
-            {"GPIO":{"i2c":0,"dArc":0,"type":0},"address":["0x40"]}
-        ]
+        "list": []
     }
-
-
 }

@@ -1,5 +1,5 @@
 """
-apa102_drv.py — APA102 LED 管理 (走 SPI)
+apa102_drv.py — APA102 pixel 管理 (走 SPI)
 
 設定來源: bus.shared["APA102"]  ({enable, list})
          list item: {"spi": <spi_list index>, "Q": N, "order": "BGRW"}
@@ -16,7 +16,7 @@ def init_apa102(sysbus=None):
     if not cfg.get("enable"):
         return []
 
-    from lib.LEDController import LEDController
+    from lib.PixelController import PixelController
     spi_list = sysbus.get_service("spi_list") or []
     apa_list = []
     for item in cfg.get("list", []):
@@ -24,9 +24,9 @@ def init_apa102(sysbus=None):
         if spi_idx < 0 or spi_idx >= len(spi_list):
             get_log().error("APA102: spi index {} not found".format(spi_idx))
             continue
-        apa = APA102(spi_list[spi_idx], num_leds=item["Q"])
-        apa_list.append(LEDController("APA102", {
-            "led_IO": apa,
+        apa = APA102(spi_list[spi_idx], num_pixels=item["Q"])
+        apa_list.append(PixelController("APA102", {
+            "pixel_IO": apa,
             "Q": item["Q"],
             "order": item.get("order", "BGRW"),
         }))

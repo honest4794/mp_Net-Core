@@ -39,8 +39,8 @@ def engine_start():
         time.sleep_ms(10)
         waited += 10
 
-    st_LED = bus.get_service("st_LED")
-    ctx = {"app": None, "st_LED": st_LED, "bus": bus}
+    st_pixel = bus.get_service("st_pixel")
+    ctx = {"app": None, "st_pixel": st_pixel, "bus": bus}
 
     player = JpegPlayerTask("jpeg_player", ctx)
     try:

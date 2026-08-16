@@ -45,7 +45,7 @@ def handle_supply_chain(hub, s, ctx):
             # 處理跳轉
             seek_frame = bus.shared.get("seek_frame", 0)
             if seek_frame > 0:
-                st = bus.get_service("st_LED")
+                st = bus.get_service("st_pixel")
                 if st:
                     offset = seek_frame * st.total_bytes
                     s["f_local"].seek(offset)

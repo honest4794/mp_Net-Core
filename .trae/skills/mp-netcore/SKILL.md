@@ -12,7 +12,7 @@ description: ">"
 ```
 slave/
 ├── app.py                  # 裝配層：SchemaStore + Dispatcher + 註冊所有 action
-├── boot.py                 # 硬體初始化：SPI/I2C/LED/Network/SD 註冊到 SysBus
+├── boot.py                 # 硬體初始化：SPI/I2C/pixel/Network/SD 註冊到 SysBus
 ├── main.py                 # 入口：TaskManager 註冊 tasks，啟動雙核心 Runner
 ├── config.json             # 系統/硬體/緩衝/網路設定 (無損更新)
 ├── action/                 # 行為層 (常改)：每個 <group>_actions.py 對應一個功能模組
@@ -33,7 +33,7 @@ slave/
 └── tasks/                  # 任務層：雙核心 Runner 調度的背景任務
     ├── network.py          # NetworkTask: TCP/UDP/WS 收發 + Heartbeat + Supply Chain
     ├── bus_decode.py       # BusDecodeTask: 封包解析 + Dispatch
-    ├── render.py           # RenderTask: LED 渲染 (Core 1)
+    ├── render.py           # RenderTask: pixel 渲染 (Core 1)
     ├── web_ui.py           # WebUITask: HTTP 管理頁面
     ├── dp_manager_task.py  # DpManagerTask: Display Manager
     ├── jpeg_decode_task.py # JpegDecodeTask: JPEG 解碼
@@ -52,7 +52,7 @@ bus.register_service("pixel_stream", hub)
 hub = bus.get_service("pixel_stream")
 
 # Providers: 動態健康度回報 (lambda 延遲計算)
-bus.register_provider("fps", lambda: led_driver.get_fps())
+bus.register_provider("fps", lambda: pixel_driver.get_fps())
 
 # Shared: 輕量級狀態同步 dict
 bus.shared["brightness"] = 128
@@ -83,7 +83,7 @@ bus.shared["brightness"] = 128
 | 0x13xx | 檔案系統 | FS_TREE_GET |
 | 0x18xx | 效能測試 | RAM_BENCH |
 | 0x20xx | 檔案傳輸 | FILE_BEGIN/CHUNK/END |
-| 0x30xx | LED 串流 | STREAM_FRAME, STREAM_PLAY |
+| 0x30xx | pixel 串流 | STREAM_FRAME, STREAM_PLAY |
 
 ### Step 2: 定義 Schema
 

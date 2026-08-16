@@ -49,7 +49,7 @@ def start():
     bus.shared["log_print_levels"] = ["info", "warn", "error", "immediate"]
     bus.shared["log_subscribe"] = []
 
-    ctx = {"app": app, "st_LED": None, "bus": bus}
+    ctx = {"app": app, "st_pixel": None, "bus": bus}
 
     # 指令線路任務 + 硬體採樣（直接驅動）
     tasks = [

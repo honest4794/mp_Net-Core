@@ -6,24 +6,24 @@ import utime
 import math
 import array
 
-# ==================== LEDController ====================
-class LEDController:
+# ==================== PixelController ====================
+class PixelController:
     """
-    精簡版 LED 控制器 - 專為高性能流式傳輸設計
+    精簡版 pixel 控制器 - 專為高性能流式傳輸設計
     移除多餘 buffer，直接將數據從 Source 轉換至 Hardware Buffer
     """
-    def __init__(self, led_type, led_io_cfg):
-        self.led_type = led_type
-        self.led_io = led_io_cfg
-        self.led = led_io_cfg['led_IO']
-        self.num_leds = led_io_cfg['Q']
+    def __init__(self, pixel_type, pixel_io_cfg):
+        self.pixel_type = pixel_type
+        self.pixel_io = pixel_io_cfg
+        self.hw = pixel_io_cfg['pixel_IO']
+        self.num_pixels = pixel_io_cfg['Q']
         
-        # 內部映射: 1:WS2812, 2:APA102, 3:i2c_LED
-        type_map = {'WS2812': 1, 'APA102': 2, 'i2c_LED': 3}
-        self._tid = type_map.get(led_type, 0)
+        # 內部映射: 1:WS2812, 2:APA102, 3:i2c_pixel
+        type_map = {'WS2812': 1, 'APA102': 2, 'i2c_pixel': 3}
+        self._tid = type_map.get(pixel_type, 0)
         
         # 色序與通道處理
-        order = led_io_cfg.get('order', 'GRB').upper()
+        order = pixel_io_cfg.get('order', 'GRB').upper()
         self.bpp = len(order)
         self._r = order.find('R')
         self._g = order.find('G')
@@ -31,18 +31,18 @@ class LEDController:
         self._w = order.find('W')
         
         # 單幀大小 (輸入源統一定義為 R,G,B,W 每像素 4 bytes)
-        self.frame_size = self.num_leds * 4 
+        self.frame_size = self.num_pixels * 4 
 
 
 
     @micropython.native
     def st_load_and_convert(self, source_buffer, offset: int):
         """核心載入函數：調用 Viper 機器碼加速轉換"""
-        if self.led is None:
+        if self.hw is None:
             return
         # 直接獲取硬體驅動的 Buffer 引用（Neopixel 存放在 .buf，其他自定義驅動通常也是）
         # 如果是 PCA9685/i2c 類型的，我們假設它有自定義 buf
-        self._convert(source_buffer, offset, self.num_leds, self._tid)
+        self._convert(source_buffer, offset, self.num_pixels, self._tid)
 
     @micropython.viper
     def _convert(self, source, offset: int, n: int, tid: int):
@@ -51,7 +51,7 @@ class LEDController:
         bpp = int(self.bpp)
         
         if tid == 1:  # WS2812 (RGB/GRB)
-            dst = self.led.buf
+            dst = self.hw.buf
             ro = int(self._r)
             go = int(self._g)
             bo = int(self._b)
@@ -64,7 +64,7 @@ class LEDController:
                 dst[d_idx + bo] = src[s_idx + 2] # B
                 
         elif tid == 2: # APA102 (Frame: Header[0xE1] + BGR)
-            dst = self.led.spi_buffer
+            dst = self.hw.spi_buffer
             ro = int(self._r)
             go = int(self._g)
             bo = int(self._b)
@@ -77,9 +77,9 @@ class LEDController:
                 dst[d_idx + go] = src[s_idx + 1] # G
                 dst[d_idx + bo] = src[s_idx + 2] # B
 
-        elif tid == 3: # i2c_LED (PCA9685)
+        elif tid == 3: # i2c_pixel (PCA9685)
             # 專門提取 W 通道 (src[+3]) 給 PWM 控制器
-            dst = self.led.buf
+            dst = self.hw.buf
             ro = int(self._r)
             go = int(self._g)
             bo = int(self._b)
@@ -92,17 +92,17 @@ class LEDController:
     def st_show(self):
         """觸發硬體顯示"""
         t = self._tid
-        if t == 1: self.led.write()
-        elif t == 2: self.led.show_raw() if hasattr(self.led, 'show_raw') else self.led.show()
-        elif t == 3: self.led.show() if hasattr(self.led, 'show') else self.led.sync_buffer()
+        if t == 1: self.hw.write()
+        elif t == 2: self.hw.show_raw() if hasattr(self.hw, 'show_raw') else self.hw.show()
+        elif t == 3: self.hw.show() if hasattr(self.hw, 'show') else self.hw.sync_buffer()
 
     def __len__(self):
-        return self.num_leds
+        return self.num_pixels
 
-# ==================== LEDStreamer ====================
-class LEDStreamer:
+# ==================== PixelStreamer ====================
+class PixelStreamer:
     """
-    LED 流式傳輸管理器 - 零拷貝高性能版
+    pixel 流式傳輸管理器 - 零拷貝高性能版
     """
     def __init__(self, controllers):
         self.controllers = controllers
@@ -148,7 +148,7 @@ if __name__ == '__main__':
     # 1. 模擬硬體初始化
     # WS2812 組 (假設 10 顆燈)
     np_io = neopixel.NeoPixel(Pin(15, Pin.OUT), 10)
-    ctrl_ws = LEDController('WS2812', {'led_IO': np_io, 'Q': 10, 'order': 'GRB'})
+    ctrl_ws = PixelController('WS2812', {'pixel_IO': np_io, 'Q': 10, 'order': 'GRB'})
 
     # 模擬 PCA9685 (這裡使用一個假的物件來模擬，實際使用時傳入 PCA 物件)
     class FakePCA:
@@ -156,10 +156,10 @@ if __name__ == '__main__':
         def show(self): pass 
             
     pca_io = FakePCA()
-    ctrl_pca = LEDController('i2c_LED', {'led_IO': pca_io, 'Q': 16, 'order': 'W'})
+    ctrl_pca = PixelController('i2c_pixel', {'pixel_IO': pca_io, 'Q': 16, 'order': 'W'})
 
     # 2. 啟動 Streamer
-    streamer = LEDStreamer([ctrl_ws, ctrl_pca])
+    streamer = PixelStreamer([ctrl_ws, ctrl_pca])
     streamer.init()
 
     # 3. 測試循環

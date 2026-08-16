@@ -1,5 +1,5 @@
 """
-pca9685_drv.py — PCA9685 PWM LED 管理 (走 I2C)
+pca9685_drv.py — PCA9685 PWM pixel 管理 (走 I2C)
 
 設定來源: bus.shared["PCA9685"]  ({enable, list})
          list item: {"i2c": <i2c_list index>, "address": ["0x40"]}
@@ -16,7 +16,7 @@ def init_pca9685(sysbus=None):
     if not cfg.get("enable"):
         return []
 
-    from lib.LEDController import LEDController
+    from lib.PixelController import PixelController
     i2c_list = sysbus.get_service("i2c_list") or []
     pca_list = []
     for item in cfg.get("list", []):
@@ -39,8 +39,8 @@ def init_pca9685(sysbus=None):
             try:
                 pca = PCA9685(i2c, address=addr)
                 pca.freq(1000)
-                pca_list.append(LEDController("i2c_LED", {
-                    "led_IO": pca,
+                pca_list.append(PixelController("i2c_pixel", {
+                    "pixel_IO": pca,
                     "Q": 16,
                     "order": "W",
                 }))

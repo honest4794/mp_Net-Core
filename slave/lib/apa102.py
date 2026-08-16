@@ -5,21 +5,21 @@ import time
 
 class APA102:
     """
-    APA102 極速驅動 - 專為 LEDcontroller 配套設計
-    特性：雙緩衝、Viper 轉換、對齊 LEDcontroller 的 buf 操作
+    APA102 極速驅動 - 專為 PixelController 配套設計
+    特性：雙緩衝、Viper 轉換、對齊 PixelController 的 buf 操作
     """
-    def __init__(self, spi, num_leds,  baudrate=8_000_000):
-        self.n = num_leds
-        self.buf_length = num_leds * 4
+    def __init__(self, spi, num_pixels,  baudrate=8_000_000):
+        self.n = num_pixels
+        self.buf_length = num_pixels * 4
         
-        # 1. 暴露給 LEDcontroller 的標準緩衝區 [G, R, B, W]
-        # 注意：為了符合你 LEDcontroller 的 set_rgb 邏輯與 f.readinto 的性能
+        # 1. 暴露給 PixelController 的標準緩衝區 [G, R, B, W]
+        # 注意：為了符合你 PixelController 的 set_rgb 邏輯與 f.readinto 的性能
         self.buf = bytearray(self.buf_length)
         
         # 2. SPI 物理傳輸數據區 (原生 APA102 格式)
         # 整合 Start + Data + End 為單一緩衝區以避免 SPI 分段寫入造成的時序問題
         self.start_len = 4
-        self.end_len = max(4, (num_leds + 15) // 16)
+        self.end_len = max(4, (num_pixels + 15) // 16)
         self.spi_total_len = self.start_len + self.buf_length + self.end_len
         self.spi_buffer = bytearray(self.spi_total_len)
         
@@ -56,7 +56,7 @@ class APA102:
     @micropython.viper
     def _convert(self):
         """
-        Viper 內核：將 LEDcontroller 寫入的 [G, R, B, W] 轉換為 [0xE0|W, B, G, R]
+        Viper 內核：將 PixelController 寫入的 [G, R, B, W] 轉換為 [0xE0|W, B, G, R]
         寫入到 spi_buffer 的中間數據區
         直接由 show() 調用
         """
@@ -66,7 +66,7 @@ class APA102:
         offset: int = int(self.start_len) # Offset for data in spi_buffer
         
         for i in range(0, n, 4):
-            # 讀取 LEDcontroller 規範的四字節 (假設最後一字節為亮度)
+            # 讀取 PixelController 規範的四字節 (假設最後一字節為亮度)
             g = p_in[i]
             r = p_in[i+1]
             b = p_in[i+2]
@@ -92,7 +92,7 @@ class APA102:
         self.show_raw()
         
     def write(self):
-        """相容 LEDcontroller 的調用習慣"""
+        """相容 PixelController 的調用習慣"""
         self.show_raw()
 
     def fill(self, color):

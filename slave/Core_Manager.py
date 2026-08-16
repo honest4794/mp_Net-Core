@@ -26,22 +26,22 @@ def launcher():
     log = get_log()
     log.info("📂 [CoreManager] TaskManager Mode")
 
-    st_LED = bus.get_service("st_LED")
+    st_pixel = bus.get_service("st_pixel")
 
     bus.slave_id = ubinascii.hexlify(machine.unique_id()).decode().upper()
     bus.shared["engine_run"] = True
     bus.shared["spi_busy"] = False
     bus_sys = bus.shared["System"]
 
-    if st_LED:
-        hub = AtomicStreamHub(st_LED.total_bytes * bus_sys["buffer_frames"])
+    if st_pixel:
+        hub = AtomicStreamHub(st_pixel.total_bytes * bus_sys["buffer_frames"])
         bus.register_service("pixel_stream", hub)
 
     app = App()
 
     ctx = {
         "app": app,
-        "st_LED": st_LED,
+        "st_pixel": st_pixel,
         "bus": bus,
     }
 
@@ -144,7 +144,7 @@ def launcher():
         bus.shared["engine_run"] = False
         print("[CoreManager]🛑 All cores stopping...")
         time.sleep_ms(500)
-        if st_LED:
-            st_LED.big_buffer = bytearray(st_LED.total_bytes)
-            st_LED.show_all()
+        if st_pixel:
+            st_pixel.big_buffer = bytearray(st_pixel.total_bytes)
+            st_pixel.show_all()
         print("[CoreManager]🏁 Clean Exit.")

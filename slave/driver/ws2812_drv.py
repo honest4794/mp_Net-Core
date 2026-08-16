@@ -1,5 +1,5 @@
 """
-ws2812_drv.py — WS2812 LED 管理
+ws2812_drv.py — WS2812 pixel 管理
 
 設定來源: bus.shared["WS2812"]  ({enable, list})
 產物:    bus.register_service("ws2812_list", [...])
@@ -16,13 +16,13 @@ def init_ws2812(sysbus=None):
         return []
 
     from machine import Pin
-    from lib.LEDController import LEDController
+    from lib.PixelController import PixelController
     ws_list = []
     for item in cfg.get("list", []):
         pin = Pin(item["GPIO"], Pin.OUT)
         pixel = neopixel.NeoPixel(pin, item["Q"])
-        ws_list.append(LEDController("WS2812", {
-            "led_IO": pixel,
+        ws_list.append(PixelController("WS2812", {
+            "pixel_IO": pixel,
             "Q": item["Q"],
             "order": item.get("order", "GRB"),
         }))

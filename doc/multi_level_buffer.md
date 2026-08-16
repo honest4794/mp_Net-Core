@@ -8,7 +8,7 @@
 
 ## 1) 為什麼需要多級緩衝
 
-ESP32-S3 的 MicroPython 環境下,記憶體有限且 GC 不可預測。資料路徑若每一段都 `bytes 拼接 / bytearray 新建`,高頻率(網路封包、JPEG 幀、LED 像素)下會造成:
+ESP32-S3 的 MicroPython 環境下,記憶體有限且 GC 不可預測。資料路徑若每一段都 `bytes 拼接 / bytearray 新建`,高頻率(網路封包、JPEG 幀、pixel 資料)下會造成:
 
 - **GC 抖動**:每幀分配 → 回收 → 碎片化,導致播放卡頓
 - **無謂複製**:同一份資料被拷貝 2~3 次,浪費 CPU 與記憶體頻寬
@@ -275,7 +275,7 @@ Core 0                                   Core 1
 │ handle_supply_chain  │                 │ RenderTask.loop()    │
 │  (定時調用)           │                 │                      │
 │ get_write_view()     │                 │ hub.read_into(       │
-│ f_local.readinto(v)  │  pixel_stream   │   st_LED.big_buffer) │
+│ f_local.readinto(v)  │  pixel_stream   │   st_pixel.big_buffer) │
 │ commit()             │ ──────────────→ │ show_all()           │
 └──────────────────────┘   (Core0 寫)    └──────────────────────┘
 ```

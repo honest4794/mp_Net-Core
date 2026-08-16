@@ -11,7 +11,7 @@
         "discovery_port": 9000,
         "heartbeat_interval": 10000,
         "local_fps": 40,
-        "num_leds": 336,
+        "num_pixels": 336,
         "buffer_frames": 1,
         "log_interval_ms": 1000
     },

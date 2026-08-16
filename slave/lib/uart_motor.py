@@ -1,7 +1,7 @@
 """
 uart_motor.py — UART 電機控制器（單一物件管理全部）
 
-對齊 LEDController 的集中處理風格：
+對齊 PixelController 的集中處理風格：
   - 初始化時設定 version（指令方法標記）與 addresses（我控制的全部台）
   - 內部統一緩衝區 buffer，show_all() 一次 uart.write 推送整幀
   - version 分派：協定由外部維護、硬體可能混合版本，

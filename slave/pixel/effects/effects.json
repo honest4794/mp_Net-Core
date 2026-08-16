@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "effects": [
+    {
+      "id": 1,
+      "name": "breathing",
+      "pixel_n": 10,
+      "program": [
+        {"func": "math_now", "F": 2, "l_max": 4095, "l_lim": 100, "phi": 0, "end_Time": 200},
+        {"func": "square_wave_now", "F": 1, "l_max": 3000, "l_lim": 0, "phi": 1024, "end_Time": 100}
+      ],
+      "speed": 3,
+      "reverse": false
+    }
+  ]
+}

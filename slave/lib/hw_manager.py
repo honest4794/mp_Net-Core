@@ -26,7 +26,7 @@ PIN  = 0
 PWM  = 1
 SPI  = 2
 I2C  = 3
-LED  = 4
+PIXEL = 4
 LCD  = 5
 SD   = 6
 UART = 7
@@ -150,8 +150,8 @@ def get(dev_type, dev_id=None):
             lst = bus.get_service("i2c_list")
             if lst and 0 <= dev_id < len(lst):
                 return lst[dev_id]
-        elif dev_type == LED:
-            lst = bus.get_service("led_list")
+        elif dev_type == PIXEL:
+            lst = bus.get_service("pixel_list")
             if lst and 0 <= dev_id < len(lst):
                 return lst[dev_id]
         elif dev_type == LCD:
@@ -198,8 +198,8 @@ def vbtn_buf():
 def list_all():
     rows = []
     for name in ("pin_list", "pwm_list", "spi_list", "i2c_list",
-                 "led_list", "ws2812_list", "apa1022_list", "pca9685_list",
-                 "lcd", "data_Phat", "circuit_bus_list", "st_LED"):
+                 "pixel_list", "ws2812_list", "apa1022_list", "pca9685_list",
+                 "lcd", "data_Phat", "circuit_bus_list", "st_pixel"):
         svc = bus.get_service(name)
         if svc is not None:
             rows.append(name)
@@ -350,7 +350,7 @@ def consume_input(kind, key=None, idx=None):
 # -- 單例物件 --
 HW = type("HW", (), {
     "PIN": PIN, "PWM": PWM, "SPI": SPI, "I2C": I2C,
-    "LED": LED, "LCD": LCD, "SD": SD, "UART": UART, "VBTN": VBTN,
+    "PIXEL": PIXEL, "LCD": LCD, "SD": SD, "UART": UART, "VBTN": VBTN,
     "get": staticmethod(get),
     "set": staticmethod(set),
     "resolve_pin": staticmethod(resolve_pin),

@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "order": ["apa102", "ws2812", "pca9685", "pwm", "uartMotor1"],
+  "groups": [
+    {
+      "id": 1,
+      "name": "gundam_body",
+      "sel": [
+        {"type": "pwm",    "sel": "10:15"},
+        {"type": "ws2812", "sel": "40:200"},
+        {"type": "ws2812", "sel": ":10"},
+        {"type": "pwm",    "sel": "15:10:-1"}
+      ]
+    },
+    {
+      "id": 2,
+      "name": "full",
+      "sel": [
+        {"type": "apa102",    "sel": ":"},
+        {"type": "ws2812",    "sel": ":"},
+        {"type": "pca9685",   "sel": ":"},
+        {"type": "pwm",       "sel": ":"},
+        {"type": "uartMotor1", "sel": ":"}
+      ]
+    },
+    {
+      "id": 3,
+      "name": "motors",
+      "sel": [
+        {"type": "uartMotor1", "sel": ":"}
+      ]
+    }
+  ]
+}

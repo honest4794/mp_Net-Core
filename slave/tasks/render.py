@@ -6,7 +6,7 @@ from lib.log_service import get_log
 class RenderTask(Task):
     def __init__(self, name, ctx):
         super().__init__(name, ctx)
-        self.st_LED = ctx['st_LED']
+        self.st_pixel = ctx['st_pixel']
         self.fps = 40
         self.hub = None
 
@@ -38,9 +38,9 @@ class RenderTask(Task):
         if not is_streaming:
             is_ready = self.fcache_get("is_ready")
             if is_ready == False:
-                for i in range(len(self.st_LED.big_buffer)):
-                    self.st_LED.big_buffer[i] = 0
-                self.st_LED.show_all()
+                for i in range(len(self.st_pixel.big_buffer)):
+                    self.st_pixel.big_buffer[i] = 0
+                self.st_pixel.show_all()
 
             if time.ticks_diff(time.ticks_us(), self.next_tick_us) < 0:
                 return
@@ -62,8 +62,8 @@ class RenderTask(Task):
              self.next_tick_us = now
 
         if time.ticks_diff(now, self.next_tick_us) >= 0:
-            if self.hub.read_into(self.st_LED.big_buffer):
-                self.st_LED.show_all()
+            if self.hub.read_into(self.st_pixel.big_buffer):
+                self.st_pixel.show_all()
                 self._render_count += 1
                 self.success += 1
 

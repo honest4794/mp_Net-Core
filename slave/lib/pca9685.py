@@ -36,9 +36,9 @@ class PCA9685:
             print(f"PCA9685 Freq Error: {e}")
 
     # ========================================
-    # 內部 LED 類 - 保留並優化你的語法糖
+    # 內部 Pixel 類 - 保留並優化你的語法糖
     # ========================================
-    class LED:
+    class Pixel:
         def __init__(self, controller, index):
             self.controller = controller
             self.index = index
@@ -52,7 +52,7 @@ class PCA9685:
             self.controller._buf[self.index] = value
 
         def __setitem__(self, sub_index, value):
-            """ 支援 led[i][0] = val 語法 """
+            """ 支援 pixel[i][0] = val 語法 """
             # 在 PWM 模式下，通常只有亮度(V)一個維度，
             # 但這裡保留接口，以便你未來擴充 HSV 邏輯
             if sub_index == 2 or sub_index == -1: # 假設 2 是 V (Value/Brightness)
@@ -62,9 +62,9 @@ class PCA9685:
                 self.controller._buf[self.index] = value
 
     def __getitem__(self, index):
-        """ 返回一個 LED 物件，支援 led[i][2] = 4095 """
+        """ 返回一個 Pixel 物件，支援 pixel[i][2] = 4095 """
         if 0 <= index < self.n:
-            return self.LED(self, index)
+            return self.Pixel(self, index)
         raise IndexError("Out of range")
     
     
@@ -157,7 +157,7 @@ class PCA9685:
 # pca = PCA9685極速版(i2c, invert=True) # 如果是共陽極，設為 True
 
 # 1. 你的經典用法：
-# pca[0][2] = 4095  # 設置第 0 個 LED 的亮度
+# pca[0][2] = 4095  # 設置第 0 個 Pixel 的亮度
 # pca.show()
 
 # 2. 批量用法：

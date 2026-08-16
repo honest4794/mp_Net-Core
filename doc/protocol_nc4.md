@@ -189,7 +189,7 @@ decode 邊界行為(對接工具需注意):
 0x15xx — waiting_to_trash  待清理功能
 0x18xx — ram_bench   記憶體效能測試
 0x20xx — file        檔案傳輸/查詢
-0x30xx — stream      LED 像素串流
+0x30xx — stream      pixel 串流
 0x31xx — jpeg        JPEG 播放器
 0x32xx — mp4         MP4 播放器
 ```

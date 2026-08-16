@@ -42,7 +42,7 @@ def worker_start():
     log = get_log()
     log.info("⚡ [Core0] Worker/Engine Mode — control core")
 
-    st_LED = bus.get_service("st_LED")
+    st_pixel = bus.get_service("st_pixel")
 
     bus.slave_id = ubinascii.hexlify(machine.unique_id()).decode().upper()
     bus.shared["engine_run"] = True
@@ -64,7 +64,7 @@ def worker_start():
 
     _init_player_shared()
 
-    ctx = {"app": app, "st_LED": st_LED, "bus": bus}
+    ctx = {"app": app, "st_pixel": st_pixel, "bus": bus}
 
     # 指令線路任務（直接驅動，免 TaskManager 調度開銷）
     tasks = [
