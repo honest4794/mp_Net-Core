@@ -3,10 +3,12 @@ pixel_layout.py — 「混亂的群組選擇表」↔「整齊的硬體表」之
 
 兩張表：
 
-  1. 混亂表（組合表）＝ registry.json 的 order + groups[].sel
-     - 每個 group 用「有序段列表」選控制單元，書寫次序 = 像素次序，可交叉型別/反序
+  1. 混亂表（組合表）＝ 多套 mapping（map/*.json）+ 各 group 的 sel
+     - 每個 mapping 用「有序段列表」選控制單元，書寫次序 = 像素次序，可交叉型別/反序
+     - 群組引用 = mapping + group 兩段，各可用 id 或 name（可混用）
   2. 整齊表（硬體表）＝ PixelStreamer.big_buffer
-     - 依 order 依序累加各型別所有 instance 的 count，形成全域 index 空間
+     - 依 order（來自播放器，硬體真值）依序累加各型別所有 instance 的 count，
+       形成全域 index 空間
      - 每顆 pixel 一個 RGBW cell（4 bytes：byte0=R, byte1=G, byte2=B, byte3=W）
 
 本 lib 把「混亂表」預先展開成「全域 pixel index」，存 array('H')（uint16，上限
@@ -374,11 +376,16 @@ def _decode_cell(buf, byte_off, write):
 
 
 class PixelLayout:
-    """兩張表的橋樑：展開 group 選擇 → big_buffer 落點 + 快速散射。"""
+    """兩張表的橋樑：多套 mapping（群組選擇）→ big_buffer 落點 + 快速散射。
+
+    硬體骨架（order/counts/type_offsets）全域唯一，所有 mapping 共用同一張
+    index 空間（單一真源）；每個 mapping 各自展開 groups，書寫次序 = 像素次序。
+    群組引用 = mapping + group 兩段，各可用 id 或 name（可混用）。
+    """
 
     def __init__(self, order, counts, instance_counts=None):
         """
-        order  : 型別名列表（對齊 registry.json 的 order）
+        order  : 型別名列表（來自播放器 PixelStreamer.controllers，硬體真值）
         counts : {型別名: 該型別總像素數}（所有 instance 的 Q 加總）
         instance_counts : {型別名: [各 instance 的像素數, ...]}（可選，供 controller 對照）
         """
@@ -401,102 +408,136 @@ class PixelLayout:
             off += self.counts[t]
         self.total_pixels = off
 
-        self._groups = {}   # id -> {"name", "indices": array('H')}
-        self._names = {}    # name -> id
+        self._mappings = {}  # mid -> {"name", "groups": {gid: {"name","indices"}}, "gnames": {name: gid}}
+        self._mnames = {}    # mapping name -> mid
 
     @classmethod
-    def from_registry(cls, registry, counts, instance_counts=None):
-        """由 registry.json（dict）+ counts 建立，並自動註冊全部 group。"""
-        lay = cls(registry["order"], counts, instance_counts)
-        for g in registry.get("groups", []):
-            lay.register_group(g["id"], g["name"], g["sel"])
+    def from_registry(cls, registry, order, counts, instance_counts=None):
+        """載入 registry（{"mappings": [...]}）+ 硬體 order/counts，註冊全部 mapping。
+
+        任一 mapping 重複 / 群組重複 → raise ValueError（呼叫端決定跳過或中止）。
+        """
+        lay = cls(order, counts, instance_counts)
+        for m in registry.get("mappings", []):
+            lay.register_mapping(m["id"], m["name"], m.get("groups", []))
         return lay
 
-    def register_group(self, gid, name, sel):
-        """展開一個 group 的 sel → 全域 index（array('H')）。回傳選出像素數。
+    def register_mapping(self, mid, name, groups):
+        """註冊一套 mapping：展開其 groups → 全域 index（array('H')）。回傳總像素數。
 
-        sel 是「有序的段列表」：每一段 = {"type": 型別名/int, "sel": 選擇器}。
-        段依書寫順序拼接，可交叉型別、反序、重疊（對應舊的 [LED_list[a:b], RGB_list[c:d], ...]）。
+        groups = [{"id", "name", "sel": [{"type", "sel"}, ...]}, ...]
+        群組 id/name 在此 mapping 內必須唯一（重複 raise，不註冊）。
+        sel 是「有序的段列表」：段依書寫順序拼接，可交叉型別、反序、重疊。
+        引用硬體不存在的型別（如 pwm / uartMotor1 未進播放器）→ 該段為空，不 raise。
         """
-        gid = int(gid)
-        if gid in self._groups:
-            raise ValueError("GROUP ID CONFLICT: id={}".format(gid))
-        if name in self._names:
-            raise ValueError("GROUP NAME CONFLICT: name={}".format(name))
+        mid = int(mid)
+        if mid in self._mappings:
+            raise ValueError("MAPPING ID CONFLICT: id={}".format(mid))
+        if name in self._mnames:
+            raise ValueError("MAPPING NAME CONFLICT: name={}".format(name))
 
-        global_idx = []
-        for seg in sel:
-            t = seg["type"]
-            if isinstance(t, int):
-                t = self.order[t]
-            if t not in self.counts:
-                raise ValueError("group 引用了未知型別: {!r}".format(t))
-            base = self.type_offsets[t]
-            cnt = self.counts[t]
-            for local in _expand_selector(seg["sel"], cnt):
-                global_idx.append(base + local)
+        gtable = {}
+        gnames = {}
+        for g in groups:
+            gid = int(g["id"])
+            gname = g["name"]
+            if gid in gtable:
+                raise ValueError("GROUP ID CONFLICT: mapping={} group id={}".format(name, gid))
+            if gname in gnames:
+                raise ValueError("GROUP NAME CONFLICT: mapping={} group name={}".format(name, gname))
 
-        if global_idx and max(global_idx) > 0xFFFF:
-            raise ValueError("全域 pixel index 超過 65535，改用 array('I')")
+            global_idx = []
+            for seg in g["sel"]:
+                t = seg["type"]
+                if isinstance(t, int):
+                    t = self.order[t]
+                if t not in self.counts:
+                    continue  # 硬體無此型別 → 該段為空（誠實反映，warn 由載入端做）
+                base = self.type_offsets[t]
+                cnt = self.counts[t]
+                for local in _expand_selector(seg["sel"], cnt):
+                    global_idx.append(base + local)
 
-        self._groups[gid] = {
-            "name": name,
-            "indices": _array('H', global_idx),
-        }
-        self._names[name] = gid
-        return len(global_idx)
+            if global_idx and max(global_idx) > 0xFFFF:
+                raise ValueError("全域 pixel index 超過 65535，改用 array('I')")
 
-    def _gid(self, ref):
-        return self._names[ref] if isinstance(ref, str) else int(ref)
+            gtable[gid] = {"name": gname, "indices": _array('H', global_idx)}
+            gnames[gname] = gid
 
-    def _indices(self, ref):
-        return self._groups[self._gid(ref)]["indices"]
+        self._mappings[mid] = {"name": name, "groups": gtable, "gnames": gnames}
+        self._mnames[name] = mid
+        return sum(len(g["indices"]) for g in gtable.values())
+
+    def _mid(self, ref):
+        return self._mnames[ref] if isinstance(ref, str) else int(ref)
+
+    def _gid(self, mref, gref):
+        m = self._mappings[self._mid(mref)]
+        return m["gnames"][gref] if isinstance(gref, str) else int(gref)
+
+    def _indices(self, mref, gref):
+        return self._mappings[self._mid(mref)]["groups"][self._gid(mref, gref)]["indices"]
+
+    def resolve_group(self, mref, gref):
+        """mapping + group（id/name 可混用）→ (mid, gid)。找不到 raise KeyError/ValueError。"""
+        mid = self._mid(mref)
+        return mid, self._gid(mid, gref)
 
     # ── 定址查詢（除錯用，回傳 list）──────────────
 
-    def global_indices(self, ref):
-        """ref = id(int) 或 name(str) → 全域 pixel index 列表（除錯用）。"""
-        return list(self._indices(ref))
+    def mappings(self):
+        """已註冊 mapping：{mid: name}。"""
+        return {mid: m["name"] for mid, m in self._mappings.items()}
 
-    def byte_offsets(self, ref):
-        """ref = id 或 name → big_buffer 的 byte 落點列表（除錯用）。"""
-        return [i << 2 for i in self._indices(ref)]
+    def groups(self, mref):
+        """某 mapping 的群組：{gid: name}。"""
+        m = self._mappings[self._mid(mref)]
+        return {gid: g["name"] for gid, g in m["groups"].items()}
 
-    def pixel_count(self, ref):
-        """ref = id 或 name → 選出的像素數（應 == effect 的 pixel_n）。"""
-        return len(self._indices(ref))
+    def global_indices(self, mref, gref):
+        """mapping + group（各可用 id 或 name）→ 全域 pixel index 列表（除錯用）。"""
+        return list(self._indices(mref, gref))
+
+    def byte_offsets(self, mref, gref):
+        """mapping + group → big_buffer 的 byte 落點列表（除錯用）。"""
+        return [i << 2 for i in self._indices(mref, gref)]
+
+    def pixel_count(self, mref, gref):
+        """mapping + group → 選出的像素數（應 == effect 的 pixel_n）。"""
+        return len(self._indices(mref, gref))
 
     # ── 執行期操作──────────────
 
-    def scatter(self, big_buffer, ref, values, write):
+    def scatter(self, big_buffer, mref, gref, values, write):
         """把效果通道流依 write 散射進 big_buffer（每幀的緊密熱路徑）。
 
+        mref / gref : mapping + group（各可用 id 或 name，可混用）
         values 必須是 array('H') 或 memoryview（viper 需要 buffer 協議）。
         操作模式 = 值流消費形狀（不猜設備）：
           r/g/b/w/ww 1 值/顆、rgb 3 值/顆、rgbw/wwww 4 值/顆。
           r/g/b/w 只寫對應通道，其餘「不修改」。
         保底：值流不足 → 取模循環；過長 → 多餘丟棄；空 → 對應通道寫 0。
         """
-        offs = self._indices(ref)
+        offs = self._indices(mref, gref)
         n = len(offs)
         if _MP and not (isinstance(values, _array) or isinstance(values, memoryview)):
             raise TypeError("scatter 需要 array('H') 或 memoryview，而非 list")
         _SCATTER[write](big_buffer, offs, values, n, len(values))
 
-    def set_value(self, big_buffer, ref, k, value, write):
+    def set_value(self, big_buffer, mref, gref, k, value, write):
         """設群組內第 k 顆的值（直接寫 big_buffer）。k 以群組選出次序為準。
 
         rgb 需傳 3 值 (R,G,B)；rgbw 傳 4 值；r/g/b/w/ww/wwww 傳單值。
         r/g/b/w 只寫對應通道，其餘通道不修改。
         """
-        offs = self._indices(ref)
+        offs = self._indices(mref, gref)
         if not 0 <= k < len(offs):
             raise IndexError("群組內 index 越界")
         _encode_cell(big_buffer, offs[k] << 2, value, write)
 
-    def get_value(self, big_buffer, ref, k, write):
+    def get_value(self, big_buffer, mref, gref, k, write):
         """讀群組內第 k 顆的值（依 write 解碼）。rgb 回傳 3 值，w/ww 回傳單值。"""
-        offs = self._indices(ref)
+        offs = self._indices(mref, gref)
         if not 0 <= k < len(offs):
             raise IndexError("群組內 index 越界")
         return _decode_cell(big_buffer, offs[k] << 2, write)
@@ -519,32 +560,35 @@ if __name__ == "__main__":
     # ── PC 快速自檢（不依賴硬體）────────────────────────
     registry = {
         "version": 1,
-        "order": ["apa102", "ws2812", "pca9685", "pwm", "uartMotor1"],
-        "groups": [
-            {"id": 1, "name": "gundam_body",
-             "sel": [
-                 {"type": "pwm",    "sel": "10:15"},
-                 {"type": "ws2812", "sel": "40:200"},
-                 {"type": "ws2812", "sel": ":10"},
-                 {"type": "pwm",    "sel": "15:10:-1"},
-             ]},
-            {"id": 2, "name": "full",
-             "sel": [
-                 {"type": "apa102",    "sel": ":"},
-                 {"type": "ws2812",    "sel": ":"},
-                 {"type": "pca9685",   "sel": ":"},
-                 {"type": "pwm",       "sel": ":"},
-                 {"type": "uartMotor1", "sel": ":"},
-             ]},
-            {"id": 3, "name": "motors",
-             "sel": [{"type": "uartMotor1", "sel": ":"}]},
+        "mappings": [
+            {"id": 1, "name": "gundam", "groups": [
+                {"id": 1, "name": "gundam_body", "sel": [
+                    {"type": "pwm",    "sel": "10:15"},
+                    {"type": "ws2812", "sel": "40:200"},
+                    {"type": "ws2812", "sel": ":10"},
+                    {"type": "pwm",    "sel": "15:10:-1"},
+                ]},
+                {"id": 2, "name": "motors", "sel": [
+                    {"type": "uartMotor1", "sel": ":"},
+                ]},
+            ]},
+            {"id": 2, "name": "test", "groups": [
+                {"id": 1, "name": "full", "sel": [
+                    {"type": "apa102",    "sel": ":"},
+                    {"type": "ws2812",    "sel": ":"},
+                    {"type": "pca9685",   "sel": ":"},
+                    {"type": "pwm",       "sel": ":"},
+                    {"type": "uartMotor1", "sel": ":"},
+                ]},
+            ]},
         ],
     }
+    order = ["apa102", "ws2812", "pca9685", "pwm", "uartMotor1"]  # 來自播放器（硬體真值）
     counts = {"apa102": 100, "ws2812": 200, "pca9685": 16,
               "pwm": 20, "uartMotor1": 4}
     instance_counts = {"apa102": [60, 40], "ws2812": [120, 80]}
 
-    lay = PixelLayout.from_registry(registry, counts, instance_counts)
+    lay = PixelLayout.from_registry(registry, order, counts, instance_counts)
 
     # 整齊表：型別 offset 依 order 累加 count
     assert lay.type_offsets == {"apa102": 0, "ws2812": 100, "pca9685": 300,
@@ -556,23 +600,54 @@ if __name__ == "__main__":
     assert lay.controller_offset("apa102", 1) == 60
     assert lay.controller_offsets([("apa102", 0), ("apa102", 1)]) == [0, 60]
 
-    # 混亂表展開（書寫次序 = 像素次序）
-    assert lay.pixel_count(1) == 180          # 5 + 160 + 10 + 5
-    assert lay.pixel_count("motors") == 4
-    assert lay.pixel_count("full") == 340
+    # 多 mapping + 複合引用（mapping.group，id/name 可混用）
+    assert lay.mappings() == {1: "gundam", 2: "test"}
+    assert lay.groups("gundam") == {1: "gundam_body", 2: "motors"}
+    assert lay.groups(2) == {1: "full"}
 
-    gi = lay.global_indices("gundam_body")
+    assert lay.pixel_count("gundam", "gundam_body") == 180   # 5 + 160 + 10 + 5
+    assert lay.pixel_count("gundam", 2) == 4                 # motors
+    assert lay.pixel_count(1, "motors") == 4                 # 混用
+    assert lay.pixel_count(2, 1) == 340                      # test.full
+    assert lay.pixel_count("test", "full") == 340
+
+    gi = lay.global_indices(1, "gundam_body")
     assert gi[0:5] == [326, 327, 328, 329, 330]
     assert gi[5] == 140 and gi[164] == 299
     assert gi[165] == 100 and gi[174] == 109
     assert gi[175:180] == [331, 330, 329, 328, 327]
 
+    # 重複檢查：同 mapping 內 group id/name 重複、mapping id/name 重複 → raise
+    def _raises(fn):
+        try:
+            fn()
+        except ValueError:
+            return True
+        return False
+
+    assert _raises(lambda: lay.register_mapping(9, "dup", [
+        {"id": 1, "name": "a", "sel": []},
+        {"id": 1, "name": "b", "sel": []}]))                      # group id 重複
+    assert _raises(lambda: lay.register_mapping(9, "dup2", [
+        {"id": 1, "name": "a", "sel": []},
+        {"id": 2, "name": "a", "sel": []}]))                      # group name 重複
+    assert _raises(lambda: lay.register_mapping(1, "x", []))      # mapping id 重複
+    assert _raises(lambda: lay.register_mapping(9, "gundam", [])) # mapping name 重複
+
+    # 未知型別（硬體無此型別）→ 空段不 raise（誠實反映）
+    lay2 = PixelLayout.from_registry({"mappings": [
+        {"id": 1, "name": "ghost", "groups": [
+            {"id": 1, "name": "g", "sel": [{"type": "pwm", "sel": ":"}]},
+        ]},
+    ]}, ["ws2812"], {"ws2812": 10})
+    assert lay2.pixel_count(1, 1) == 0
+
     # ── scatter 通道流語義 ──
     # rgb：每顆 3 值 (R,G,B)；w / ww：每顆 1 值
     buf = bytearray(lay.total_pixels * 4)
 
-    # rgb 精確通道流（motors 4 顆 → 12 個通道值）
-    lay.scatter(buf, "motors",
+    # rgb 精確通道流（gundam.motors 4 顆 → 12 個通道值）
+    lay.scatter(buf, "gundam", "motors",
                 _array('H', [255, 0, 0, 0, 255, 0, 0, 0, 255, 4095, 2048, 1024]), "rgb")
     assert buf[1344:1348] == bytes([15, 0, 0, 0])      # 第 0 顆 R=255
     assert buf[1348:1352] == bytes([0, 15, 0, 0])      # 第 1 顆 G=255
@@ -580,19 +655,19 @@ if __name__ == "__main__":
     assert buf[1356:1360] == bytes([255, 128, 64, 0])  # 第 3 顆 (4095,2048,1024)
 
     # w：每顆 1 值
-    lay.scatter(buf, "motors", _array('H', [4095, 2048, 100, 0]), "w")
+    lay.scatter(buf, 1, 2, _array('H', [4095, 2048, 100, 0]), "w")
     assert buf[1344 + 3] == 255
     assert buf[1348 + 3] == 128
     assert buf[1352 + 3] == 6
     assert buf[1356 + 3] == 0
 
     # ww：12-bit 完整
-    lay.scatter(buf, "motors", _array('H', [4095, 0, 0, 0]), "ww")
+    lay.scatter(buf, "gundam", "motors", _array('H', [4095, 0, 0, 0]), "ww")
     assert buf[1344] == 0 and buf[1345] == 0
     assert buf[1346] == 255 and buf[1347] == 15
 
     # rgbw：4 顆 → 16 通道值，各 >>4 進 R,G,B,W
-    lay.scatter(buf, "motors",
+    lay.scatter(buf, "gundam", "motors",
                 _array('H', [255, 0, 0, 4095,
                              0, 255, 0, 4095,
                              0, 0, 255, 4095,
@@ -603,7 +678,7 @@ if __name__ == "__main__":
     assert buf[1356:1360] == bytes([255, 128, 64, 32])
 
     # wwww：1 值/顆，一個數值代表整顆 LED，4 個 byte 全寫同值（>>4）
-    lay.scatter(buf, "motors", _array('H', [4095, 2048, 100, 0]), "wwww")
+    lay.scatter(buf, "gundam", "motors", _array('H', [4095, 2048, 100, 0]), "wwww")
     assert buf[1344:1348] == bytes([255, 255, 255, 255])
     assert buf[1348:1352] == bytes([128, 128, 128, 128])
     assert buf[1352:1356] == bytes([6, 6, 6, 6])
@@ -611,29 +686,29 @@ if __name__ == "__main__":
 
     # r/g/b/w：只寫對應通道，其餘通道「不修改」（保留原值，可累加組合）
     # 先寫一個完整 cell（RGBW），再用 r/g/b/w 覆寫單通道，驗證其他通道保留
-    lay.scatter(buf, "motors", _array('H', [255, 255, 255, 255,
-                                            0, 0, 0, 0,
-                                            0, 0, 0, 0,
-                                            0, 0, 0, 0]), "rgbw")
+    lay.scatter(buf, "gundam", "motors", _array('H', [255, 255, 255, 255,
+                                                      0, 0, 0, 0,
+                                                      0, 0, 0, 0,
+                                                      0, 0, 0, 0]), "rgbw")
     assert buf[1344:1348] == bytes([15, 15, 15, 15])   # 第 0 顆完整 (R,G,B,W)
 
-    lay.scatter(buf, "motors", _array('H', [4095, 0, 0, 0]), "r")
+    lay.scatter(buf, "gundam", "motors", _array('H', [4095, 0, 0, 0]), "r")
     assert buf[1344:1348] == bytes([255, 15, 15, 15])  # 只改 R，G/B/W 保留
-    lay.scatter(buf, "motors", _array('H', [2048, 0, 0, 0]), "g")
+    lay.scatter(buf, "gundam", "motors", _array('H', [2048, 0, 0, 0]), "g")
     assert buf[1344:1348] == bytes([255, 128, 15, 15]) # 只改 G
-    lay.scatter(buf, "motors", _array('H', [100, 0, 0, 0]), "b")
+    lay.scatter(buf, "gundam", "motors", _array('H', [100, 0, 0, 0]), "b")
     assert buf[1344:1348] == bytes([255, 128, 6, 15])  # 只改 B
-    lay.scatter(buf, "motors", _array('H', [512, 0, 0, 0]), "w")
+    lay.scatter(buf, "gundam", "motors", _array('H', [512, 0, 0, 0]), "w")
     assert buf[1344:1348] == bytes([255, 128, 6, 32])  # 只改 W
 
     # ── 保底機制（不足 / 過長 / 空）──────────────
     # 不足：motors 4 顆但只給 2 值 → 取模循環
-    lay.scatter(buf, "motors", _array('H', [4095, 0]), "w")
+    lay.scatter(buf, "gundam", "motors", _array('H', [4095, 0]), "w")
     assert buf[1344 + 3] == 255 and buf[1348 + 3] == 0
     assert buf[1352 + 3] == 255 and buf[1356 + 3] == 0
 
     # 過長：motors 4 顆需 12 個 rgb 通道值，給 14 個 → 只取前 12，多餘丟棄
-    lay.scatter(buf, "motors",
+    lay.scatter(buf, "gundam", "motors",
                 _array('H', [100, 200, 300, 400, 500, 600, 700, 800,
                              900, 1000, 1100, 1200, 9999, 8888]), "rgb")
     assert buf[1344:1348] == bytes([100 >> 4, 200 >> 4, 300 >> 4, 0])
@@ -642,26 +717,26 @@ if __name__ == "__main__":
     assert buf[1356:1360] == bytes([1000 >> 4, 1100 >> 4, 1200 >> 4, 0])  # 9999/8888 丟棄
 
     # 空：0 值 → 全寫 0
-    lay.scatter(buf, "motors", _array('H', []), "rgb")
+    lay.scatter(buf, "gundam", "motors", _array('H', []), "rgb")
     assert buf[1344:1360] == bytes(16)
 
     # ── set_value / get_value（單顆操作面）────────
-    lay.set_value(buf, "motors", 0, 2048, "w")
-    assert lay.get_value(buf, "motors", 0, "w") == 2048
-    lay.set_value(buf, "motors", 1, 4095, "ww")
-    assert lay.get_value(buf, "motors", 1, "ww") == 4095
-    lay.set_value(buf, "motors", 2, (100, 200, 300), "rgb")
-    assert lay.get_value(buf, "motors", 2, "rgb") == (96, 192, 288)  # >>4 量化
-    lay.set_value(buf, "motors", 3, (100, 200, 300, 400), "rgbw")
-    assert lay.get_value(buf, "motors", 3, "rgbw") == (96, 192, 288, 400)
-    lay.set_value(buf, "motors", 0, 2048, "wwww")
-    assert lay.get_value(buf, "motors", 0, "wwww") == 2048
-    lay.set_value(buf, "motors", 1, 1000, "r")
-    assert lay.get_value(buf, "motors", 1, "r") == 992   # 1000>>4=62, 62<<4=992
-    lay.set_value(buf, "motors", 2, 2000, "g")
-    assert lay.get_value(buf, "motors", 2, "g") == 2000  # 2000>>4=125, 125<<4=2000
-    lay.set_value(buf, "motors", 3, 3000, "b")
-    assert lay.get_value(buf, "motors", 3, "b") == 2992  # 3000>>4=187, 187<<4=2992
+    lay.set_value(buf, "gundam", "motors", 0, 2048, "w")
+    assert lay.get_value(buf, "gundam", "motors", 0, "w") == 2048
+    lay.set_value(buf, "gundam", "motors", 1, 4095, "ww")
+    assert lay.get_value(buf, "gundam", "motors", 1, "ww") == 4095
+    lay.set_value(buf, "gundam", "motors", 2, (100, 200, 300), "rgb")
+    assert lay.get_value(buf, "gundam", "motors", 2, "rgb") == (96, 192, 288)  # >>4 量化
+    lay.set_value(buf, "gundam", "motors", 3, (100, 200, 300, 400), "rgbw")
+    assert lay.get_value(buf, "gundam", "motors", 3, "rgbw") == (96, 192, 288, 400)
+    lay.set_value(buf, "gundam", "motors", 0, 2048, "wwww")
+    assert lay.get_value(buf, "gundam", "motors", 0, "wwww") == 2048
+    lay.set_value(buf, "gundam", "motors", 1, 1000, "r")
+    assert lay.get_value(buf, "gundam", "motors", 1, "r") == 992   # 1000>>4=62, 62<<4=992
+    lay.set_value(buf, "gundam", "motors", 2, 2000, "g")
+    assert lay.get_value(buf, "gundam", "motors", 2, "g") == 2000  # 2000>>4=125, 125<<4=2000
+    lay.set_value(buf, "gundam", "motors", 3, 3000, "b")
+    assert lay.get_value(buf, "gundam", "motors", 3, "b") == 2992  # 3000>>4=187, 187<<4=2992
 
     # slice 語法單元
     assert _expand_selector("::-1", 3) == [2, 1, 0]
@@ -669,7 +744,7 @@ if __name__ == "__main__":
     assert _expand_selector("-5:", 10) == [5, 6, 7, 8, 9]
     assert _expand_selector("15:10:-1", 20) == [15, 14, 13, 12, 11]
 
-    print("OK — PixelLayout（rgb/rgbw/w/ww/wwww + 保底循環 + set/get + controller 對照）驗證通過")
+    print("OK — PixelLayout（多 mapping + 複合引用 + 重複檢查 + scatter 保底 + set/get）驗證通過")
 
 
 # ── 裝置效能測試骨架（PC 跑不了 viper，請 flash 到 ESP32 測）──────────────

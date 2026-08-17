@@ -86,6 +86,11 @@ def launcher():
     from tasks.hw_sample_task import HwSampleTask
     tm.register_task("hw_sample", HwSampleTask, default_affinity=(0, 1), layer=0)
 
+    # ── pixel 子系統（管理 + 播放端）：初始化 effects/mapping/modes/registry，
+    #    並跑大隊列自動播放（pixel/registry.json 的 auto_play）。放 core1（重活）。──
+    from tasks.pixel_task import PixelTask
+    tm.register_task("pixel", PixelTask, default_affinity=(0, 1), layer=0)
+
     # ── Layer 1: JPEG 播放器（依賴 TFT/LCD，沒 LCD 整段跳過）──
     if bus.has_lcd():
         from tasks.jpeg_player_task import JpegPlayerTask
