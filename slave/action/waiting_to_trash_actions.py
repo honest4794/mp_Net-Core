@@ -1,5 +1,5 @@
 # waiting_to_trash_actions.py
-# 過渡期顯示控制協議（mode/brightness/time）— 對齊 jpeg_actions 模式。
+# 過渡期顯示控制協議（mode/brightness/time）。
 #
 # 0x1501 WTT_CTL   = 設定指令:要求對方把 mode/brightness 改成某值(255=不改該欄位)。
 # 0x1502 WTT_STATUS= 狀態回覆:對方回報 mode/brightness/time —— 收到就寫 Global

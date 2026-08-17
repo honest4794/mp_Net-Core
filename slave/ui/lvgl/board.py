@@ -13,7 +13,7 @@
 #   輸入   hw_manager 快照(HwSampleTask 統一採樣)→ bus.shared["_hw_inputs"]
 #
 # 啟動唯一前置條件:bus.has_lcd()(boot.py 的 init_tft 成功)。
-# LVGL 與 JPEG player 共用同一塊 LCD、互斥,手動決定跑哪個。
+# LVGL 獨佔 LCD（原與 jpeg player 共用互斥，播放器已移除）。
 import sys
 from lib.sys_bus import bus
 from ui.lvgl import app

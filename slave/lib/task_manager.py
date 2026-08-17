@@ -69,7 +69,7 @@ class TaskManager:
     def _check_affinity(self, name, task_cls, affinity):
         """硬體歸屬防呆：宣告 hw=("lcd",) 的 task 禁止排到 core1。
 
-        lcd_bus 的 DMA queue 不是 thread-safe，LVGL/JPEG player 若跟
+        lcd_bus 的 DMA queue 不是 thread-safe，LVGL 若跟
         core1 的任務同時碰 SPI1 會直接崩潰，所以這裡直接擋下。"""
         hw = tuple(getattr(task_cls, "hw", ()))
         if "lcd" in hw and affinity[1] == 1:

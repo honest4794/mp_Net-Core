@@ -66,9 +66,7 @@ def launcher():
     #   core0(主線程) = 通訊 + UI:network / web_ui / circuit / bus_decode /
     #     log / lvgl / motor。通訊任務單一呼叫鏈淺(<8KB,探針實測),
     #     與 LVGL 共用主線程 16KB stack 沒有壓力。
-    #   core1(_thread) = 重活:fs_scan / hw_sample。之後 jpeg 解碼(C 層)
-    #     也可放 core1,但「顯示」部分必須回 core0 — hw=("lcd",) 防呆
-    #     (lib/task_manager.py) 會自動擋掉誤排。
+    #   core1(_thread) = 重活:fs_scan / hw_sample / pixel。
     tm.register_task("log", LogTask, default_affinity=(1, 0), layer=0)
     tm.register_task("network", NetworkTask, default_affinity=(1, 0), layer=0)
     # 裝置角色互斥(見 temp/cp 面板 vs temp/motor 執行,兩份各自 flash):
@@ -91,40 +89,15 @@ def launcher():
     from tasks.pixel_task import PixelTask
     tm.register_task("pixel", PixelTask, default_affinity=(0, 1), layer=0)
 
-    # ── Layer 1: JPEG 播放器（依賴 TFT/LCD，沒 LCD 整段跳過）──
+    # ── Layer 1: LVGL UI（依賴 TFT/LCD，沒 LCD 整段跳過）──
+    # affinity=(1,0)=CPU0: LVGL 完整 UI 不能在 _thread(CPU1)裡跑
+    # (MicroPython threading 限制:完整 UI 的 widget 操作在 thread 裡會崩潰)。
+    # CPU1 跑其他 task(採樣等)。
     if bus.has_lcd():
-        from tasks.jpeg_player_task import JpegPlayerTask
-#     tm.register_task("jpeg_player", JpegPlayerTask, default_affinity=(0, 1), layer=1)
-
-        # ── Layer 1: LVGL UI（跟 jpeg_player 互斥，共用同一塊 LCD，二選一）──
-        # affinity=(1,0)=CPU0: LVGL 完整 UI 不能在 _thread(CPU1)裡跑
-        # (MicroPython threading 限制:完整 UI 的 widget 操作在 thread 裡會崩潰)。
-        # CPU1 跑其他 task(採樣/JPEG player 等)。
         from tasks.lvgl_task import LvglTask
         tm.register_task("lvgl", LvglTask, default_affinity=(1, 0), layer=1)
-
-        # ══════════════════════════════════════════════════════
-        # 臨時播放參數（之後會移到 config.json）
-        # ══════════════════════════════════════════════════════
-        bus_sys["player_width"]  = 240
-        bus_sys["player_height"] = 240
-        bus_sys["player_pixel_format"] = "RGB565_LE"
-        bus.shared["jpeg_loop"] = True
-        bus.shared["jpeg_player"] = {
-            "playing": True,
-            "paused":  False,
-            "frame":   0,
-            "total":   0,
-            "source":  "",
-            "err":     "",
-            "pace_ms": 33,
-        }
-        bus.shared["jpeg_source_req"] = {
-            "source": "/jpeg/background",
-        }
-        bus.shared.setdefault("_stream_source", "/jpeg/background")
     else:
-        log.info("⏭ [CoreManager] jpeg_player skipped — no LCD/TFT on bus")
+        log.info("⏭ [CoreManager] lvgl skipped — no LCD/TFT on bus")
 
     tm.finalize()
 

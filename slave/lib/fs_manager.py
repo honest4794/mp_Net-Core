@@ -533,19 +533,6 @@ class FileSystemManager:
         except Exception:
             return []
 
-    def list_jpegs(self, folder="/sd"):
-        from lib.media_source import list_jpegs as _lj
-        kind, full, raw_name = self.resolve(folder)
-        if kind == "ram":
-            names = [k for k in self._ram
-                     if k.lower().endswith(".jpg") or k.lower().endswith(".jpeg")]
-            names.sort()
-            return names
-        try:
-            return _lj(full)
-        except Exception:
-            return []
-
     def remove(self, path):
         """統一刪除：RAM / SD-raw / FAT 各自更新 table。"""
         kind, full, raw_name = self.resolve(path)

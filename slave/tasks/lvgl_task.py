@@ -10,7 +10,7 @@ lvgl_task.py — LVGL UI 任務（任務模式）
 輸入透過 hw_manager 快照（HwSampleTask 統一採樣），本 task 不碰硬體 →
 跨核心安全：採樣可跑在 Core0，LVGL 跑在 Core1，透過 bus.shared 共享。
 
-與 jpeg_player 互斥（共用同一塊 LCD），Core_Manager 二選一註冊。
+LVGL 獨佔 LCD（原與 jpeg_player 互斥二選一，播放器已移除）。
 """
 
 from lib.task import Task
