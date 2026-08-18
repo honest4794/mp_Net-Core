@@ -17,15 +17,27 @@
 ### 2.1 effects/ — 效果
 
 `pixel/effects/effects.json`（JSON 形式，id + params）+ `pixel/effects/effects.py`
-（PY 形式，生成器）。兩者共用登記表：**名稱撞車時程式（py）優先**，json 只補
-id / params。生成器吐 `array('H')`（0-4095），供 scatter 的 viper 用 ptr16 直接讀。
+（PY 形式，效果類別）。兩者共用登記表：**名稱撞車時程式（py）優先**，json 只補
+id / params。
 
-| JSON 欄位 | 程式參數 | 說明 |
-|---|---|---|
-| `pixel_n` | `pixel_n` | 輸出位數 |
-| `program` | `program` | 波形序列 |
-| `speed` | `speed` | 倍速 |
-| `reverse` | `reverse` | 反向 |
+- 效果 = `Effect` 類別（有 id/name、可 `restart()`、可 `seek(t)`），每次播放重建實例。
+- 數學核心在 `slave/lib/PixelMathMethod.py`：**`@micropython.viper` 整數多項式逼近**
+  （拋物線基底 + `922*(y²-y)>>12` 修正），**無查表、無浮點、值域固定 12-bit 0-4095**。
+- 空間分布：`frame(t)` 把時間波攤到 pixel_n 顆 → `pattern_value_at(program, 相位)`，
+  相位 = `(t // speed) * step + i * spacing + offset`（對齊舊 `wave_list_assign_next`）。
+- 吐 `array('H')`（0-4095），供 scatter 的 viper 用 ptr16 直接讀。
+
+波形段 `type`：`keep` / `math_now` / `square_wave_now` / `pulse_wave` / `pulse` / `starter`。
+
+| JSON 欄位 | 說明 |
+|---|---|
+| `pixel_n` | 輸出位數 |
+| `program` | 波形段序列（type / F / l_max / l_lim / phi / end_Time / pulse） |
+| `step` | 時間步進（舊 step） |
+| `spacing` | pixel 間距（空間分布） |
+| `offset` | 空間偏移 |
+| `speed` | 倍速 |
+| `reverse` | 反向 |
 
 ### 2.2 map/ — mapping（群組排列）
 
@@ -125,7 +137,7 @@ big_buffer（RGBW 幀，bytearray）──▶ st_pixel.show_all()（一次推硬
 
 - 幀格式：每顆控制單元 4 bytes（R,G,B,W），拼接順序 = 播放器 controllers 順序。
 - `r/g/b/w`：每顆 1 值，只寫對應通道，其餘「不修改」（可累加組合）。
-- `ww`：12-bit 完整（byte2 低 8 + byte3 高 4）；`wwww`：1 值代表整顆 LED。
+- `ww`：12-bit 完整（byte2 低 8 + byte3 高 4）；`wwww`：1 值代表整顆 pixel。
 - `rgb`：3 值/顆；`rgbw`：4 值/顆；全部 >>4。
 - 保底：值流不足 → 取模循環；過長 → 多餘丟棄；空 → 全寫 0。
 

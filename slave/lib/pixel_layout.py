@@ -80,7 +80,7 @@ def _expand_selector(spec, count):
 #   多通道（每顆多值，各通道獨立）：
 #     rgb : 3 值（R,G,B）→ cell (R,G,B,0)，全部 >>4
 #     rgbw: 4 值（R,G,B,W）→ cell (R,G,B,W)，全部 >>4
-#   wwww : 每顆 1 值 → 一個數值代表整顆 LED，4 個 byte 全寫同值（>>4）。
+#   wwww : 每顆 1 值 → 一個數值代表整顆 pixel，4 個 byte 全寫同值（>>4）。
 #          「全部給我更新」：scatter 不做通道語義，設備自行限制範圍
 #          （PixelController._convert 依 _tid 取它要的 byte）。
 # 保底（對齊舊專案 idx % len）：
@@ -306,7 +306,7 @@ def _encode_cell(buf, byte_off, value, write):
     """值 → RGBW cell（單顆，供 set_value 用）。
 
     r/g/b/w/ww/wwww 接受單值；rgb 接受 3 值 (R,G,B)；rgbw 接受 4 值 (R,G,B,W)。
-    wwww 的單值 = 一整個 LED，4 個 byte 全寫同值（>>4）。
+    wwww 的單值 = 一整個 pixel，4 個 byte 全寫同值（>>4）。
     """
     if write == "rgb":
         r, g, b = (_clamp12(x) for x in value)
@@ -677,7 +677,7 @@ if __name__ == "__main__":
     assert buf[1352:1356] == bytes([0, 0, 15, 255])
     assert buf[1356:1360] == bytes([255, 128, 64, 32])
 
-    # wwww：1 值/顆，一個數值代表整顆 LED，4 個 byte 全寫同值（>>4）
+    # wwww：1 值/顆，一個數值代表整顆 pixel，4 個 byte 全寫同值（>>4）
     lay.scatter(buf, "gundam", "motors", _array('H', [4095, 2048, 100, 0]), "wwww")
     assert buf[1344:1348] == bytes([255, 255, 255, 255])
     assert buf[1348:1352] == bytes([128, 128, 128, 128])

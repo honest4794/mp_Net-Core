@@ -29,6 +29,10 @@ from driver.sd_drv       import init_sd,       gpios as g_sd
 from driver.tft_drv      import init_tft,      gpios as g_tft
 from driver.enc_drv      import init_enc,      gpios as g_enc
 from driver.network_drv  import init_network
+from driver.ws2812_drv   import init_ws2812
+from driver.apa102_drv   import init_apa102
+from driver.pca9685_drv  import init_pca9685
+from driver.pixel_drv    import init_pixel
 
 
 # ══════════════════════════════════════════════════════
@@ -95,6 +99,10 @@ _init("sd",      init_sd)
 _init("tft",     init_tft)
 _init("enc",     init_enc)
 _init("network", init_network)
+_init("ws2812",  init_ws2812)
+_init("apa102",  init_apa102)
+_init("pca9685", init_pca9685)
+_init("pixel",   init_pixel)
 
 _oks   = [n for n, s, _ in _boot_status if s == "ok"]
 _fails = [(n, e) for n, s, e in _boot_status if s == "FAIL"]

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": 1,
+  "name": "demo_eyes",
+  "index": 1,
+  "play_count": -1,
+  "play_interval": 1,
+  "mapping": "matrix",
+  "map": [
+    { "group": "matrix.full", "effect": "eyes", "write": "rgb" }
+  ]
+}

@@ -107,7 +107,7 @@ class PixelTask(Task):
         self._interval_us = (1000 // fps) * 1000
 
     def _init_effects(self):
-        """py register + 載 effects.json → bus.shared["pixel_gens"]（存 make/params，播放時重建）。"""
+        """py register + 載 effects.json → bus.shared["pixel_gens"]（存 cls/params，播放時建 Effect）。"""
         from pixel.effects import effects
         try:
             with open(EFFECTS_JSON) as f:
@@ -121,12 +121,15 @@ class PixelTask(Task):
         for name, eid in effects.dump().items():
             gens[name] = {
                 "id": eid,
-                "make": effects.resolve(eid),
+                "name": name,
+                "cls": effects.resolve(eid),
                 "params": effects.get_params(eid),
             }
         self._gens = gens
         bus.shared["pixel_gens"] = gens
-        get_log().info("[Pixel] effects: {} 個".format(len(gens)))
+        # 開機預計算波表：掩蓋首次播放的計算成本（同 effect 之後零重算）
+        n_wave = effects.warm_up()
+        get_log().info("[Pixel] effects: {} 個（波表預算 {} 個）".format(len(gens), n_wave))
 
     def _init_layout(self):
         """從播放器推導 order/counts，載入 map/*.json 註冊全部 mapping → pixel_layout。"""
@@ -233,7 +236,7 @@ class PixelTask(Task):
                 continue
             entries.append({
                 "mref": rmid, "gref": rgid, "write": write,
-                "make": eff["make"], "params": eff["params"],
+                "cls": eff["cls"], "name": eff["name"], "params": eff["params"],
             })
 
         modes[mid] = {
@@ -292,12 +295,14 @@ class PixelTask(Task):
         self._paused = False
         self._pass = 1
         self._mode_idx = 0
+        self._release_player(self._cur)
         self._cur = None
         self._next_tick_us = time.ticks_us()
         get_log().info("[Pixel] ▶ show 開始（{} mode(s)）".format(len(self._show_list)))
 
     def _stop(self):
         self._playing = False
+        self._release_player(self._cur)
         self._cur = None
         if self._st:
             buf = self._st.big_buffer
@@ -343,20 +348,23 @@ class PixelTask(Task):
         """mode → 播放器：每個 entry 一個 fresh generator（每次播放都重建）。"""
         return [{
             "mref": e["mref"], "gref": e["gref"], "write": e["write"],
-            "gen": self._instantiate(e["make"], e["params"]),
+            "gen": self._instantiate(e["cls"], e["name"], e["params"]),
             "done": False,
         } for e in mode["entries"]]
 
     @staticmethod
-    def _instantiate(make, params):
-        if params:
-            return make(
-                params.get("pixel_n", 1),
-                program=params.get("program"),
-                speed=params.get("speed", 1),
-                reverse=params.get("reverse", False),
-            )
-        return make(1)
+    def _instantiate(cls, name, params):
+        """依 json 參數建立 Effect 實例（有 __next__/restart/seek）。"""
+        return cls(name, params)
+
+    @staticmethod
+    def _release_player(player):
+        """off 即丟：釋放每個 entry 的 effect 波緩衝（Effect.release()）。"""
+        if player:
+            for e in player:
+                gen = e.get("gen")
+                if gen is not None and hasattr(gen, "release"):
+                    gen.release()
 
     def _tick_player(self, player):
         """播放器推進一幀。回傳 True = 還在播；False = 全部 entry 耗盡（mode 結束）。"""
@@ -393,9 +401,11 @@ class PixelTask(Task):
             if self._cur is None:
                 return
         if not self._tick_player(self._cur):
+            self._release_player(self._cur)
             self._cur = None
 
     def on_stop(self):
         super().on_stop()
         self._playing = False
+        self._release_player(self._cur)
         self._cur = None

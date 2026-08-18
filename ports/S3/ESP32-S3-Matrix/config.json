@@ -1,0 +1,57 @@
+{
+    "scan_ignore": ["/sd"],
+    "System": {
+        "dual_core_mode": "0",
+        "boot_strict": 0,
+        "c_lum": 1.0,
+        "hostname": "",
+        "refresh_rate_ms": 1,
+        "master_IP": "",
+        "master_port": 0,
+        "discovery_port": 9000,
+        "heartbeat_interval": 10000,
+        "local_fps": 40,
+        "num_pixels": 64,
+        "buffer_frames": 1,
+        "log_interval_ms": 1000
+    },
+    "Buffer": {
+        "size": 16384,
+        "rx_hub_buffers": 16,
+        "drop_on_full": 1,
+        "drain_reads": 1,
+        "fb_mode": "auto"
+    },
+    "Network": {
+        "priority": ["wifi"],
+        "lan": { "enable": 0 },
+        "wifi": {
+            "enable": 0,
+            "active_mode": 2,
+            "timeout": 300,
+            "ssid": "Home_WiFi",
+            "ssid_pw": "",
+            "mdns_name": "esp32-matrix-"
+        },
+        "ESP_now": { "enable": 0, "channel": 6 }
+    },
+    "CircuitDecode": { "enable": 0, "list": [] },
+    "SPI": { "enable": 0, "list": [] },
+    "I2C": { "enable": 0, "list": [] },
+    "UART": { "enable": 0, "list": [] },
+    "PWM": { "enable": 0, "list": [] },
+    "I2S": { "enable": 0, "list": [] },
+    "SDcard": { "enable": 0 },
+    "PIN": { "enable": 0, "list": [] },
+    "ENC": { "enable": 0, "list": [] },
+    "TFT": { "enable": 0 },
+    "HUSB238": { "enable": 0 },
+    "WS2812": {
+        "enable": 1,
+        "list": [
+            {"GPIO": 14, "Q": 64, "order": "GRB"}
+        ]
+    },
+    "APA102": { "enable": 0, "list": [] },
+    "PCA9685": { "enable": 0, "list": [] }
+}

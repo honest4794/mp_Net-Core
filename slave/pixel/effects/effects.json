@@ -4,12 +4,31 @@
     {
       "id": 1,
       "name": "breathing",
-      "pixel_n": 10,
+      "pixel_n": 64,
       "program": [
-        {"func": "math_now", "F": 2, "l_max": 4095, "l_lim": 100, "phi": 0, "end_Time": 200},
-        {"func": "square_wave_now", "F": 1, "l_max": 3000, "l_lim": 0, "phi": 1024, "end_Time": 100}
+        {"type": "math_now", "F": 2, "l_max": 4095, "l_lim": 100, "phi": 0, "end_Time": 200},
+        {"type": "square_wave_now", "F": 1, "l_max": 3000, "l_lim": 0, "phi": 1024, "end_Time": 300}
       ],
+      "step": 1,
+      "spacing": 0,
+      "offset": 0,
       "speed": 3,
+      "reverse": false
+    },
+    {
+      "id": 2,
+      "name": "eyes",
+      "pixel_n": 64,
+      "program": [
+        {"type": "keep",     "F": 1, "l_max": 0,    "l_lim": 0,   "phi": 0,    "end_Time": 60},
+        {"type": "math_now", "F": 5, "l_max": 100,  "l_lim": 20,  "phi": 3071, "end_Time": 100},
+        {"type": "math_now", "F": 5, "l_max": 1023, "l_lim": 100, "phi": 3071, "end_Time": 200},
+        {"type": "math_now", "F": 5, "l_max": 1023, "l_lim": 200, "phi": 1023, "end_Time": 320}
+      ],
+      "step": 1,
+      "spacing": 10,
+      "offset": 0,
+      "speed": 1,
       "reverse": false
     }
   ]
