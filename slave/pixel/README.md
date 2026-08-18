@@ -39,6 +39,24 @@ id / params。
 | `speed` | 倍速 |
 | `reverse` | 反向 |
 
+#### 寫效果（最高優化）
+
+- **路 A 波形類（首選）**：`class xxx(Effect)` + 定義 `DEFAULT_PROGRAM`。自動拿到
+  波表預算（開機 `warm_up()` 先算好）+ viper `_fill_fwd` 播放，熱路徑只做 index 讀取。
+  範例：`wave` / `eyes` / `breathing`。
+- **路 B 自訂/狀態機類**：`class xxx(Effect)` + override `frame(t)`。保持整數、無浮點，
+  能 bulk 就 bulk、能 viper 就 viper；輸出 `array('H')`、長度 `pixel_n`、值域 0-4095。
+
+#### 色彩接口（bulk，暫時包裝）
+
+`slave/lib/PixelMathMethod.py` 提供 HSV↔RGB（全整數、無浮點、viper bulk 批次，一次處理整條 buffer）：
+- 8-bit（0-255）：`hsv_to_rgb8_buf` / `rgb_to_hsv8_buf`（RGB 為 bytearray 3B/px）
+- 12-bit（0-4095）：`hsv_to_rgb12_buf` / `rgb_to_hsv12_buf`（RGB 為 array('H') 3 值/px）
+- 單值便利函式：`hsv_to_rgb8` / `rgb_to_hsv8` / `hsv_to_rgb12` / `rgb_to_hsv12`
+
+已修掉舊專案的 bug（RGB 順序、飽和度、色相 offset）。**本輪只提供接口，未接
+scatter/effect/controller**——未來彩色 effect 再接；controller 整合遲啲處理。
+
 ### 2.2 map/ — mapping（群組排列）
 
 每套 mapping 一個檔，自帶 id/name；**不寫硬體 order/counts**（硬體真值一律從

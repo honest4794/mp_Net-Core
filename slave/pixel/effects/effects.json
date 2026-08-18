@@ -30,6 +30,19 @@
       "offset": 0,
       "speed": 1,
       "reverse": false
+    },
+    {
+      "id": 3,
+      "name": "wave",
+      "pixel_n": 64,
+      "program": [
+        {"type": "math_now", "F": 1, "l_max": 3200, "l_lim": 100, "phi": 0, "end_Time": 120}
+      ],
+      "step": 1,
+      "spacing": 2,
+      "offset": 0,
+      "speed": 1,
+      "reverse": false
     }
   ]
 }

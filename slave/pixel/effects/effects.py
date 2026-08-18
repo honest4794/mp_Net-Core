@@ -11,6 +11,39 @@ effects.py — 效果目錄 + Effect 類別（12-bit 整數、免查表、可 re
 不碰硬體、不碰 bus、不碰 pixel_stream。
 """
 
+# ══════════════════════════════════════════════════════════════
+# 如何寫一個效果（最高優化）── 下手同事請照做
+# ══════════════════════════════════════════════════════════════
+#
+# 路 A ── 波形類（首選，自動最高優化）
+#   只要定義 DEFAULT_PROGRAM（波形段序列），就自動拿到：
+#     * 開機 warm_up() 預先算好整條波（波表快取，end_Time × 2B，eyes 才 640B）
+#     * frame() 熱路徑 = viper _fill_fwd/_fill_rev（index 讀波 + 加法 + 單次減法取模）
+#     * 不碰 sin / 除法 / %，無浮點
+#   波形段欄位：type / F / l_max / l_lim / phi / end_Time（pulse 型另加 pulse）
+#     type ∈ keep / math_now / square_wave_now / pulse_wave / pulse / starter
+#   空間分布由 params 控制：step（時間步進）、spacing（每顆相位間距）、offset、
+#     speed（值重複）、reverse（反向）。spacing>0 即產生流動/波浪。
+#
+#   class my_effect(Effect):
+#       DEFAULT_PROGRAM = [
+#           {"type": "math_now", "F": 1, "l_max": 3200, "l_lim": 100, "phi": 0, "end_Time": 120},
+#       ]
+#   register(my_effect)   # 效果 name = "my_effect"
+#
+# 路 B ── 自訂 / 狀態機類（override frame(t)）
+#   保持整數、無浮點；能 bulk 就 bulk（一次處理整條 buffer，別逐 pixel 呼叫），
+#   能 viper 就 viper。輸出必須是 array('H')、長度 pixel_n、值域 0-4095。
+#
+#   class my_effect(Effect):
+#       def frame(self, t):
+#           ... 自訂邏輯，寫進 self._buf ...
+#           return self._buf
+#   register(my_effect)
+#
+# 效果 id：json 有給就用 json 的；純 py 效果自動配發下一個可用 id（從 1 起）。
+# ══════════════════════════════════════════════════════════════
+
 from array import array as _array
 from lib.PixelMathMethod import mt
 
@@ -266,8 +299,19 @@ class eyes(Effect):
     ]
 
 
+class wave(Effect):
+    """波浪（舊專案 main 現時生效的 _build_wave_led_init）：單條 math_now 波 + spacing 逐顆相位偏移。
+
+    等價舊版的 per-LED phi = (idx*360)//led_count；此處用 spacing 攤相位達成流動。
+    """
+    DEFAULT_PROGRAM = [
+        {"type": "math_now", "F": 1, "l_max": 3200, "l_lim": 100, "phi": 0, "end_Time": 120},
+    ]
+
+
 register(breathing)
 register(eyes)
+register(wave)
 
 
 if __name__ == "__main__":
@@ -309,9 +353,10 @@ if __name__ == "__main__":
     ])
 
     print("已登記:", dump())
-    assert dump() == {"breathing": 1, "eyes": 2}
+    assert dump() == {"breathing": 1, "eyes": 2, "wave": 3}
     assert resolve(1) is breathing
     assert resolve("eyes") is eyes
+    assert resolve(3) is wave
 
     # 3. make + frame：長度 == pixel_n，值域 0-4095
     for name in ("breathing", "eyes"):

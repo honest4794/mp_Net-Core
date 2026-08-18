@@ -181,3 +181,482 @@ class PixelMathMethod:
 
 # 模組級單例（所有 effect 共享一份，零重複建構）
 mt = PixelMathMethod()
+
+
+# ══════════════════════════════════════════════════════════════
+# HSV ↔ RGB 色彩轉換（bulk 批次，全整數，無浮點）
+#
+# 設計原則：不逐 pixel 呼叫，一次處理整條 buffer（viper 用 ptr 掃整 buffer）。
+# 兩套位深、各自雙向：
+#   8-bit（0-255） : 輸入 h(0-360) s/v(0-255)，RGB 輸出 bytearray（3B/px）
+#   12-bit（0-4095）: 輸入 h(0-360) s/v(0-4095)，RGB 輸出 array('H')（3 值/px）
+#
+# 修掉舊專案 mp_LEDController 的 bug：
+#   1. 輸出順序 RGB（舊 _hsv2grb 寫 G,R,B 是給 WS2812 GRB 用；新 RGBW cell 是 R,G,B,W）
+#   2. rgb→hsv 飽和度：舊 delta//255//max_val 幾乎恆 0 → 改 delta*SCALE//max_val
+#   3. 色相 offset：舊 +(120//65535)=+0 把 +120/+240 吞掉 → 改正確 offset
+#   4. 12-bit 用 >>12 位移、8-bit 用 //255；h % 360 正規化、s clamp 到 SCALE
+#
+# 約定：h 一律用 array('H')（0-359，16-bit 存，因為 0-360 > 255）。
+# 暫時包裝：本輪只提供接口，未接 scatter/effect/controller（未來彩色 effect 再接）。
+# ══════════════════════════════════════════════════════════════
+
+if _MP:
+
+    @micropython.viper
+    def hsv_to_rgb8_buf(h_buf, s_buf, v_buf, out, n: int):
+        ph = ptr16(h_buf)
+        ps = ptr16(s_buf)
+        pv = ptr16(v_buf)
+        po = ptr8(out)
+        for i in range(n):
+            h = int(ph[i]) % 360
+            s = int(ps[i])
+            v = int(pv[i])
+            if s > 255:
+                s = 255
+            if v > 255:
+                v = 255
+            if s == 0:
+                po[i * 3] = v
+                po[i * 3 + 1] = v
+                po[i * 3 + 2] = v
+            else:
+                region = h // 60
+                rem = (h - region * 60) * 255 // 60
+                p = (v * (255 - s)) // 255
+                q = (v * (255 - ((s * rem) // 255))) // 255
+                t = (v * (255 - ((s * (255 - rem)) // 255))) // 255
+                if region == 0:
+                    po[i * 3] = v
+                    po[i * 3 + 1] = t
+                    po[i * 3 + 2] = p
+                elif region == 1:
+                    po[i * 3] = q
+                    po[i * 3 + 1] = v
+                    po[i * 3 + 2] = p
+                elif region == 2:
+                    po[i * 3] = p
+                    po[i * 3 + 1] = v
+                    po[i * 3 + 2] = t
+                elif region == 3:
+                    po[i * 3] = p
+                    po[i * 3 + 1] = q
+                    po[i * 3 + 2] = v
+                elif region == 4:
+                    po[i * 3] = t
+                    po[i * 3 + 1] = p
+                    po[i * 3 + 2] = v
+                else:
+                    po[i * 3] = v
+                    po[i * 3 + 1] = p
+                    po[i * 3 + 2] = q
+
+    @micropython.viper
+    def rgb_to_hsv8_buf(rgb, h_out, s_out, v_out, n: int):
+        pr = ptr8(rgb)
+        ph = ptr16(h_out)
+        ps = ptr16(s_out)
+        pv = ptr16(v_out)
+        for i in range(n):
+            o = i * 3
+            r = int(pr[o])
+            g = int(pr[o + 1])
+            b = int(pr[o + 2])
+            mx = r
+            if g > mx:
+                mx = g
+            if b > mx:
+                mx = b
+            mn = r
+            if g < mn:
+                mn = g
+            if b < mn:
+                mn = b
+            delta = mx - mn
+            pv[i] = mx
+            if delta == 0:
+                ph[i] = 0
+                ps[i] = 0
+            else:
+                ps[i] = (delta * 255) // mx
+                if mx == r:
+                    h = (60 * (g - b)) // delta
+                    if h < 0:
+                        h += 360
+                    ph[i] = h
+                elif mx == g:
+                    h = (60 * (b - r)) // delta + 120
+                    if h < 0:
+                        h += 360
+                    ph[i] = h
+                else:
+                    h = (60 * (r - g)) // delta + 240
+                    if h < 0:
+                        h += 360
+                    ph[i] = h
+
+    @micropython.viper
+    def hsv_to_rgb12_buf(h_buf, s_buf, v_buf, out, n: int):
+        ph = ptr16(h_buf)
+        ps = ptr16(s_buf)
+        pv = ptr16(v_buf)
+        po = ptr16(out)
+        for i in range(n):
+            h = int(ph[i]) % 360
+            s = int(ps[i])
+            v = int(pv[i])
+            if s > 4095:
+                s = 4095
+            if v > 4095:
+                v = 4095
+            if s == 0:
+                po[i * 3] = v
+                po[i * 3 + 1] = v
+                po[i * 3 + 2] = v
+            else:
+                region = h // 60
+                rem = (h - region * 60) * 4095 // 60
+                p = (v * (4095 - s)) >> 12
+                q = (v * (4095 - ((s * rem) >> 12))) >> 12
+                t = (v * (4095 - ((s * (4095 - rem)) >> 12))) >> 12
+                if region == 0:
+                    po[i * 3] = v
+                    po[i * 3 + 1] = t
+                    po[i * 3 + 2] = p
+                elif region == 1:
+                    po[i * 3] = q
+                    po[i * 3 + 1] = v
+                    po[i * 3 + 2] = p
+                elif region == 2:
+                    po[i * 3] = p
+                    po[i * 3 + 1] = v
+                    po[i * 3 + 2] = t
+                elif region == 3:
+                    po[i * 3] = p
+                    po[i * 3 + 1] = q
+                    po[i * 3 + 2] = v
+                elif region == 4:
+                    po[i * 3] = t
+                    po[i * 3 + 1] = p
+                    po[i * 3 + 2] = v
+                else:
+                    po[i * 3] = v
+                    po[i * 3 + 1] = p
+                    po[i * 3 + 2] = q
+
+    @micropython.viper
+    def rgb_to_hsv12_buf(rgb, h_out, s_out, v_out, n: int):
+        pr = ptr16(rgb)
+        ph = ptr16(h_out)
+        ps = ptr16(s_out)
+        pv = ptr16(v_out)
+        for i in range(n):
+            o = i * 3
+            r = int(pr[o])
+            g = int(pr[o + 1])
+            b = int(pr[o + 2])
+            mx = r
+            if g > mx:
+                mx = g
+            if b > mx:
+                mx = b
+            mn = r
+            if g < mn:
+                mn = g
+            if b < mn:
+                mn = b
+            delta = mx - mn
+            pv[i] = mx
+            if delta == 0:
+                ph[i] = 0
+                ps[i] = 0
+            else:
+                ps[i] = (delta * 4095) // mx
+                if mx == r:
+                    h = (60 * (g - b)) // delta
+                    if h < 0:
+                        h += 360
+                    ph[i] = h
+                elif mx == g:
+                    h = (60 * (b - r)) // delta + 120
+                    if h < 0:
+                        h += 360
+                    ph[i] = h
+                else:
+                    h = (60 * (r - g)) // delta + 240
+                    if h < 0:
+                        h += 360
+                    ph[i] = h
+
+else:
+    # PC 對照版（無 micropython），語義與 viper 版一致
+
+    def hsv_to_rgb8_buf(h_buf, s_buf, v_buf, out, n):
+        for i in range(n):
+            h = h_buf[i] % 360
+            s = 255 if s_buf[i] > 255 else s_buf[i]
+            v = 255 if v_buf[i] > 255 else v_buf[i]
+            if s == 0:
+                r = g = b = v
+            else:
+                region = h // 60
+                rem = (h - region * 60) * 255 // 60
+                p = (v * (255 - s)) // 255
+                q = (v * (255 - ((s * rem) // 255))) // 255
+                t = (v * (255 - ((s * (255 - rem)) // 255))) // 255
+                if region == 0:
+                    r, g, b = v, t, p
+                elif region == 1:
+                    r, g, b = q, v, p
+                elif region == 2:
+                    r, g, b = p, v, t
+                elif region == 3:
+                    r, g, b = p, q, v
+                elif region == 4:
+                    r, g, b = t, p, v
+                else:
+                    r, g, b = v, p, q
+            out[i * 3] = r
+            out[i * 3 + 1] = g
+            out[i * 3 + 2] = b
+
+    def rgb_to_hsv8_buf(rgb, h_out, s_out, v_out, n):
+        for i in range(n):
+            o = i * 3
+            r, g, b = rgb[o], rgb[o + 1], rgb[o + 2]
+            mx = max(r, g, b)
+            mn = min(r, g, b)
+            delta = mx - mn
+            v_out[i] = mx
+            if delta == 0:
+                h_out[i] = 0
+                s_out[i] = 0
+            else:
+                s_out[i] = (delta * 255) // mx
+                if mx == r:
+                    h = (60 * (g - b)) // delta
+                elif mx == g:
+                    h = (60 * (b - r)) // delta + 120
+                else:
+                    h = (60 * (r - g)) // delta + 240
+                h_out[i] = h % 360
+
+    def hsv_to_rgb12_buf(h_buf, s_buf, v_buf, out, n):
+        for i in range(n):
+            h = h_buf[i] % 360
+            s = 4095 if s_buf[i] > 4095 else s_buf[i]
+            v = 4095 if v_buf[i] > 4095 else v_buf[i]
+            if s == 0:
+                r = g = b = v
+            else:
+                region = h // 60
+                rem = (h - region * 60) * 4095 // 60
+                p = (v * (4095 - s)) >> 12
+                q = (v * (4095 - ((s * rem) >> 12))) >> 12
+                t = (v * (4095 - ((s * (4095 - rem)) >> 12))) >> 12
+                if region == 0:
+                    r, g, b = v, t, p
+                elif region == 1:
+                    r, g, b = q, v, p
+                elif region == 2:
+                    r, g, b = p, v, t
+                elif region == 3:
+                    r, g, b = p, q, v
+                elif region == 4:
+                    r, g, b = t, p, v
+                else:
+                    r, g, b = v, p, q
+            out[i * 3] = r
+            out[i * 3 + 1] = g
+            out[i * 3 + 2] = b
+
+    def rgb_to_hsv12_buf(rgb, h_out, s_out, v_out, n):
+        for i in range(n):
+            o = i * 3
+            r, g, b = rgb[o], rgb[o + 1], rgb[o + 2]
+            mx = max(r, g, b)
+            mn = min(r, g, b)
+            delta = mx - mn
+            v_out[i] = mx
+            if delta == 0:
+                h_out[i] = 0
+                s_out[i] = 0
+            else:
+                s_out[i] = (delta * 4095) // mx
+                if mx == r:
+                    h = (60 * (g - b)) // delta
+                elif mx == g:
+                    h = (60 * (b - r)) // delta + 120
+                else:
+                    h = (60 * (r - g)) // delta + 240
+                h_out[i] = h % 360
+
+
+# ── 單值便利函式（非熱路徑，供測試/除錯/未來彩色 effect 配參）──
+# 裝置版用 @micropython.native 裝飾器（編譯器語法，非 runtime 屬性）；
+# PC 版為純 Python 對照（CPython 沒有 micropython）。
+
+if _MP:
+
+    @micropython.native
+    def hsv_to_rgb8(h, s, v):
+        h = int(h) % 360
+        s = 255 if s > 255 else int(s)
+        v = 255 if v > 255 else int(v)
+        if s == 0:
+            return v, v, v
+        region = h // 60
+        rem = (h - region * 60) * 255 // 60
+        p = (v * (255 - s)) // 255
+        q = (v * (255 - ((s * rem) // 255))) // 255
+        t = (v * (255 - ((s * (255 - rem)) // 255))) // 255
+        if region == 0:
+            return v, t, p
+        if region == 1:
+            return q, v, p
+        if region == 2:
+            return p, v, t
+        if region == 3:
+            return p, q, v
+        if region == 4:
+            return t, p, v
+        return v, p, q
+
+    @micropython.native
+    def rgb_to_hsv8(r, g, b):
+        r, g, b = int(r), int(g), int(b)
+        mx = max(r, g, b)
+        mn = min(r, g, b)
+        delta = mx - mn
+        if delta == 0:
+            return 0, 0, mx
+        s = (delta * 255) // mx
+        if mx == r:
+            h = (60 * (g - b)) // delta
+        elif mx == g:
+            h = (60 * (b - r)) // delta + 120
+        else:
+            h = (60 * (r - g)) // delta + 240
+        return h % 360, s, mx
+
+    @micropython.native
+    def hsv_to_rgb12(h, s, v):
+        h = int(h) % 360
+        s = 4095 if s > 4095 else int(s)
+        v = 4095 if v > 4095 else int(v)
+        if s == 0:
+            return v, v, v
+        region = h // 60
+        rem = (h - region * 60) * 4095 // 60
+        p = (v * (4095 - s)) >> 12
+        q = (v * (4095 - ((s * rem) >> 12))) >> 12
+        t = (v * (4095 - ((s * (4095 - rem)) >> 12))) >> 12
+        if region == 0:
+            return v, t, p
+        if region == 1:
+            return q, v, p
+        if region == 2:
+            return p, v, t
+        if region == 3:
+            return p, q, v
+        if region == 4:
+            return t, p, v
+        return v, p, q
+
+    @micropython.native
+    def rgb_to_hsv12(r, g, b):
+        r, g, b = int(r), int(g), int(b)
+        mx = max(r, g, b)
+        mn = min(r, g, b)
+        delta = mx - mn
+        if delta == 0:
+            return 0, 0, mx
+        s = (delta * 4095) // mx
+        if mx == r:
+            h = (60 * (g - b)) // delta
+        elif mx == g:
+            h = (60 * (b - r)) // delta + 120
+        else:
+            h = (60 * (r - g)) // delta + 240
+        return h % 360, s, mx
+
+else:
+
+    def hsv_to_rgb8(h, s, v):
+        h = int(h) % 360
+        s = 255 if s > 255 else int(s)
+        v = 255 if v > 255 else int(v)
+        if s == 0:
+            return v, v, v
+        region = h // 60
+        rem = (h - region * 60) * 255 // 60
+        p = (v * (255 - s)) // 255
+        q = (v * (255 - ((s * rem) // 255))) // 255
+        t = (v * (255 - ((s * (255 - rem)) // 255))) // 255
+        if region == 0:
+            return v, t, p
+        if region == 1:
+            return q, v, p
+        if region == 2:
+            return p, v, t
+        if region == 3:
+            return p, q, v
+        if region == 4:
+            return t, p, v
+        return v, p, q
+
+    def rgb_to_hsv8(r, g, b):
+        r, g, b = int(r), int(g), int(b)
+        mx = max(r, g, b)
+        mn = min(r, g, b)
+        delta = mx - mn
+        if delta == 0:
+            return 0, 0, mx
+        s = (delta * 255) // mx
+        if mx == r:
+            h = (60 * (g - b)) // delta
+        elif mx == g:
+            h = (60 * (b - r)) // delta + 120
+        else:
+            h = (60 * (r - g)) // delta + 240
+        return h % 360, s, mx
+
+    def hsv_to_rgb12(h, s, v):
+        h = int(h) % 360
+        s = 4095 if s > 4095 else int(s)
+        v = 4095 if v > 4095 else int(v)
+        if s == 0:
+            return v, v, v
+        region = h // 60
+        rem = (h - region * 60) * 4095 // 60
+        p = (v * (4095 - s)) >> 12
+        q = (v * (4095 - ((s * rem) >> 12))) >> 12
+        t = (v * (4095 - ((s * (4095 - rem)) >> 12))) >> 12
+        if region == 0:
+            return v, t, p
+        if region == 1:
+            return q, v, p
+        if region == 2:
+            return p, v, t
+        if region == 3:
+            return p, q, v
+        if region == 4:
+            return t, p, v
+        return v, p, q
+
+    def rgb_to_hsv12(r, g, b):
+        r, g, b = int(r), int(g), int(b)
+        mx = max(r, g, b)
+        mn = min(r, g, b)
+        delta = mx - mn
+        if delta == 0:
+            return 0, 0, mx
+        s = (delta * 4095) // mx
+        if mx == r:
+            h = (60 * (g - b)) // delta
+        elif mx == g:
+            h = (60 * (b - r)) // delta + 120
+        else:
+            h = (60 * (r - g)) // delta + 240
+        return h % 360, s, mx
