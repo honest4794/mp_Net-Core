@@ -152,6 +152,13 @@
         "list": [
             {"GPIO":{"i2c":0,"dArc":0,"type":0},"address":["0x40"]}
         ]
+    },
+    "uartMotor": {
+        "enable": 0,
+        "list": [
+            {"GPIO":{"uart":1},"address":["51"],"version":1},
+            {"GPIO":{"uart":1},"address":["66"],"version":1},
+        ]
     }
 
 
