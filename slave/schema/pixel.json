@@ -4,12 +4,21 @@
     {
       "cmd": "0x3101",
       "name": "MODE_LIST_QUERY",
-      "payload": []
+      "payload": [
+        {
+          "name": "mode_type",
+          "type": "u8"
+        }
+      ]
     },
     {
       "cmd": "0x3102",
       "name": "MODE_LIST_RSP",
       "payload": [
+        {
+          "name": "mode_type",
+          "type": "u8"
+        },
         {
           "name": "count",
           "type": "u8"
@@ -66,6 +75,10 @@
         {
           "name": "start_delay_ms",
           "type": "u16"
+        },
+        {
+          "name": "brightness",
+          "type": "u8"
         }
       ]
     },
@@ -76,6 +89,42 @@
         {
           "name": "action",
           "type": "u8"
+        }
+      ]
+    },
+    {
+      "cmd": "0x3107",
+      "name": "MODE_DETAIL_QUERY",
+      "payload": [
+        {
+          "name": "mode_type",
+          "type": "u8"
+        },
+        {
+          "name": "mode_id",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "cmd": "0x3108",
+      "name": "MODE_DETAIL_RSP",
+      "payload": [
+        {
+          "name": "mode_type",
+          "type": "u8"
+        },
+        {
+          "name": "mode_id",
+          "type": "u8"
+        },
+        {
+          "name": "total_ms",
+          "type": "u32"
+        },
+        {
+          "name": "name",
+          "type": "str_u16len"
         }
       ]
     }

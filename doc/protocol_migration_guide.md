@@ -77,13 +77,16 @@ Slave 1–20（執行）                       Slave（執行）
 
 | 對方 | 變成 | 參數對應 |
 |---|---|---|
-| `0x01 MODE_SET` | ✅ `0x3105 MODE_SET` | `mode_id:u8` → `mode_type:u8 + mode_id:u8`（新增 `mode_type` 選組別）；`master_start_ms:u32` → `start_delay_ms:u16`（**語義改變**，見下） |
+| `0x01 MODE_SET` | ✅ `0x3105 MODE_SET` | `mode_id:u8` → `mode_type:u8 + mode_id:u8`（新增 `mode_type` 選組別）；`master_start_ms:u32` → `start_delay_ms:u16`（**語義改變**，見下）；新增 `brightness:u8`（0–30，`0xFF`=不設置） |
 | `0x02 MODE_NEXT` | 🔀 併入 `0x3105 MODE_SET` | 兩條 payload 原本就完全相同，只是語義「外部指定 vs 自動前進」；新架構 Master 反正都指定 mode_id，不需要分開 |
 | `0x03 MODE_STOP` | ✅ `0x3106 MODE_STOP (action=0)` | 空 payload → `action:u8=0`（暫停） |
 | `0x06 POWER_OFF` | 🔀 併入 `0x3106 MODE_STOP (action=1)` | 空 payload → `action:u8=1`（全關閉＋省電） |
 | `0x07 POWER_ON` | ❌ 移除 | 新架構「恢復」一律重新下 `MODE_SET`，沒有「恢復舊模式」語義 |
-| `0x04 BRIGHTNESS` | ⏸ 未整合 | 對方 `value:u8`（1–190）vs 我方 WTT 0–36，範圍待統一 |
+| `0x04 BRIGHTNESS` | ✅ 併入 `0x3105 MODE_SET.brightness` | 對方 `value:u8`（1–190）→ 我方 `brightness:u8`（0–30），`0xFF`=不設置 |
 | `0x05 STORY_SET` | 🔀 併入 `0x3105 MODE_SET.mode_type` | `set_type`（0=LED, 1=SERVO）→ `mode_type`（1=LED, 2=SERVO），不再有獨立指令 |
+
+> 模式名稱等細節不再放進列表：`0x3101/0x3102 MODE_LIST_*` 只回 ID + 總時間，
+> 名稱用新增的 `0x3107/0x3108 MODE_DETAIL_*` 逐個模式查（對方沒有的新指令，見下）。
 
 **`master_start_ms` → `start_delay_ms` 是整份整合最重要的語義改變：**
 
@@ -100,12 +103,13 @@ Slave 1–20（執行）                       Slave（執行）
 
 | 新指令 | 用途 |
 |---|---|
-| `0x3101/0x3102 MODE_LIST_QUERY/RSP` | 查**全部**模式清單（數量、每套模式的完整 ID、總時間、名稱）。一次查詢、一次回覆。對方模式表本來就有 name + seconds，只是從來沒有指令可以查 |
+| `0x3101/0x3102 MODE_LIST_QUERY/RSP` | 查**指定組別**嘅模式清單（數量、每套模式的 ID 與總時間）。`MODE_LIST_QUERY` 帶 `mode_type`（0=全部、1=LED、2=SERVO），`MODE_LIST_RSP` 回音 `mode_type`。一次查詢、一次回覆。對方模式表本來就有 name + seconds，只是從來沒有指令可以查 |
+| `0x3107/0x3108 MODE_DETAIL_QUERY/RSP` | 逐個查**單一模式**細節（總時間、名稱 UTF-8）。名稱唔入列表，避免列表 payload 變大 |
 
-`MODE_LIST_RSP` 的 `entries` 是自訂子格式（schema 沒有 list 型別）；每筆 entry 同時含綁定的 `(mode_type, mode_id)`、時間、名稱，可直接原樣丟進 `MODE_SET`：
+`MODE_LIST_RSP` 的 `entries` 是自訂子格式（schema 沒有 list 型別）；每筆 entry 固定 6 bytes，可直接原樣丟進 `MODE_SET`（0x3105）或 `MODE_DETAIL_QUERY`（0x3107）：
 
 ```text
-每筆 entry = mode_type:u8 + mode_id:u8 + total_ms:u32 + name_len:u16 + name(UTF-8)
+每筆 entry = mode_type:u8 + mode_id:u8 + total_ms:u32   (固定 6 bytes)
 ```
 
 ---

@@ -208,7 +208,7 @@ decode 邊界行為(對接工具需注意):
 0x18xx — ram_bench   記憶體效能測試
 0x20xx — file        檔案傳輸/查詢
 0x30xx — stream      pixel 串流
-0x31xx — jpeg        JPEG 播放器
+0x31xx — pixel      模式播放（LED/SERVO 模式清單、播放控制）
 0x32xx — mp4         MP4 播放器
 ```
 
@@ -299,15 +299,22 @@ decode 邊界行為(對接工具需注意):
 | 0x3009 | STREAM_STATE_SET | Server → MCU | `file_name(str)` `block_id(u32)` `play_mode(u8)` | 設定播放檔案與區塊 |
 | 0x300A | STREAM_PLAY | Server → MCU | `start_frame(u32)` | 開始播放 |
 
-### 6.10 jpeg.json(0x31xx)
+### 6.10 pixel.json(0x31xx)
+
+> 原 jpeg.json(0x31xx) 已移除；0x31xx 域改由 pixel（模式播放）使用。權威定義見 `slave/schema/pixel.json`。
 
 | CMD | 名稱 | 方向 | Payload | 說明 |
 |-----|------|------|---------|------|
-| 0x3101 | JPEG_PLAYER_CTL | Server → MCU | `action(u8)` `seek_frame(u32)` | 播放器控制 |
-| 0x3103 | JPEG_PLAYER_PARAMS | Server → MCU | `pace_ms(u16)` `loop(u8)` | 播放參數 |
-| 0x3105 | JPEG_STATUS_GET | Server → MCU | (空) | 查詢狀態 |
-| 0x3106 | JPEG_STATUS_RSP | MCU → Server | `playing(u8)` `frame(u32)` `total(u32)` `fps(u16)` `err(str)` | 狀態回報 |
-| 0x3107 | JPEG_SOURCE_SET | Server → MCU | `source(str)` | 設定來源(資料夾/jpk/bin) |
+| 0x3101 | MODE_LIST_QUERY | Master → MCU | `mode_type(u8)` | 查模式清單（0=全部、1=LED、2=SERVO） |
+| 0x3102 | MODE_LIST_RSP | MCU → Master | `mode_type(u8)` `count(u8)` `entries(bytes_rest)` | 清單（mode_type 回音 query；每筆 `mode_type(u8)`+`mode_id(u8)`+`total_ms(u32)`） |
+| 0x3103 | MODE_GET | Master → MCU | (空) | 查目前狀態 |
+| 0x3104 | MODE_GET_RSP | MCU → Master | `mode_type(u8)` `mode_id(u8)` `elapsed_ms(u32)` `total_ms(u32)` `running(u8)` | 目前狀態 |
+| 0x3105 | MODE_SET | Master → MCU | `mode_type(u8)` `mode_id(u8)` `start_delay_ms(u16)` `brightness(u8)` | 切換模式（brightness 0–30，0xFF=不設置） |
+| 0x3106 | MODE_STOP | Master → MCU | `action(u8)` | 停止（0=暫停、1=全關閉） |
+| 0x3107 | MODE_DETAIL_QUERY | Master → MCU | `mode_type(u8)` `mode_id(u8)` | 查單一模式細節 |
+| 0x3108 | MODE_DETAIL_RSP | MCU → Master | `mode_type(u8)` `mode_id(u8)` `total_ms(u32)` `name(str_u16len)` | 模式細節（含名稱 UTF-8） |
+
+> 詳細定義見 `doc/pixel_0x31xx_integration.md`、`doc/pixel_mode_query_guide.md`。
 
 ### 6.11 mp4.json(0x32xx)
 
@@ -347,7 +354,7 @@ app.handle_stream(parser, pkt, transport_name="Test", send_func=print)
 | Header | 2+1+2+2+2 = 9B(不含 CRC) | 2+1+2+2+2 = **9B** |
 | CRC | CRC16-CCITT-FALSE,2B | **CRC32(binascii.crc32),4B** |
 | CRC 範圍 | VER..DATA | **VER..DATA(buffer[2:9+LEN])** |
-| 指令域 | 0x10xx sys / 0x11xx status / 0x12xx heartbeat+fs / 0x20xx file / 0x30xx stream | 0x10xx sys / 0x11xx status / 0x12xx heartbeat / 0x13xx now / 0x14xx hw / 0x15xx wtt / 0x18xx ram_bench / 0x20xx file / 0x30xx stream / 0x31xx jpeg / 0x32xx mp4 |
+| 指令域 | 0x10xx sys / 0x11xx status / 0x12xx heartbeat+fs / 0x20xx file / 0x30xx stream | 0x10xx sys / 0x11xx status / 0x12xx heartbeat / 0x13xx now / 0x14xx hw / 0x15xx wtt / 0x18xx ram_bench / 0x20xx file / 0x30xx stream / 0x31xx pixel / 0x32xx mp4 |
 | Payload 類型 | 同 | 同(u8/u16/u32/i16/i32/str_u16len/bytes_fixed/bytes_rest) |
 
 > `mp_Net-Light` 的 `ADD_NEW_CMD_FLOW.md` / `RUN_NETWORK_SERVER.md` 描述的組包/解析流程與本專案相同,只差 VER/CRC 常數。對接工具請以 `slave/lib/proto.py` 為準。

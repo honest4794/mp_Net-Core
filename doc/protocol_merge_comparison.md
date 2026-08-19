@@ -33,9 +33,9 @@
 | 防 drift | `--check` 檢查生成檔有無落後 | 無（且實測已有 drift，見 §2 註記） |
 | payload 型別 | `u8/u32/i32/bytes_rest`（little-endian） | `u8/u16/u32/str_u16len/bytes_fixed/bytes_rest` |
 
-> 公平註記：本專案也有 drift — `doc/protocol_nc4.md` 記載了 `jpeg.json(0x31xx)`，
-> 但 `slave/schema/` 目錄內**沒有 jpeg.json**，且 `slave/tasks/lvgl_task.py` 註明
-> 「jpeg 播放器已移除」。文檔與實作對不上這件事，兩邊都發生過。
+> 公平註記：本專案也有 drift — `doc/protocol_nc4.md` 曾記載 `jpeg.json(0x31xx)`，
+> 但 `slave/schema/` 目錄內沒有 jpeg.json，且 `slave/tasks/lvgl_task.py` 註明
+> 「jpeg 播放器已移除」；0x31xx 域已改由 pixel（模式播放）使用。文檔與實作對不上這件事，兩邊都發生過。
 
 ---
 
@@ -131,7 +131,8 @@
 |---|---|---|
 | `0x30xx` STREAM_* + `0x3003` Direct Mode | 逐幀像素串流 | 無（Slave 本機跑燈效，不傳像素） |
 | `0x20xx` FILE_* | 檔案傳輸/查詢/斷點續傳 | 只有 OTA 韌體，無通用檔案傳輸 |
-| `0x31xx / 0x32xx` JPEG / MP4 播放器 | 影片播放 | 無 |
+| `0x31xx` PIXEL_*（模式播放：MODE_LIST/GET/SET/STOP/DETAIL） | LED／SERVO 模式清單與播放控制 | 對方有 RS485 MODE_SET/STORY_SET（已併入） |
+| `0x32xx` MP4_* | 影片播放 | 無 |
 | `0x12xx` HEARTBEAT + `0x13xx` ESP-NOW | 心跳 + 無 WiFi 控制 | 無（靠 RS485 poll） |
 | `0x14xx` HW_CTL | 通用硬體控制（type/id/label/value） | 無通用硬體通道 |
 | `0x10xx` SYS_TASK_SET | 雙核任務親和性管理 | 無（單核 main loop） |
@@ -159,9 +160,10 @@
 |---|---|---|
 | Timer 端 slot | `0–31` | UART 幀 `0–31`（`_UART_BRIGHTNESS_MAX = 31`） |
 | Slave 實際 | `1–190`（Master 換算） | 無換算 |
-| WTT 指令 | — | `0–36`（`slave/action/waiting_to_trash_actions.py:41`） |
+| **新整合 `MODE_SET.brightness`** | — | **`0–30`**（`0xFF`=不設置，見 `doc/pixel_0x31xx_integration.md` §2.4） |
+| WTT 指令（已棄用） | — | `0–36`（`slave/action/waiting_to_trash_actions.py:41`） |
 
-> 本專案自己內部就有「31 vs 36」兩種上限；對方是「31 → 190」兩段式換算。合併要統一亮度段數與換算表。
+> 本專案自己內部就有「31 vs 36」兩種上限；對方是「31 → 190」兩段式換算。新整合已定案：`MODE_SET.brightness` 統一為 `0–30`（`0xFF`=不設置），對方 1–190 需映射到 0–30。舊 WTT 亮度（0–36）棄用。
 
 ### 5.3 `WTT_CTL 0x1501` 缺欄位
 
@@ -346,7 +348,7 @@
 | 0x3203 | MP4_STATUS_GET | (空) |
 | 0x3204 | MP4_STATUS_RSP | `playing(u8)`, `paused(u8)`, `mode(u8)`, `frame(u32)`, `total(u32)`, `source(str)`, `err(str)` |
 
-> 註：`0x31xx` JPEG 指令僅存在於 `doc/protocol_nc4.md` 文件，`slave/schema/` 內已無 jpeg.json。
+> 註：原 `0x31xx` JPEG 指令已移除（jpeg 播放器停用）；0x31xx 域現為 pixel 模式播放，見 `doc/pixel_0x31xx_integration.md`。
 
 ---
 

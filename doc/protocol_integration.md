@@ -75,12 +75,14 @@
 
 | CMD | NAME | 方向 | Payload |
 |---:|---|---|---|
-| `0x3101` | `MODE_LIST_QUERY` | Master → Slave | — |
-| `0x3102` | `MODE_LIST_RSP` | Slave → Master | `count:u8`, `entries:bytes_rest`（子格式：mode_type:u8 + id:u8 + total_ms:u32 + name_len:u16 + name:utf8） |
+| `0x3101` | `MODE_LIST_QUERY` | Master → Slave | `mode_type:u8`（0=全部、1=LED、2=SERVO） |
+| `0x3102` | `MODE_LIST_RSP` | Slave → Master | `mode_type:u8`（回音）, `count:u8`, `entries:bytes_rest`（子格式：mode_type:u8 + mode_id:u8 + total_ms:u32，每筆 6B，見 pixel 文件 §2.2） |
 | `0x3103` | `MODE_GET` | Master → Slave | — |
 | `0x3104` | `MODE_GET_RSP` | Slave → Master | `mode_type:u8`, `mode_id:u8`, `elapsed_ms:u32`, `total_ms:u32`, `running:u8` |
-| `0x3105` | `MODE_SET` | Master → Slave | `mode_type:u8`, `mode_id:u8`, `start_delay_ms:u16` |
+| `0x3105` | `MODE_SET` | Master → Slave | `mode_type:u8`, `mode_id:u8`, `start_delay_ms:u16`, `brightness:u8` |
 | `0x3106` | `MODE_STOP` | Master → Slave | `action:u8`（0=暫停、1=全關閉） |
+| `0x3107` | `MODE_DETAIL_QUERY` | Master → Slave | `mode_type:u8`, `mode_id:u8` |
+| `0x3108` | `MODE_DETAIL_RSP` | Slave → Master | `mode_type:u8`, `mode_id:u8`, `total_ms:u32`, `name:str_u16len` |
 
 > `mode_type` 語義：`0`=系統（UNKNOWN/DEV）、`1`=LED 組、`2`=SERVO 組，其餘保留。
 > 細節見 `doc/pixel_0x31xx_integration.md`。
@@ -101,8 +103,9 @@
 | `0x11 STATUS_REPORT` | `0x3104 MODE_GET_RSP` | state 收斂為 `mode_type` + `running` |
 | `0x20/0x21/0x22 TIME_SYNC_*` | `0x100A/0x100B/0x100C` | 選用 |
 | `0x40/0x41 OTA_COMMAND/OTA_RESPONSE` + 內層 `0x01~0x08` | `0x22xx OTA_*` | 對方韌體層重寫（CRC32→SHA256、SEQ→offset、子母包→扁平） |
-| — | `0x3101/0x3102 MODE_LIST_*` | 新增，對方原本無模式清單查詢 |
-| `0x04 BRIGHTNESS` | （未整合） | 見待決事項 |
+| — | `0x3101/0x3102 MODE_LIST_*` | 新增，對方原本無模式清單查詢（列表只含 ID + 總時間） |
+| — | `0x3107/0x3108 MODE_DETAIL_*` | 新增，逐個模式查名稱等細節 |
+| `0x04 BRIGHTNESS` | ✅ `0x3105 MODE_SET.brightness` | 對方 `value:u8`（1–190）→ 我方 `brightness:u8`（0–30）；`0xFF`=不設置 |
 | `0x08/0x09 AUDIO_*` | （我方不建立） | 不整合 |
 | `0x30~0x33 INFO/LIVE` | （不整合） | 對方既有另案處理 |
 | `0x70/0x71 DIAGNOSTIC/ERROR_REPORT` | （移除） | Slave 被動，不主動回報 |
@@ -117,6 +120,7 @@
 | `doc/protocol_migration_guide.md` | **人讀版**：對方每一條指令變成什麼、參數怎麼對、架構怎麼理解 |
 | `doc/ota_changelog.md` | OTA 0x22xx 完整設計（改版理由、payload、長度限制、推薦流程） |
 | `doc/pixel_0x31xx_integration.md` | PIXEL 0x31xx 完整定義與對方實作對照（含時鐘同步） |
+| `doc/pixel_mode_query_guide.md` | PIXEL 查詢操作指南（MODE_LIST / MODE_DETAIL 方向、逐 byte 佔位、容量） |
 | `slave/schema/ota.json` | OTA 權威 schema |
 | `slave/schema/pixel.json` | PIXEL 權威 schema |
 | `slave/schema/sys.json` | 系統 + 時鐘同步權威 schema（0x100A~0x100C） |
@@ -129,6 +133,6 @@
 | # | 事項 | 現況 |
 |---|---|---|
 | 1 | 播完（COMPLETED）表達 | `running=0` + `elapsed>=total` 輪詢推得；是否新增主動通知待決 |
-| 2 | 亮度（BRIGHTNESS）通道 | 未整合；對方 1–190 vs 我方 0–36 需統一 |
+| 2 | 亮度（BRIGHTNESS）通道 | ✅ 併入 `MODE_SET.brightness`（0–30，`0xFF`=不設置）；對方 1–190 需映射 |
 | 3 | 暫停後續播 | 一律重頭開始；續播需 `MODE_SET` 加 `resume_from_ms` |
 | 4 | 對方韌體 OTA 重寫排程 | 0x22xx 遷移時程 |
