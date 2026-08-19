@@ -233,7 +233,7 @@ class WebUITask(Task):
                     payload_obj = {}
 
                 from lib.schema_codec import SchemaCodec
-                from lib.proto import StreamParser
+                from lib.proto import StreamParser, MAX_PAYLOAD
 
                 cmd_def = self.app.store.get(cmd_id)
                 if not cmd_def:
@@ -263,7 +263,7 @@ class WebUITask(Task):
 
                 rsp = []
                 if frames:
-                    parser = StreamParser(max_len=4096 * 4)
+                    parser = StreamParser(max_len=MAX_PAYLOAD)
                     for fr in frames:
                         try:
                             parser.feed(fr)

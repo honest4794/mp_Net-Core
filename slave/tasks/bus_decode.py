@@ -9,7 +9,6 @@ class BusDecodeTask(Task):
         self.app = ctx["app"]
         self._buses = []
         self._parsers = {}
-        self._read_buf = None
 
     def on_start(self):
         super().on_start()
@@ -38,10 +37,6 @@ class BusDecodeTask(Task):
             for cb in circuit_list:
                 self._buses.append(cb)
 
-    def _ensure_read_buf(self, size):
-        if self._read_buf is None or len(self._read_buf) < size:
-            self._read_buf = bytearray(size)
-
     def loop(self):
         if not self.running:
             return
@@ -58,29 +53,33 @@ class BusDecodeTask(Task):
             hub = getattr(b, "rx_hub", None)
             if hub is None:
                 continue
-            self._ensure_read_buf(hub.size)
             p = self._parsers.get(id(b))
             if p is None:
                 p = self.app.create_parser()
                 self._parsers[id(b)] = p
             ctx_extra = getattr(b, "_decode_ctx", None) or {}
-            mv = memoryview(self._read_buf)
             while True:
                 if used >= self._max_slots:
                     return
-                if not hub.read_into(self._read_buf):
+                # view 模式: 直接讀 slot 的 memoryview, 省掉 read_into 的 target[:] 複製。
+                # handle_stream -> parser.feed 是「立即複製進 parser._buf」, 不持有 view,
+                # 所以 finally 裡 release_read() 安全。
+                view = hub.get_read_view()
+                if view is None:
                     break
-                ln = self._read_buf[0] | (self._read_buf[1] << 8)
-                if ln <= 0:
-                    continue
-                data = mv[2:2 + ln]
-                self.app.handle_stream(
-                    p,
-                    data,
-                    transport_name=getattr(b, "label", "Bus"),
-                    send_func=b.write,
-                    **ctx_extra
-                )
+                try:
+                    ln = view[0] | (view[1] << 8)
+                    if ln > 0:
+                        data = view[2:2 + ln]
+                        self.app.handle_stream(
+                            p,
+                            data,
+                            transport_name=getattr(b, "label", "Bus"),
+                            send_func=b.write,
+                            **ctx_extra
+                        )
+                finally:
+                    hub.release_read()
                 self.success += 1
                 used += 1
 

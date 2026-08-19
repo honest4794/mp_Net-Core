@@ -52,6 +52,19 @@ class NetworkManager:
         # 3. 初始連接檢查
         self.check_network(force=True)
 
+    def _wait_ip(self, iface, timeout_s=6):
+        """等待 DHCP 取得有效 IP(非空、非 0.0.0.0),回傳 IP 字串或 None。"""
+        t0 = time.time()
+        while time.time() - t0 < timeout_s:
+            try:
+                ip = iface.ifconfig()[0]
+            except Exception:
+                ip = None
+            if ip and ip not in ("0.0.0.0", ""):
+                return ip
+            time.sleep(0.2)
+        return None
+
     def _init_lan(self, config):
         """初始化 LAN 接口 (支持 RMII 和 SPI)"""
         mode = config.get('active_mode', MODE_ALWAYS_ON)
@@ -129,12 +142,47 @@ class NetworkManager:
                 lan.active(True)
                 self.interfaces['lan'] = lan
                 dprint("✓ RMII LAN 已初始化")
+
+            # 等待 DHCP 取得有效 IP(有線/WiFi 各自獨立,可同時存在)
+            # 成功後 IP 由 check_network() -> _on_interface_up() 統一列印
+            lan = self.interfaces.get('lan')
+            if lan is not None and not self._wait_ip(lan):
+                dprint("⚠️ LAN 已初始化但尚未取得 IP")
                 
         except Exception as e:
             dprint(f"✗ LAN 初始化失敗: {e}")
 
+    def _cur_ssid(self, wlan):
+        """回傳目前連上的 SSID (未連或失敗回空字串)。"""
+        try:
+            s = wlan.config("ssid")
+            if s:
+                return s
+        except Exception:
+            pass
+        return ""
+
+    def _disable_pm(self, wlan):
+        """關閉 WiFi 省電模式。
+
+        ESP32 預設開省電時, 射頻會在 DTIM beacon 之間休眠, 導致 ARP/單播
+        回應延遲數百 ms 甚至掉包 — PC 端 TCP connect 常因此 ETIMEDOUT,
+        但只要先 ping 一下 (強制 ARP 解析 + 喚醒) 就又能連。關掉省電可根治。"""
+        try:
+            pm = getattr(wlan, "PM_PERFORMANCE", None)
+            if pm is None:
+                pm = getattr(wlan, "PM_NONE", None)
+            if pm is not None:
+                wlan.config(pm=pm)
+                dprint("   WiFi 省電: 已關閉")
+        except Exception:
+            pass
+
     def _init_wifi(self, config):
-        """初始化 WiFi 接口 (STA -> Fail -> AP)"""
+        """初始化 WiFi 接口 (STA -> Fail -> AP)
+
+        原則: 已連到「指定 SSID」就直接沿用, 不重連、不掃描;
+        只有未連線、或連到非指定 SSID 時才斷開重連。"""
         if not hasattr(network, 'WLAN'):
             dprint("⚠️ 此固件/硬體不支持 WLAN，跳過 WiFi 初始化")
             return
@@ -146,17 +194,48 @@ class NetworkManager:
         self.active_modes['wifi'] = mode
         # 讀取超時設定 (預設 300 秒)
         self.wifi_timeout = config.get('timeout', 300)
-        
+
+        # 指定 SSID / 密碼 (下面判斷「是否已連到指定 SSID」要用)
+        default_ssid = config.get("ssid") or ""
+        default_pw = (
+            config.get("password")
+            or config.get("password_pw")
+            or config.get("ssid_pw")
+            or ""
+        )
+
         try:
+            wlan = network.WLAN(network.STA_IF)
+
+            # ── 快速路徑: 已連到指定 SSID → 沿用, 不重連、不掃描 ──
+            if wlan.active() and wlan.isconnected():
+                cur = self._cur_ssid(wlan)
+                if not default_ssid or cur == default_ssid:
+                    dprint("✓ 已連接到指定 WiFi: {} (沿用, 不重連)".format(cur or default_ssid))
+                    self.interfaces['wifi'] = wlan
+                    self._disable_pm(wlan)
+                    return
+
             dprint("📡 初始化 WiFi STA...")
             try:
                 network.WLAN(network.AP_IF).active(False)
                 time.sleep(0.5) # Wait for radio to fully power down
             except: pass
-            
-            
-            wlan = network.WLAN(network.STA_IF)
+
             wlan.active(True)
+
+            # 啟動後若 firmware 自動重連到指定 SSID, 直接沿用 (不掃描、不重連)
+            if wlan.isconnected():
+                cur = self._cur_ssid(wlan)
+                if not default_ssid or cur == default_ssid:
+                    dprint("✓ 已連接到指定 WiFi: {} (自動重連, 不掃描)".format(cur))
+                    self.interfaces['wifi'] = wlan
+                    self._disable_pm(wlan)
+                    return
+                dprint("   已連到非指定 SSID ({}), 斷開重連...".format(cur))
+                wlan.disconnect()
+                time.sleep(0.5)
+
             dprint("   等待 WiFi 射頻啟動 (3s)...")
             time.sleep(3.0) # Give it more time based on user feedback
             
@@ -218,16 +297,7 @@ class NetworkManager:
             except Exception:
                 pass
 
-            # 預設 ssid / pw
-            default_ssid = config.get("ssid") or ""
-            default_pw = (
-                config.get("password")
-                or config.get("password_pw")
-                or config.get("ssid_pw")
-                or ""
-            )
-
-            # 逐筆試連接
+            # 逐筆試連接 (前面已確認: 未連線, 或已斷開非指定 SSID)
             if not wlan.isconnected():
                 # 先試儲存的憑證
                 for c in creds:
@@ -262,13 +332,9 @@ class NetworkManager:
                                 self.save_wifi_credential(ssid, pw)
                                 break
 
-            else:
-                # 已經連線了
-                dprint("   已連接到 WiFi")
-                connected_success = True
-            
             if connected_success:
                 self.interfaces['wifi'] = wlan
+                self._disable_pm(wlan)
                 dprint("✓ WiFi STA 接口已就緒")
             else:
                 # STA 失敗，切換到 AP 模式

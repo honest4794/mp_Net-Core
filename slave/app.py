@@ -1,7 +1,7 @@
 # app.py
 from lib.schema_loader import SchemaStore
 from lib.dispatch import Dispatcher
-from lib.proto import StreamParser
+from lib.proto import StreamParser, MAX_PAYLOAD
 # from lib.file_rx import FileRx # 已移除
 from action.registry import register_all
 from lib.sys_bus import bus
@@ -13,18 +13,14 @@ class App:
         self.store.load_dir("/schema")
         self.store.finalize()
         self.disp = Dispatcher(self.store)
-        
-        # 統一緩衝區管理
-        # buf_size = bus.shared.get('Buffer', {}).get('size', 4096)
-        # self.file_rx = FileRx(buf_size=buf_size) # 已移除
-   
+
         # 3. 註冊行為
         register_all(self)
 
     def create_parser(self):
-        # 協議緩衝區上限設為基礎緩衝的 2 倍，以容納跨包重組
-        base_size = bus.shared.get('Buffer', {}).get('size', 4096)
-        return StreamParser(max_len=base_size * 2)
+        # 協議負載上限統一由 lib.proto.MAX_PAYLOAD 決定 (純 payload, 不含 header/CRC)。
+        # StreamParser 內部會自動加 9B header + 4B CRC 建立緩衝, 這裡不需再乘 2。
+        return StreamParser(max_len=MAX_PAYLOAD)
 
     def handle_stream(self, parser, data, transport_name="Bus", send_func=None, **kwargs):
         """

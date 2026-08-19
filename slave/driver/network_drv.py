@@ -14,4 +14,7 @@ def init_network(sysbus=None):
         return nm
     nm = NetworkManager(sysbus)
     sysbus.register_service("network_manager", nm)
+    # 照 config 建立 LAN / WiFi / AP 介面並嘗試連線,
+    # 連上後由 check_network() -> _on_interface_up() 列印各介面 IP。
+    nm.init_from_config()
     return nm

@@ -40,7 +40,7 @@ import time
 # 讓 PC 端能 import slave/lib/proto 的 Proto.pack (CPython 可用)。
 # 注意: slave 的 StreamParser 用了 viper (MicroPython 專屬), CPython 跑會壞 —
 # 所以 PC 端只 import Proto.pack, StreamParser 用下面的純 Python 版 PyStreamParser。
-_SLAVE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "slave"))
+_SLAVE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "slave"))
 if _SLAVE_DIR not in sys.path:
     sys.path.insert(0, _SLAVE_DIR)
 try:
@@ -353,6 +353,8 @@ def recv_proto_exact(conn, rx_buf, total, parser):
 def send_proto_exact(conn, tx_mv, total):
     """NC4 協議下載發送: 用 Proto.pack 封裝每個 chunk 送給 ESP (ESP 用 StreamParser 拆)。
     回傳 (sent_data_bytes, elapsed_s, frames)。"""
+    if Proto is None:
+        return 0, 0.0, 0
     chunk = len(tx_mv)
     sent = 0
     seq = 0
@@ -457,12 +459,13 @@ def handle_esp(conn, addr, params):
                 verify = None
 
             # 下一行應為 RESULT/DL_RESULT/P_RESULT/P_DL_RESULT
+            # 慢速裝置 (如 S3) 協議拆幀慢, 單 chunk 可能 >30s, 拉長到 120s
             result_tags = ([b"RESULT", b"DL_RESULT"] if not proto_mode
                            else [b"P_RESULT", b"P_DL_RESULT"])
             esp_ms = None
             esp_mem = None
             esp_extra = None   # 裸 TCP: CRC; 協議: frame_count
-            rline = reader.readline(timeout=30.0)
+            rline = reader.readline(timeout=120.0)
             if rline and rline.strip().split()[:1] and rline.split()[0:1][0] in result_tags + [b"RESULT", b"DL_RESULT"]:
                 rp = rline.split()
                 if len(rp) >= 5:
@@ -516,7 +519,7 @@ def handle_esp(conn, addr, params):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="ESP32-P4 上載極限網速測試 — PC 端 (配對 test/bench_net.py)")
+        description="ESP 上載極限網速測試 — PC 端 (配對 test/bench_net.py)")
     ap.add_argument("--total", type=int, default=DEFAULT_TOTAL_KB,
                     help="每筆上載總量 KB (預設 {}=4MB)".format(DEFAULT_TOTAL_KB))
     ap.add_argument("--runs", type=int, default=DEFAULT_RUNS,
@@ -541,7 +544,7 @@ def main():
 
     local_ip = get_local_ip()
     print("\n" + "╔" + "=" * 62 + "╗")
-    print("║  ESP32-P4 → PC  上載極限吞吐 (PC server / UDP 自動連線)        ║")
+    print("║  ESP → PC  上載極限吞吐 (PC server / UDP 自動連線)        ║")
     print("╚" + "=" * 62 + "╝")
     print("本機 IP      : {}".format(local_ip))
     print("資料 TCP 埠  : {}".format(args.data_port))
@@ -551,7 +554,7 @@ def main():
         fmt_bytes(params["total_kb"] * 1024), args.runs, chunk_sizes))
     print()
     print("👉 ESP 端執行: exec(open(\"test/bench_net.py\").read())")
-    print("   (需先確認 config.json 的 Network.lan.enable = 1)")
+    print("   (ESP 需已連網: boot 連上 WiFi, 或 config.json 的 Network.lan.enable = 1)")
     print()
 
     # ── 起 TCP server ──
@@ -589,7 +592,7 @@ def main():
             if conn is None:
                 if args.once and grand_best is not None:
                     break
-                print("\n❌ 等待 ESP 連入超時 ({}s)。確認 ESP 端已執行 + 乙太網同網段。".format(LINK_WAIT_S))
+                print("\n❌ 等待 ESP 連入超時 ({}s)。確認 ESP 端已執行 + 與 PC 同網段 (WiFi/乙太網)。".format(LINK_WAIT_S))
                 break
 
             print("\n── ESP 連入 {} ──".format(addr[0]))

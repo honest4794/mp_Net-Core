@@ -16,7 +16,6 @@
         "log_interval_ms": 1000
     },
     "Buffer": {
-        "size": 16384,
         "rx_hub_buffers": 16,
         "drop_on_full": 1,
         "drain_reads": 1,
@@ -132,14 +131,13 @@
         "list": [
             {"GPIO":15,"Q":10,"order":"GRB"},
             {"GPIO":16,"Q":10,"order":"GRB"},
-            {"GPIO":17,"Q":10,"order":"GRB"},
-
+            {"GPIO":17,"Q":10,"order":"GRB"}
         ]
     },
     "APA102": {
         "enable": 0,
          "list": [
-            {"GPIO":{"spi":0 },"Q":290,"order":"BGRW"},
+            {"GPIO":{"spi":0 },"Q":290,"order":"BGRW"}
         ]
     },
     "PCA9685": {

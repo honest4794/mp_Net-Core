@@ -2,6 +2,7 @@ import struct
 import time
 from lib.sys_bus import bus
 from lib.buffer_hub import AtomicStreamHub
+from lib.proto import RX_BUF_SIZE
 
 
 class CircuitBus:
@@ -12,7 +13,7 @@ class CircuitBus:
         self._decode_ctx = {}
 
         buf_cfg = bus.shared.get("Buffer", {}) or {}
-        buf_size = min(buf_cfg.get("size", 4096), 4096)
+        buf_size = RX_BUF_SIZE
         self._buf = bytearray(buf_size)
         self.rx_hub = rx_hub
         self._drop_buf = bytearray(min(2048, buf_size))
@@ -105,7 +106,7 @@ class CircuitBus:
         cache = self.cache_hub
         if cache is None:
             buf_cfg = bus.shared.get("Buffer", {}) or {}
-            size = min(int(buf_cfg.get("size", 4096) or 0), 4096) + self._hub_off
+            size = RX_BUF_SIZE + self._hub_off
             slots = int(buf_cfg.get("u8_rx_slots", 2) or 0)
             slots = min(slots, 4)
             cache = AtomicStreamHub(size, num_buffers=slots)

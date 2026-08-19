@@ -2,7 +2,7 @@
 
 > **用途**：`slave/` 與 Server / PC 工具之間的二進位封包協議完整說明,包含封包格式、CRC、schema 驅動 payload、傳輸層與完整指令集。
 > **對象**：任何要新增指令、解析封包、寫 PC/Server 端對接工具的人。
-> **最後更新**：2026-08-16
+> **最後更新**：2026-08-19
 > **實作來源**：`slave/lib/proto.py`(唯一真相,以此文件描述為準)
 
 ---
@@ -16,7 +16,25 @@ CUR_VER     : 4
 Header 長度 : HDR_LEN = 9 bytes
 CRC 演算法  : CRC32 (binascii.crc32)
 CRC 長度    : CRC_LEN = 4 bytes
+Payload 上限: MAX_PAYLOAD = 8192 bytes (純負載, 不含 header/CRC)
 ```
+
+> ⚠️ **MAX_PAYLOAD = 8KB 是「約定俗成」的工程上限,不是協議的硬限制。**
+> 協議欄位 `LEN` 是 uint16,理論單幀 payload 可到 65535 bytes(約 64KB)。
+> 但本專案刻意把 payload 上限定在 8KB,理由:
+> 1. **對端也是 ESP**:雙方記憶體/發送能力有限,>8KB 的單幀送不出也收不下。
+> 2. **無線環境長幀不可靠**:一段指令太長,在 WiFi / 無線這類非可靠鏈路上更容易
+>    整幀損壞、重傳成本高。8KB 是「吞吐」與「幀損風險」之間的務實平衡點。
+> 3. **現有指令都遠小於 8KB**:檔案 chunk=1~2KB,OTA chunk ≤ 8KB,控制指令都 <1KB。
+>
+> **實作位置與修改方法**:在 `slave/lib/proto.py` 開頭第 33 行附近改這一處即可:
+> ```python
+> MAX_PAYLOAD = 8192   # ← 改這裡 (純負載位元組數, 不含 header/CRC)
+> ```
+> 這是「唯一真相源」。改完後 `StreamParser` 內部會自動加 `HDR_LEN(9) + CRC_LEN(4) = 13`
+> bytes 建立緩衝(單幀最大 = `MAX_PAYLOAD + 13` bytes),**不用再手動算頭尾**。
+> 所有 `StreamParser` 建立點(`slave/app.py`、`slave/tasks/web_ui.py`)都已改成引用
+> `MAX_PAYLOAD`,不要各自寫死數字。放寬/收緊上限都只改這一行,其餘自動跟隨。
 
 > ⚠️ **與舊文件差異**:`mp_Net-Light/doc/AI_CONTEXT.md` 描述的 VER=3 + CRC16-CCITT-FALSE(2B)是**舊版**。目前 `slave/lib/proto.py` 已升級為 **VER=4 + CRC32(4B)**,header 也由 10B(含 CRC16 位置)改為 **9B(HDR_LEN)+ payload + 4B CRC32**。任何新對接一律以本文件為準。
 

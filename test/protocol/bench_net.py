@@ -14,8 +14,8 @@
   絕不用 recv()/sendall(bytes_obj) (每次新分配)。
   每 run 前後 gc.collect() + gc.mem_free() 對比, mem_delta==0 即客觀證零分配。
 
-自動連線: 從 config.json 讀 RMII 參數起 network.LAN, 再 UDP 監聽 discovery_port
-等 PC 廣播 beacon, 從 sender addr 拿 PC IP 後 TCP connect 過去。
+自動連線: 優先沿用 boot 已連好的 WiFi; 否則從 config.json 讀 RMII 參數起
+network.LAN。之後 UDP 監聽 discovery_port 等 PC 廣播 beacon, 拿 PC IP 後 TCP connect。
 
 用法 (於 slave 根目錄):
   exec(open("test/bench_net.py").read())     # 完整矩陣, 預設值
@@ -24,7 +24,7 @@
   bench_net.run(chunk_sizes=(4096, 16384))   # 只測指定 chunk
   bench_net.run(runs=1)                      # 每 chunk 只跑 1 次
 
-跑前確認: config.json 的 Network.lan.enable 需為 1 (否則本檔只會印提示)。
+跑前確認: 需已有可用網路 — boot 連上 WiFi, 或 config.json 的 Network.lan.enable=1。
 """
 
 import gc
@@ -104,6 +104,39 @@ _RECV_FN_G = [None]
 # ═══════════════════════════════════════════════════════════════
 #  helper
 # ═══════════════════════════════════════════════════════════════
+
+_CHIP_NAME = None   # 首次偵測後快取
+
+
+def _chip_name():
+    """偵測晶片型號 (MicroPython os.uname().machine), 供標題顯示。
+
+    例: ESP32-P4 / ESP32-S3 / ESP32-C3 等; PC 上跑則回 'ESP'。
+    """
+    global _CHIP_NAME
+    if _CHIP_NAME is not None:
+        return _CHIP_NAME
+    name = "ESP"
+    try:
+        import os
+        m = getattr(os.uname(), "machine", "") or ""
+        for kw in ("ESP32P4", "ESP32S3", "ESP32S2", "ESP32C6", "ESP32C3",
+                   "ESP32", "RP2040", "STM32", "MIMXRT"):
+            if kw in m:
+                name = kw.replace("ESP32", "ESP32-")
+                break
+    except Exception:
+        pass
+    if name == "ESP":
+        try:
+            import sys
+            p = getattr(sys, "platform", "esp32")
+            name = "ESP32" if "esp32" in str(p).lower() else "ESP"
+        except Exception:
+            pass
+    _CHIP_NAME = name
+    return name
+
 
 def _fmt_bytes(n):
     if n >= 1048576:
@@ -365,6 +398,70 @@ def bring_up_ethernet(cfg):
     return lan, ip
 
 
+def _wifi_disable_pm():
+    """關閉 WiFi 省電 (根治「PC 要先 ping 才連得上」)。
+
+    ESP32 預設省電時射頻會休眠, ARP/單播回應延遲數百 ms 甚至掉包,
+    PC 的 TCP connect 因此 ETIMEDOUT, 但 ping 一下 (強制喚醒) 就好。
+    關掉省電即可讓 ESP 對連入隨時回應。失敗靜默 (某些韌體不支援 pm)。
+    """
+    if network is None:
+        return
+    try:
+        sta = network.WLAN(network.STA_IF)
+        for attr in ("PM_NONE", "PM_PERFORMANCE"):
+            if hasattr(sta, attr):
+                try:
+                    sta.config(pm=getattr(sta, attr))
+                    print("   WiFi 省電: 已關閉 ({})".format(attr))
+                    return
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+
+def _wifi_ip():
+    """若 boot 已連上 WiFi STA, 回傳其 IP; 否則 None。"""
+    if network is None:
+        return None
+    try:
+        sta = network.WLAN(network.STA_IF)
+        if sta.active() and sta.isconnected():
+            ip = sta.ifconfig()[0]
+            if ip and ip != "0.0.0.0":
+                return ip
+    except Exception:
+        pass
+    return None
+
+
+def bring_up_network(cfg):
+    """優先沿用 boot 已連好的網路 (WiFi STA); 否則照 config 起 RMII LAN。
+
+    回傳 (ip_str, link_name) 或 (None, None)。
+    與 health.py 同哲學: 網路若已由 boot 建好, 就直接讀狀態, 不重複初始化。
+    """
+    # 1. boot 已連的 WiFi (裝置走 WiFi 的常見路徑)
+    ip = _wifi_ip()
+    if ip:
+        _wifi_disable_pm()
+        print("✓ 沿用 boot 已連線 WiFi | IP: {}".format(ip))
+        return ip, "WIFI"
+
+    # 2. 依 config 起 RMII 乙太網 (僅 lan.enable=1 時)
+    net_cfg = (cfg or {}).get("Network", {}) or {}
+    lan_cfg = net_cfg.get("lan", {}) or {}
+    if lan_cfg.get("enable", 0):
+        lan, ip = bring_up_ethernet(cfg)
+        if lan is not None:
+            return ip, "LAN"
+
+    print("❌ 找不到可用網路: WiFi 未連線, 且 Network.lan.enable 未開啟")
+    print("   請先讓 boot 連上 WiFi, 或把 config.json 的 Network.lan.enable 改成 1 起 RMII LAN。")
+    return None, None
+
+
 # ═══════════════════════════════════════════════════════════════
 #  自動連線 — UDP 監聽 PC 廣播 beacon, 拿 PC IP 後 TCP connect
 # ═══════════════════════════════════════════════════════════════
@@ -559,6 +656,35 @@ def _recv_into_all(sock, rx_mv):
     return off
 
 
+def _recv_some(sock, rx_mv):
+    """讀「可用」數據 (不要求填滿 rx_mv), 回傳實際讀到的 n (>0)。
+
+    協議模式專用。為何不用 readinto/recv_into: 這顆移植版的 socket.readinto
+    會「填滿整個 buffer 才返回」;協議幀流每幀多 15B 開銷 (9 header + 2 seq + 4 CRC),
+    總長不是 chunk 的整數倍 — 最後一段永遠填不滿, 卡到 socket timeout (ETIMEDOUT)。
+    (實證: 2KB 幀流總長 4225024 恰被 2048 整除→成功; 4KB+ 不整除→全掛。)
+
+    改用 recv() 讀多少算多少, 由 StreamParser 用內部緩衝自行對齊幀邊界。
+    recv 每次建臨時 bytes (之後 slice 賦值回 rx_mv 交 GC), 協議模式本就含複製, 可接受。"""
+    while True:
+        try:
+            raw = sock.recv(len(rx_mv))
+        except OSError as e:
+            code = e.args[0] if e.args else None
+            if code not in (_EAGAIN, _EWOULDBLOCK):
+                raise
+            try:
+                time.sleep_ms(0)
+            except Exception:
+                time.sleep(0)
+            continue
+        if not raw:
+            raise OSError("peer closed")
+        n = len(raw)
+        rx_mv[:n] = raw
+        return n
+
+
 def download_burst(sock, rx_mv, total_bytes, crc=False):
     """零 GC 洪流下載: 用 recv_into 把 rx_mv (一個 chunk) 反覆收滿 total_bytes。
     回傳 (recv_bytes, elapsed_ms, mem_delta, crc_acc)。
@@ -749,32 +875,108 @@ def upload_burst_proto_fast(sock, tx_mv, total_bytes, send_cap=0):
     return sent, elapsed_ms, mem_delta, frames
 
 
+# framed 直讀的緩衝 (串流式 resync, 惰性配一次, 跨 run 重用)
+_framed_buf = None
+_framed_cap = 0
+
+
 def download_burst_proto(sock, rx_mv, total_bytes):
-    """NC4 協議下載: 用 StreamParser.feed + pop 拆幀 (含 CRC 驗證), 模擬 BusDecodeTask
-    收封包的路徑。回傳 (recv_bytes, elapsed_ms, mem_delta, frame_count)。
+    """NC4 協議下載 (串流式 framed 直讀 + resync, 不走 StreamParser)。
 
-    recv_bytes = 解出的 payload data 累計 (扣掉每幀的 seq 2B 前綴)。
-    StreamParser 內建 CRC32 驗證 — 幀損會被丟棄 (pop 不 yield)。
+    TCP 是位元組串流, 沒有幀邊界保證 — 上一幀尾部 / 握手殘留都可能讓「讀固定
+    9B header」失步。這裡用滾動緩衝 + 讀取指標 (start/end): 只補足到「至少 9B」
+    就開始找 SOF("NC") 定位真正幀開頭, 找不到就往後跳 1 byte 重同步; 定位後讀
+    長度 → 補足整幀 → 就地 CRC(對 memoryview 切片, 零複製) → 消費, 未消費的
+    位元組留在緩衝給下一幀。緊湊只在「讀取指標走太遠」時才做一次, 不每幀搬移。
 
-    注意: max_len 用 65536 (單幀 payload 上限, u16), 不是 total — 否則會配 total 大小
-    的緩衝 (4MB), 爆分配。NC4 幀獨立, parser 只需容得下單幀。"""
+    header 欄位 (對齊 Proto.pack): [0:2]=SOF"NC", [2]=ver, [3:5]=addr, [5:7]=cmd,
+    [7:9]=payload_len。CRC 範圍 = header[2:] .. payload 尾 (不含 SOF)。
+
+    回傳 (recv_bytes, elapsed_ms, mem_delta, frame_count)。recv_bytes 已扣每幀 seq 2B。
+    """
+    global _framed_buf, _framed_cap
+    chunk = len(rx_mv)
+    # payload = seq(2B) + data(chunk), 所以單幀 = header(9) + (chunk+2) + crc(4)
+    frame_max = 9 + (chunk + 2) + 4
+    # 容 8 幀 + 餘量: recv 一次能收大塊, 緊湊頻率降到 1/8, 且 slice 緊湊是 memmove 級
+    need = frame_max * 8 + 64
+    if _framed_buf is None or _framed_cap < need:
+        _framed_buf = bytearray(need)
+        _framed_cap = need
+    buf = _framed_buf
+    bmv = memoryview(buf)
+    start = 0   # 第一個未消費位元組
+    end = 0     # 有效位元組尾 (exclusive)
+
     gc.collect()
     mem0 = gc.mem_free()
     t0 = time.ticks_ms()
 
-    parser = StreamParser(max_len=65536)
     received = 0
     frames = 0
-    # 用 rx_mv 當 raw socket 接收 buffer (收進來再 feed 給 parser)
-    while received < total_bytes:
-        n = _recv_into_all(sock, rx_mv)   # 收一段 raw bytes 進 rx_mv
+
+    def _compact():
+        """把 [start, end) 搬回開頭, 騰出尾部空間 (僅 buffer 快滿時呼叫)。
+
+        用 slice assignment (C 層 memmove, 一次搬完), 絕不逐 byte Python 迴圈。"""
+        nonlocal start, end
+        n = end - start
         if n > 0:
-            parser.feed(bytes(rx_mv[:n]))   # feed 需 bytes (viper _viper_append 要求)
-            for _ver, _addr, _cmd, payload in parser.pop():   # 拆幀 + CRC 驗證
-                received += len(payload) - 2   # 扣 seq 前綴
-                frames += 1
-                if received >= total_bytes:
-                    break
+            buf[:n] = bmv[start:end]
+        start = 0
+        end = n
+
+    def _topup(n):
+        """補足到未消費段至少 n 位元組。"""
+        nonlocal end
+        while end - start < n:
+            if end >= _framed_cap:
+                _compact()
+            end += _recv_some(sock, bmv[end:])
+
+    while received < total_bytes:
+        # 1) 補到至少 9B
+        _topup(9)
+
+        # 2) 找 SOF "NC" (失步往後跳 1 byte)
+        while start + 1 < end and not (buf[start] == 0x4E and buf[start + 1] == 0x43):
+            start += 1
+        _topup(9)
+        if buf[start] != 0x4E or buf[start + 1] != 0x43:
+            # 沒找到 SOF (理論上 _topup 已補夠, 但保守重試)
+            start += 1
+            continue
+
+        # 3) 驗 ver + 讀長度
+        if buf[start + 2] != 4:
+            start += 1
+            continue
+        ln = buf[start + 7] | (buf[start + 8] << 8)
+        if ln < 2 or ln > chunk + 2:   # payload 合法範圍: seq(2) + data(chunk)
+            start += 1
+            continue
+        total_len = 9 + ln + 4
+
+        # 4) 補足整幀
+        _topup(total_len)
+
+        # 5) 就地 CRC 驗證 (memoryview 切片, 零複製)
+        crc_calc = binascii.crc32(bmv[start + 2:start + 9 + ln], 0) & 0xFFFFFFFF
+        crc_recv = (buf[start + 9 + ln] | (buf[start + 9 + ln + 1] << 8)
+                    | (buf[start + 9 + ln + 2] << 16) | (buf[start + 9 + ln + 3] << 24))
+        if crc_calc != crc_recv:
+            start += 1   # CRC 錯 → 重同步
+            continue
+
+        # 6) 消費這幀 (payload 是 bmv[start+9:start+9+ln] 的 memoryview, 零複製)
+        received += ln - 2   # 扣 seq 2B 前綴
+        frames += 1
+        start += total_len
+        # 緩衝完全消費完 → 直接歸零 (免費, 不需搬移); 否則交給 _topup 在 buffer 滿時
+        # 用 slice 緊湊。絕不每幀緊湊 (那會讓 Python 逐 byte 搬移拖垮吞吐)。
+        if start == end:
+            start = 0
+            end = 0
 
     t1 = time.ticks_ms()
     gc.collect()
@@ -856,19 +1058,19 @@ def profile_proto(chunk_size=4096, frames=500):
         _pkt_mv = pack_into_fast_v2(_CMD_BENCH_PROTO, seq, mv)
     results["D3.pack_v2(預算CRC)"] = (time.ticks_diff(time.ticks_us(), t0)) // frames
 
-    # E. StreamParser feed+pop (拆 D 產生的幀)
+    # E. StreamParser feed+pop — 逐幀 pack→feed→pop, 不預先組大 buffer。
+    #    原版一次組 frames 幀 (500×~4KB≈2MB) 會爆 RAM;
+    #    逐幀處理記憶體只剩單幀, 且更貼近真實串流用法。
     parser = StreamParser(max_len=65536)
-    # 先產生 frames 個幀串起來
-    pkts = bytearray()
-    for seq in range(frames):
-        payload = struct.pack("<H", seq & 0xFFFF) + bytes(mv)
-        pkts.extend(Proto.pack(_CMD_BENCH_PROTO, payload))
     gc.collect()
     t0 = time.ticks_us()
-    parser.feed(bytes(pkts))
     cnt = 0
-    for _v, _a, _c, _p in parser.pop():
-        cnt += 1
+    for seq in range(frames):
+        payload = struct.pack("<H", seq & 0xFFFF) + bytes(mv)
+        pkt = Proto.pack(_CMD_BENCH_PROTO, payload)
+        parser.feed(pkt)
+        for _v, _a, _c, _p in parser.pop():
+            cnt += 1
     results["E. StreamParser拆幀"] = (time.ticks_diff(time.ticks_us(), t0)) // frames
 
     # F. SchemaCodec.decode (若有 store; 模擬 dispatch 的解碼成本)
@@ -1058,7 +1260,7 @@ def _print_report(total_bytes, up, dl, up_crc, dl_crc, up_proto, dl_proto, up_pr
     各參數: [(chunk, best_ms, best_mem), ...] 各方向的結果 (空 list = 未測)。
     """
     print("\n" + "╔" + "═" * 62 + "╗")
-    print("║" + "  ESP32-P4 RMII 乙太網 雙向吞吐報告".center(48) + "║")
+    print("║" + ("  {} 雙向吞吐報告".format(_chip_name())).center(48) + "║")
     print("╚" + "═" * 62 + "╝")
 
     # ── 報告表 1: 雙向 (純傳輸, 上載分段 vs 下載) ──
@@ -1130,7 +1332,8 @@ def run(total_kb=DEFAULT_TOTAL_KB,
         runs=DEFAULT_RUNS,
         disc_port=DEFAULT_DISC_PORT,
         data_port=DEFAULT_DATA_PORT,
-        cfg=None):
+        cfg=None,
+        skip=()):
     """完整上載基準矩陣。
 
     參數:
@@ -1140,9 +1343,33 @@ def run(total_kb=DEFAULT_TOTAL_KB,
       disc_port   UDP beacon 監聽埠 (對齊 config System.discovery_port)
       data_port   預設 PC 資料 TCP 埠 (beacon 會帶實際值覆寫)
       cfg         已載入的 config dict; None 則本檔自己讀
+      skip        要跳過的階段 (tuple/set 字串), 可選:
+                    "profile"    NC4 協議瓶頸分析 (純 CPU)
+                    "cliff"      上載基線 + 分段 (懸崖驗證)
+                    "dl"         裸 TCP 下載
+                    "crc"        上載/下載 + CRC32 校驗
+                    "ram"        RAM 對比 (SRAM vs PSRAM)
+                    "proto"      NC4 協議模式 (上載 + 下載)
+                    "proto_up"   僅 NC4 協議上載
+                    "proto_dl"   僅 NC4 協議下載
+                    "fastpack"   快版 pack 上載
+                  例: run(skip=("profile","cliff","dl","crc","ram","proto_up","fastpack"))
+                  只跑 NC4 協議下載
     """
+    skip = set(skip or ())
+
+    # 各階段結果先初始化, 跳過的階段維持空 list, 最終報告不會 NameError
+    up_baseline = []
+    up_subcapped = []
+    dl_results = []
+    up_crc = []
+    dl_crc = []
+    up_proto = []
+    dl_proto = []
+    up_proto_fast = []
+
     print("\n" + "╔" + "=" * 60 + "╗")
-    print("║  ESP32-P4 → PC  上載極限吞吐 (RMII / 裸 TCP / 零 GC)    ║")
+    print("║" + ("  {} → PC  上載極限吞吐 (裸 TCP / 零 GC)".format(_chip_name())).center(60) + "║")
     print("╚" + "=" * 60 + "╝")
 
     # ── 1. 讀 config + 起乙太網 ──
@@ -1153,8 +1380,8 @@ def run(total_kb=DEFAULT_TOTAL_KB,
             return
         print("✓ 讀取設定: {}".format(cfg_path))
 
-    lan, my_ip = bring_up_ethernet(cfg)
-    if lan is None:
+    my_ip, _link_name = bring_up_network(cfg)
+    if my_ip is None:
         return
 
     # 對齊 config 的 discovery_port (beacon 監聽同一埠)
@@ -1162,7 +1389,8 @@ def run(total_kb=DEFAULT_TOTAL_KB,
     disc_port = int(sys_cfg.get("discovery_port", disc_port))
 
     # ── 1b. NC4 協議瓶頸分析 (純 CPU, 不需網路; 在傳輸測試前先量化各環節成本) ──
-    profile_proto(chunk_size=4096, frames=500)
+    if "profile" not in skip:
+        profile_proto(chunk_size=4096, frames=500)
 
     # ── 2. 等 PC beacon ──
     found = wait_for_beacon(disc_port)
@@ -1223,87 +1451,131 @@ def run(total_kb=DEFAULT_TOTAL_KB,
     #      解法: 不管邏輯 chunk 多大, 每次只送 ≤4KB, 讓 send() 不阻塞。
     #      若分段的 8KB+ 回升到 ~9, 根因確認 + 懸崖解除。
     # ════════════════════════════════════════════════════════════
-    print("╔" + "=" * 60 + "╗")
-    print("║" + "  上載 (ESP→PC) — 懸崖根因驗證".center(48) + "║")
-    print("╚" + "=" * 60 + "╝")
+    if "cliff" not in skip:
+        print("╔" + "=" * 60 + "╗")
+        print("║" + "  上載 (ESP→PC) — 懸崖根因驗證".center(48) + "║")
+        print("╚" + "=" * 60 + "╝")
 
-    print("── 基線: 一次送整個 chunk (現狀, 有懸崖) ──")
-    up_baseline = _run_matrix_once(
-        sock, up_kind, max_chunk, chunk_sizes, runs, total_bytes, direction="up")
-    time.sleep(0.3)
-    sock.settimeout(15)
-    print("── 實驗: 分段發送, 每次 send ≤ 4KB (低於 TCP_SND_BUF) ──")
-    up_subcapped = _run_matrix_once(
-        sock, up_kind, max_chunk, chunk_sizes, runs, total_bytes, direction="up", send_cap=4096)
+        print("── 基線: 一次送整個 chunk (現狀, 有懸崖) ──")
+        up_baseline = _run_matrix_once(
+            sock, up_kind, max_chunk, chunk_sizes, runs, total_bytes, direction="up")
+        time.sleep(0.3)
+        sock.settimeout(15)
+        print("── 實驗: 分段發送, 每次 send ≤ 4KB (低於 TCP_SND_BUF) ──")
+        up_subcapped = _run_matrix_once(
+            sock, up_kind, max_chunk, chunk_sizes, runs, total_bytes, direction="up", send_cap=4096)
 
     # ════════════════════════════════════════════════════════════
     #  5b. 下載 (PC→ESP) — 補成雙向; Nagle 預設 (off)
     # ════════════════════════════════════════════════════════════
-    _set_nodelay(False)
-    print("╔" + "=" * 60 + "╗")
-    print("║" + "  下載 (PC→ESP)".center(54) + "║")
-    print("╚" + "=" * 60 + "╝")
-    dl_results = _run_matrix_once(
-        sock, dl_kind, max_chunk, chunk_sizes, runs, total_bytes, direction="dl")
+    if "dl" not in skip:
+        _set_nodelay(False)
+        print("╔" + "=" * 60 + "╗")
+        print("║" + "  下載 (PC→ESP)".center(54) + "║")
+        print("╚" + "=" * 60 + "╝")
+        dl_results = _run_matrix_once(
+            sock, dl_kind, max_chunk, chunk_sizes, runs, total_bytes, direction="dl")
 
     # ════════════════════════════════════════════════════════════
     #  5c. CRC32 校驗開銷 — 分段上載 + 每段算 CRC32 (對齊 proto.py)
     #      量測「加上 CRC32 校驗」比純傳輸下降多少。
     # ════════════════════════════════════════════════════════════
-    time.sleep(0.3)
-    sock.settimeout(15)
-    crc_tag = "有" if _HAVE_CRC32 else "無 binascii"
-    print("╔" + "=" * 60 + "╗")
-    print("║" + "  上載分段 + CRC32 校驗 ({}模組)".format(crc_tag).center(46) + "║")
-    print("╚" + "=" * 60 + "╝")
-    up_crc = _run_matrix_once(
-        sock, up_kind, max_chunk, chunk_sizes, runs, total_bytes,
-        direction="up", send_cap=4096, crc=True)
+    if "crc" not in skip:
+        time.sleep(0.3)
+        sock.settimeout(15)
+        crc_tag = "有" if _HAVE_CRC32 else "無 binascii"
+        print("╔" + "=" * 60 + "╗")
+        print("║" + "  上載分段 + CRC32 校驗 ({}模組)".format(crc_tag).center(46) + "║")
+        print("╚" + "=" * 60 + "╝")
+        up_crc = _run_matrix_once(
+            sock, up_kind, max_chunk, chunk_sizes, runs, total_bytes,
+            direction="up", send_cap=4096, crc=True)
 
     # ════════════════════════════════════════════════════════════
     #  5d. 下載 + CRC32 — 配對上載+CRC, 湊齊雙向+CRC 報告
     # ════════════════════════════════════════════════════════════
-    time.sleep(0.3)
-    sock.settimeout(15)
-    print("╔" + "=" * 60 + "╗")
-    print("║" + "  下載 (PC→ESP) + CRC32 校驗".center(48) + "║")
-    print("╚" + "=" * 60 + "╝")
-    dl_crc = _run_matrix_once(
-        sock, dl_kind, max_chunk, chunk_sizes, runs, total_bytes,
-        direction="dl", crc=True)
+    if "crc" not in skip:
+        time.sleep(0.3)
+        sock.settimeout(15)
+        print("╔" + "=" * 60 + "╗")
+        print("║" + "  下載 (PC→ESP) + CRC32 校驗".center(48) + "║")
+        print("╚" + "=" * 60 + "╝")
+        dl_crc = _run_matrix_once(
+            sock, dl_kind, max_chunk, chunk_sizes, runs, total_bytes,
+            direction="dl", crc=True)
+
+    # ════════════════════════════════════════════════════════════
+    #  5g. RAM 對比 — 上載/下載各跑 SRAM(DMA) 與 PSRAM 兩種 buffer
+    #      (health.py 同款「兩種 RAM 都測」; 上載走分段 ≤4KB 最佳路徑)
+    # ════════════════════════════════════════════════════════════
+    up_by_ram = {}
+    dl_by_ram = {}
+    if "ram" not in skip:
+        buf_kinds = []
+        if mem_info["have_sram"]:
+            buf_kinds.append("sram")
+        if mem_info["have_psram"]:
+            buf_kinds.append("psram")
+        if not buf_kinds:
+            buf_kinds.append("bytearray")
+
+        _ram_short = {"sram": "SRAM", "psram": "PSRAM", "bytearray": "bytearray"}
+
+        print("╔" + "=" * 60 + "╗")
+        print("║" + "  RAM 對比 — SRAM(DMA) vs PSRAM(SPIRAM)".center(44) + "║")
+        print("╚" + "=" * 60 + "╝")
+
+        for kind in buf_kinds:
+            time.sleep(0.3)
+            sock.settimeout(15)
+            up_by_ram[kind] = _run_matrix_once(
+                sock, kind, max_chunk, chunk_sizes, runs, total_bytes,
+                direction="up", send_cap=4096)
+            time.sleep(0.3)
+            sock.settimeout(15)
+            dl_by_ram[kind] = _run_matrix_once(
+                sock, kind, max_chunk, chunk_sizes, runs, total_bytes,
+                direction="dl")
+
+        if len(buf_kinds) >= 2:
+            _print_compare_generic(
+                {"上載 " + _ram_short.get(k, k): up_by_ram[k] for k in buf_kinds},
+                total_bytes, "上載 RAM 對比 (分段 ≤4KB)")
+            _print_compare_generic(
+                {"下載 " + _ram_short.get(k, k): dl_by_ram[k] for k in buf_kinds},
+                total_bytes, "下載 RAM 對比")
 
     # ════════════════════════════════════════════════════════════
     #  5e. NC4 協議模式 — 真實指令傳輸 (Proto.pack 封裝 + StreamParser 拆幀)
     #      完全模擬 slave Action 的封包路徑, 用虛擬 cmd 0x18F0, 不碰生產碼。
     #      對比裸 TCP vs 協議棧, 量化「上線 NC4」的實際成本。
     # ════════════════════════════════════════════════════════════
-    up_proto = []
-    dl_proto = []
-    if _HAVE_PROTO:
+    if "proto" not in skip and _HAVE_PROTO:
         time.sleep(0.3)
         sock.settimeout(15)
         print("╔" + "=" * 60 + "╗")
         print("║" + "  NC4 協議模式 (Proto.pack + StreamParser)".center(40) + "║")
         print("╚" + "=" * 60 + "╝")
-        print("── 上載 (協議封裝, 分段 ≤4KB) ──")
-        up_proto = _run_matrix_once(
-            sock, up_kind, max_chunk, chunk_sizes, runs, total_bytes,
-            direction="up", send_cap=4096, proto=True)
-        time.sleep(0.3)
-        sock.settimeout(15)
-        print("── 下載 (協議拆幀) ──")
-        dl_proto = _run_matrix_once(
-            sock, dl_kind, max_chunk, chunk_sizes, runs, total_bytes,
-            direction="dl", proto=True)
-    else:
+        if "proto_up" not in skip:
+            print("── 上載 (協議封裝, 分段 ≤4KB) ──")
+            up_proto = _run_matrix_once(
+                sock, up_kind, max_chunk, chunk_sizes, runs, total_bytes,
+                direction="up", send_cap=4096, proto=True)
+            time.sleep(0.3)
+            sock.settimeout(15)
+        if "proto_dl" not in skip:
+            print("── 下載 (協議拆幀) ──")
+            dl_proto = _run_matrix_once(
+                sock, dl_kind, max_chunk, chunk_sizes, runs, total_bytes,
+                direction="dl", proto=True)
+    elif "proto" not in skip:
         print("\n⚠️ 無 lib.proto 模組, 跳過 NC4 協議模式測試")
 
     # ════════════════════════════════════════════════════════════
     #  5f. 快版 pack 上載 — pack_into_fast (預分配 buffer, 零拼接)
     #      對比 5e 的慢版 Proto.pack, 量化 pack 優化的實際傳輸效果
     # ════════════════════════════════════════════════════════════
-    up_proto_fast = []
-    if _HAVE_PROTO:
+    if "fastpack" not in skip and _HAVE_PROTO:
         time.sleep(0.3)
         sock.settimeout(15)
         print("╔" + "=" * 60 + "╗")
@@ -1359,5 +1631,5 @@ def run(total_kb=DEFAULT_TOTAL_KB,
     print("─" * 60)
 
 
-if __name__ == "__main__":
-    run()
+# if __name__ == "__main__":
+#     run()

@@ -24,7 +24,21 @@ if not IS_MICROPYTHON:
 SOF = b"NC"
 CUR_VER = 4
 ADDR_BROADCAST = 0xFFFF
-MAX_LEN_DEFAULT = 8192
+
+# ── 協議負載上限 (唯一真相源) ──
+# 8192 是「純負載」(payload) 位元組數, 不含 header 與 CRC。
+# StreamParser 內部會自動加 HDR_LEN(9) + CRC_LEN(4) = 13 位元組去建立緩衝,
+# 所以單幀實際最大長度 = MAX_PAYLOAD + 13。所有 StreamParser 建立點都應引用此值,
+# 不要各自寫死數字 (以前 app.py 用 Buffer.size*2、web_ui 用 4096*4, 已收斂)。
+MAX_PAYLOAD = 8192
+
+# ── 傳輸層 buffer 約定 (與 MAX_PAYLOAD 正交, 唯一真相源) ──
+# RX_BUF_SIZE: 接收端每次 recv/readinto 收多少 (net_bus + circuit_bus 共用)。
+#  4K 是工程選擇, 不是「幀多大」的上限 — 8K 幀分多次到達, StreamParser 靠黏包重組。
+# SEND_CAP: socket 每次 send 的分段上限 (lwIP TCP_SND_BUF ≈ 4~5.7KB, 見性能文檔)。
+#  單次 send 超過會阻塞等 ACK 造成 8KB 懸崖, 4KB 是發送端甜蜜點。
+RX_BUF_SIZE = 4096
+SEND_CAP = 4096
 
 HDR_LEN = 9
 CRC_LEN = 4
@@ -35,24 +49,6 @@ CRC_LEN = 4
 _pack_buf = None     # bytearray
 _pack_mv = None      # memoryview(_pack_buf)
 _pack_cap = 0
-
-
-@micropython.viper
-def _viper_compact(buf, start: int, end: int, keep: int):
-    p = ptr8(buf)
-    s = int(p) + start
-    d = int(p)
-    for i in range(keep):
-        ptr8(d)[i] = ptr8(s)[i]
-
-
-@micropython.viper
-def _viper_append(buf, src, end: int, n: int):
-    p = ptr8(buf)
-    s = ptr8(src)
-    d = int(p) + end
-    for i in range(n):
-        ptr8(d)[i] = s[i]
 
 
 class Proto:
@@ -94,9 +90,10 @@ class Proto:
 
 
 class StreamParser:
-    def __init__(self, max_len=MAX_LEN_DEFAULT):
+    def __init__(self, max_len=MAX_PAYLOAD):
         self.max_len = max_len
         self._buf = bytearray(max_len + HDR_LEN + CRC_LEN)
+        self._mv = memoryview(self._buf)   # 零複製切片: pop 不再每幀建新 bytes
         self._start = 0
         self._end = 0
 
@@ -114,7 +111,9 @@ class StreamParser:
         if free < ln and self._start:
             keep = self._end - self._start
             if keep:
-                _viper_compact(self._buf, self._start, self._end, keep)
+                # compact: 把未消費段搬到開頭。
+                # memoryview slice 賦值 = C 層 memmove, 比 viper 逐 byte 迴圈快。
+                self._mv[:keep] = self._mv[self._start:self._end]
             self._start = 0
             self._end = keep
             free = cap - self._end
@@ -124,7 +123,8 @@ class StreamParser:
             self._end = 0
             return
 
-        _viper_append(self._buf, data, self._end, ln)
+        # append: memoryview slice 賦值 (C 層 memmove, 最快, 替代 viper 逐 byte 複製)
+        self._mv[self._end:self._end + ln] = data
         self._end += ln
 
     def pop(self):
@@ -160,9 +160,11 @@ class StreamParser:
 
             crc_start = self._start + 2
             crc_len = payload_end - crc_start
-            crc_calc = Proto.crc32_update(self._buf[crc_start:payload_end], 0)
+            crc_calc = Proto.crc32_update(self._mv[crc_start:payload_end], 0)
             if (crc_calc & 0xFFFFFFFF) == crc_received:
-                payload = self._buf[payload_start:payload_end]
+                # payload 回傳 bytes 副本: 可跨 feed() 安全持有 (無生命週期陷阱)。
+                # CRC 已在上面用 memoryview 即算即棄 (零額外分配), 不需為此改契約。
+                payload = bytes(self._mv[payload_start:payload_end])
                 self._start += total_len
                 if self._start == self._end:
                     self._start = 0
