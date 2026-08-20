@@ -298,6 +298,39 @@ class ConfigManager:
             # 使用新的保留格式清除方法
             self._clean_passwords_preserve_format()
 
+        # T0: 建立 + 推動 cID (ConfigManager 單一擁有; 解碼層直接讀 bus.cid 不重算)
+        self.ensure_cID()
+
+
+    def ensure_cID(self):
+        """cID 的唯一建立者 + 推動者 (T0 由 load_setup 呼叫)。
+
+        建立: System.cID 為空 → 自行以 machine.unique_id() 末 4 碼填入
+              (不依賴 bus.slave_id, 該值此時尚未設定); 取不到 → "FFFF"。
+        推動: 將 cID 轉 uint16 寫進 bus.cid, 解碼層 ADDR 過濾單一讀取,
+              不在熱路徑重複 hex→int。已填則沿用不覆寫, 但 bus.cid 恆同步。"""
+        sys_cfg = self.bus.shared.get("System")
+        if sys_cfg is None:
+            sys_cfg = {}
+            self.bus.shared["System"] = sys_cfg
+        if not sys_cfg.get("cID"):
+            try:
+                import machine, ubinascii
+                sid = ubinascii.hexlify(machine.unique_id()).decode().upper()
+            except Exception:
+                sid = ""
+            sys_cfg["cID"] = sid[-4:] if sid else "FFFF"
+            try:
+                self.save_from_bus(update_key="System.cID")
+                dprint(f"[Config] ✓ cID auto-filled: {sys_cfg['cID']}")
+            except Exception as e:
+                dprint(f"[Config] ⚠ cID persist failed: {e}")
+        # 推動 uint16 到 bus.cid (單一真相; 解碼層直接讀, 不重算)
+        try:
+            self.bus.cid = int(sys_cfg.get("cID") or "FFFF", 16) & 0xFFFF
+        except ValueError:
+            self.bus.cid = 0xFFFF
+
 
     def _update_value_preserve_format(self, key_path, new_value):
         """

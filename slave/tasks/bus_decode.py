@@ -74,9 +74,9 @@ class BusDecodeTask(Task):
                         self.app.handle_stream(
                             p,
                             data,
-                            transport_name=getattr(b, "label", "Bus"),
-                            send_func=b.write,
-                            **ctx_extra
+                            getattr(b, "label", "Bus"),
+                            b.write,
+                            ctx_extra,
                         )
                 finally:
                     hub.release_read()

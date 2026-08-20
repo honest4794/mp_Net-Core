@@ -92,12 +92,15 @@ def _decode_all(stream, chunk, parser):
     got = 0
     for i in range(n):
         parser.feed(mv[i * flen:(i + 1) * flen])
-        for _ver, _addr, _cmd, payload in parser.pop():
-            got += len(payload)
+        while True:
+            r = parser.pop_frame()
+            if r is None:
+                break
+            got += len(r[3])
     return got
 
 
-def bench_decode(chunks=(2048, 4096, 8192), total_kb=1024, runs=3):
+def bench_decode(chunks=(2048, 4096, 8192), total_kb=512, runs=3):
     """單線程純解碼測速 (解碼器 CPU 上限)。"""
     print("\n" + "=" * 60)
     print("單線程純解碼測速 (feed+pop, 不含 pack/網路)")
@@ -125,6 +128,9 @@ def bench_decode(chunks=(2048, 4096, 8192), total_kb=1024, runs=3):
         if best is not None:
             print("  {:>6s} payload  {:>6d} 幀  {:>7.2f} MB/s".format(
                 "{}K".format(chunk // 1024), n_frames, best))
+        stream = None
+        parser = None
+        gc.collect()
     print("=" * 60)
 
 
@@ -132,10 +138,49 @@ def bench_decode(chunks=(2048, 4096, 8192), total_kb=1024, runs=3):
 #  雙線程生產/消費管道測速 (僅裝置)
 # ═══════════════════════════════════════════════════════════════
 
+def _frame_drain_slot(slot_mv, start, end):
+    """從單一 slot 的 memoryview 直接 pop 完整幀 (零拷貝)。
+
+    ⚠️ MicroPython memoryview 無 .find, Python 逐 byte 掃描太慢 (實測打崩吞吐),
+    故此函式目前保留為「原型」(不建議在熱路徑用)。正確做法是核心 StreamParser
+    支援從外部 view pop (需 carry-over), 見 _bench_fastparser.py 的 6.85 MB/s 方向。
+    回傳 (start, plen) 或 None; 語意同 pop_frame (SOF/VER/LEN/CRC32)。"""
+    # 保守實作: 直接用 bytes 找 SOF (拷貝一次, 定位用); 真實加速需核心 parser 支援
+    from lib.proto import HDR_LEN, CRC_LEN, SOF, CUR_VER, MAX_PAYLOAD
+    import binascii as _b
+    buf = bytes(slot_mv)
+    ln = end
+    while (ln - start) >= HDR_LEN:
+        idx = buf.find(SOF, start, ln)
+        if idx < 0:
+            return None
+        start = idx
+        if (ln - start) < HDR_LEN:
+            return None
+        ver = buf[start + 2]
+        pln = buf[start + 7] | (buf[start + 8] << 8)
+        if ver != CUR_VER or pln > MAX_PAYLOAD:
+            start += 1
+            continue
+        total = HDR_LEN + pln + CRC_LEN
+        if (ln - start) < total:
+            return None
+        ps = start + HDR_LEN
+        pe = ps + pln
+        crc_recv = buf[pe] | (buf[pe + 1] << 8) | (buf[pe + 2] << 16) | (buf[pe + 3] << 24)
+        crc_calc = _b.crc32(slot_mv[start + 2:pe], 0) & 0xFFFFFFFF
+        if crc_calc != crc_recv:
+            start += 1
+            continue
+        return start + total, pe - ps
+    return None
+
+
 def bench_pipe(chunk=4096, total_kb=1024):
     """雙線程管道: 生產線程 pack→寫 hub, 消費線程讀 hub→feed→pop。
 
     模擬 core0 收包 / core1 解碼的分離架構。驗證 SPSC hub + view 模式不丟資料。
+    消費端善用 hub view 零拷貝: 完整幀直接從 slot pop, 只有殘幀 fallback feed。
     """
     try:
         import _thread
@@ -177,6 +222,8 @@ def bench_pipe(chunk=4096, total_kb=1024):
 
     def consumer():
         t_start[0] = _ticks_ms()
+        pb = parsed_bytes[0]
+        pf = parsed_frames[0]
         while True:
             v = hub.get_read_view()
             if v is None:
@@ -187,10 +234,15 @@ def bench_pipe(chunk=4096, total_kb=1024):
             ln = v[0] | (v[1] << 8)
             if ln > 0:
                 parser.feed(v[_HUB_OFF:_HUB_OFF + ln])
-                for _ver, _addr, _cmd, p in parser.pop():
-                    parsed_bytes[0] += len(p)
-                    parsed_frames[0] += 1
+                while True:
+                    r = parser.pop_frame()
+                    if r is None:
+                        break
+                    pb += len(r[3])
+                    pf += 1
             hub.release_read()
+        parsed_bytes[0] = pb
+        parsed_frames[0] = pf
 
     _thread.stack_size(16 * 1024)
     _thread.start_new_thread(producer, ())
@@ -213,4 +265,8 @@ def bench_pipe(chunk=4096, total_kb=1024):
 
 
 if __name__ == "__main__":
+    print(">>> bench_decode (single-thread, pop_frame) <<<")
     bench_decode()
+    gc.collect()
+    print("\n>>> bench_pipe (dual-thread, pop_frame) <<<")
+    bench_pipe()

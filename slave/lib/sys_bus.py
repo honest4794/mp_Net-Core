@@ -4,6 +4,7 @@ class SysBus:
         self._providers = {}
         self.shared = {}
         self.slave_id = "UNKNOWN"
+        self.cid = 0xFFFF        # 協議定址短身份 (uint16); 由 ConfigManager 於 T0 推動
         self._gpio_claims = {}
 
     def register_service(self, name, obj):

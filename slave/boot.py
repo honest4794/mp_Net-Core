@@ -19,6 +19,7 @@ except Exception:
     except Exception:
         bus.slave_id = "UNKNOWN"
 
+
 from driver.spi_drv      import init_spi,      gpios as g_spi
 from driver.pin_drv      import init_pin,      gpios as g_pin
 from driver.i2c_drv      import init_i2c,      gpios as g_i2c
