@@ -25,12 +25,12 @@ slave/
 ├── action/                 # 行為層 (常改)：每個 <group>_actions.py 對應一個功能模組
 │   ├── registry.py         # 統一註冊入口：import 各 action 模組並呼叫 register(app)
 │   ├── sys_actions.py / status_actions.py / heartbeat_actions.py
-│   ├── file_actions.py / stream_actions.py / ram_bench_actions.py
+│   ├── file_actions.py / stream_actions.py / bench_actions.py
 │   ├── now_actions.py / hw_actions.py / waiting_to_trash_actions.py
 │   └── jpeg_actions.py     # 依賴 LCD；無 LCD 時 registry 整段跳過
 ├── schema/                 # 協議定義：每個 <group>.json 定義該模組的 cmd 與 payload
 │   ├── sys.json / status.json / heartbeat.json / file.json / stream.json
-│   ├── now.json / hw.json / ram_bench.json / jpeg.json / mp4.json
+│   ├── now.json / hw.json / bench.json / jpeg.json / mp4.json
 │   └── waiting_to_trash.json
 └── tasks/                  # 任務層：雙核心 Runner 調度的背景任務
     ├── network.py          # NetworkTask: WS/UDP/TCP/ESP-NOW 收發 + 供應鏈 (Core 0)
@@ -92,7 +92,7 @@ bus.shared["brightness"] = 128
 - **CRC32**：`binascii.crc32`，範圍 `VER..DATA`（不含 SOF/CRC），覆蓋 buffer[2:9+LEN]。
 - **組包**：`Proto.pack(cmd, payload)`（共享 buffer 零分配，回傳值**必須立即消費**）。
 - **拆包**：`StreamParser.feed()` + `pop()` 生成器（黏包/拆包/SOF 重同步/CRC 驗證）。
-- **指令域**：0x10xx sys / 0x11xx status / 0x12xx heartbeat / 0x13xx now / 0x14xx hw / 0x15xx waiting_to_trash / 0x18xx ram_bench / 0x20xx file / 0x30xx stream / 0x31xx jpeg / 0x32xx mp4。
+- **指令域**：0x10xx sys / 0x11xx status / 0x12xx heartbeat / 0x13xx now / 0x14xx hw / 0x15xx waiting_to_trash / 0x18xx bench / 0x20xx file / 0x30xx stream / 0x31xx jpeg / 0x32xx mp4。
 - ⚠️ 舊文件(`mp_Net-Light/doc/AI_CONTEXT.md`)的 VER=3 + CRC16 是舊版，對接以 `lib/proto.py` 為準。
 
 ## 新增 Command (最常見的擴展)
@@ -110,7 +110,7 @@ bus.shared["brightness"] = 128
 | 0x13xx | ESP-NOW | NOW_INIT, NOW_SEND_HB |
 | 0x14xx | 硬體控制 | HW_CTL, HW_QUERY |
 | 0x15xx | 待清理功能 | WTT_CTL, WTT_STATUS |
-| 0x18xx | 效能測試 | RAM_BENCH_START |
+| 0x18xx | 效能測試 | BENCH_READY |
 | 0x20xx | 檔案傳輸 | FILE_BEGIN/CHUNK/END |
 | 0x30xx | pixel 串流 | STREAM_INFO, STREAM_PLAY |
 | 0x31xx | JPEG 播放器 | JPEG_PLAYER_CTL |
@@ -341,7 +341,7 @@ cfg_manager.save_from_bus(update_key="System.refresh_rate_ms")
 當你需要具體的實作範例時，直接在專案中閱讀這些檔案（相對專案根目錄）：
 - **簡單指令** (請求→回覆)：參考 `slave/action/status_actions.py`
 - **多指令模組** (含 State)：參考 `slave/action/stream_actions.py`
-- **含內部狀態的模組**：參考 `slave/action/ram_bench_actions.py`
+- **含內部狀態的模組**：參考 `slave/action/bench_actions.py`
 - **檔案操作模組**：參考 `slave/action/file_actions.py`
 - **Task 範例**：參考 `slave/tasks/render.py` (Core 1) 或 `slave/tasks/network.py` (Core 0)
 - **Boot 初始化**：參考 `slave/boot.py`

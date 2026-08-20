@@ -7,7 +7,7 @@ from action import status_actions
 from action import stream_actions
 from action import sys_actions
 from action import heartbeat_actions
-from action import ram_bench_actions
+from action import bench_actions
 from action import now_actions
 from action import hw_actions
 from action import waiting_to_trash_actions
@@ -19,7 +19,7 @@ def register_all(app):
     stream_actions.register(app)
     sys_actions.register(app)
     heartbeat_actions.register(app)
-    ram_bench_actions.register(app)
+    bench_actions.register(app)
     now_actions.register(app)
     hw_actions.register(app)
     waiting_to_trash_actions.register(app)

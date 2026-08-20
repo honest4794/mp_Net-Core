@@ -112,7 +112,7 @@ class PyStreamParser:
             else:
                 del self._buf[:1]   # CRC 錯, 跳 1 byte 重新同步
 
-# 虛擬測試 cmd (與 ESP 端 test/bench_net.py 一致, 0x18F0 不衝突 ram_bench)
+# 虛擬測試 cmd (與 ESP 端 test/bench_net.py 一致, 0x18F0 不衝突 bench)
 _CMD_BENCH_PROTO = 0x18F0
 
 # ── 預設參數 (ESP 端也有同名預設, 兩邊需一致) ──

@@ -466,10 +466,7 @@ class DeviceManager:
                 "parser": parser,
                 "ack_event": threading.Event(),
                 "query_event": threading.Event(),
-                "ram_event": threading.Event(),
                 "remote_sha": None,
-                "ram_report": None,
-                "ram_run_id": None,
                 "last_seen": time.time()  # 用於內部連接保活檢查
             }
             
@@ -775,27 +772,6 @@ class NetBusMaster:
                 self.slaves[cid]["remote_sha"] = args["sha256"]
                 self.slaves[cid]["query_event"].set()
 
-        elif cmd == 0x1814:
-            run_id = args.get("run_id")
-            if cid in self.slaves:
-                node = self.slaves[cid]
-                if node.get("ram_run_id") == run_id:
-                    node["ram_report"] = args
-                    node["ram_event"].set()
-            try:
-                b = int(args.get("bytes", 0))
-                elapsed_ms = int(args.get("elapsed_ms", 0))
-                kb_s = (b / 1024.0) / (elapsed_ms / 1000.0) if elapsed_ms > 0 else 0.0
-                self.panel.update_device(
-                    cid,
-                    status="完成",
-                    upload_progress=100,
-                    upload_speed=kb_s,
-                    uploaded_bytes=b
-                )
-            except Exception:
-                pass
-        
         return cid
     
     def send_pkt(self, targets, cmd_id, args):
@@ -1406,259 +1382,6 @@ class NetBusMaster:
         self.config["mapping"][tid]["last_sha"] = local_sha.hex()
         self.save_config()
     
-    # ==================== Step 7: RAM 測速 ====================
-    def step_7_ram_speed_test(self):
-        self.load_config()
-        self.panel.stop()
-        ConsoleUI.clear_screen()
-        ConsoleUI.show_cursor()
-        
-        if not self.selected_targets:
-            print("⚠️ 請先執行 Step 1 選擇設備")
-            input("\n按 Enter 繼續...")
-            self.panel.start()
-            return
-
-        print("\n🚀 [RAM Speed Test] 純 RAM 上傳測速 (Protocol)")
-        print("   此模式會送 RAM_BENCH_* 指令，設備端只做 RAM 消耗/統計，不寫入檔案。")
-        
-        try:
-            size_mb = float(input("\n👉 請輸入測試大小 (MB) [默認 2]: ").strip() or "2")
-        except:
-            size_mb = 2.0
-            
-        total_len = int(size_mb * 1024 * 1024)
-        try:
-            chunk_size = int(input("\n👉 Chunk Size (bytes) [默認 16384]: ").strip() or "16384")
-        except:
-            chunk_size = 16384
-        if chunk_size <= 0:
-            chunk_size = 16384
-        if chunk_size > 65000:
-            chunk_size = 65000
-        try:
-            mode = int(input("👉 Mode 0=discard 1=ring_copy 2=hub_copy [默認 2]: ").strip() or "2")
-        except:
-            mode = 2
-        if mode not in (0, 1, 2):
-            mode = 2
-        try:
-            ring_kb = int(input("👉 Param (mode1=Ring KB, mode2=Hub Buffers) [默認 8]: ").strip() or "8")
-        except:
-            ring_kb = 8
-        if ring_kb < 0:
-            ring_kb = 0
-        
-        print(f"\n📦 準備發送 {size_mb} MB 數據...")
-        print(f"   Chunk Size: {chunk_size} bytes")
-        
-        # 使用與 Deploy 相同的邏輯，但目標是 0xFFFF
-        self.panel.start()
-        
-        for tid in self.selected_targets:
-            self.panel.update_device(tid, status="測速中", upload_progress=0)
-            
-        max_workers = self.config.get("max_workers", 50)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(self._ram_test_single_slave, tid, total_len, chunk_size, mode, ring_kb): tid
-                for tid in self.selected_targets
-            }
-            
-            for future in futures:
-                tid = futures[future]
-                try:
-                    future.result()
-                    self.panel.update_device(tid, status="完成", upload_progress=100)
-                except Exception as e:
-                    self.panel.update_device(tid, status="錯誤", error_msg=str(e))
-        
-        time.sleep(1)
-        print("\n✅ 測速完成")
-        input("\n按 Enter 返回...")
-        self.panel.start()
-
-    # ==================== Step 8: Raw Stream Test ====================
-    def step_8_raw_stream_test(self):
-        self.load_config()
-        self.panel.stop()
-        ConsoleUI.clear_screen()
-        ConsoleUI.show_cursor()
-        
-        if not self.selected_targets:
-            print("⚠️ 請先執行 Step 1 選擇設備")
-            input("\n按 Enter 繼續...")
-            self.panel.start()
-            return
-
-        print("\n🚫 [Raw Stream Test] 已停用")
-        print("   Raw Mode/Enter Raw Mode 已與目前 Slave 協議脫節，避免誤用造成連線混亂。")
-        input("\n按 Enter 返回...")
-        self.panel.start()
-        return
-        
-        try:
-            size_mb = float(input("\n👉 請輸入測試大小 (MB) [默認 5]: ").strip() or "5")
-        except:
-            size_mb = 5.0
-            
-        total_len = int(size_mb * 1024 * 1024)
-        
-        print(f"\n📦 準備發送 {size_mb} MB 數據...")
-        
-        self.panel.start()
-        
-        for tid in self.selected_targets:
-            self.panel.update_device(tid, status="Raw測速", upload_progress=0)
-            
-        max_workers = self.config.get("max_workers", 50)
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(self._raw_test_single_slave, tid, total_len): tid 
-                for tid in self.selected_targets
-            }
-            
-            for future in futures:
-                tid = futures[future]
-                try:
-                    future.result()
-                    self.panel.update_device(tid, status="完成", upload_progress=100)
-                except Exception as e:
-                    self.panel.update_device(tid, status="錯誤", error_msg=str(e))
-        
-        time.sleep(1)
-        print("\n✅ 測速完成")
-        input("\n按 Enter 返回...")
-        self.panel.start()
-
-    def _raw_test_single_slave(self, tid, total_len):
-        node = self.slaves.get(tid)
-        if not node: raise Exception("設備離線")
-            
-        start_time = time.time()
-        conn = node["conn"]
-        
-        self.panel.update_device(
-            tid,
-            uploaded_bytes=0,
-            total_bytes=total_len,
-            upload_start_time=start_time
-        )
-        
-        # 1. Send ENTER RAW MODE (0x2007)
-        self.send_pkt([tid], 0x2007, {
-            "file_id": 0xFFFF,
-            "total_size": total_len,
-            "path": "raw_stream_test"
-        })
-        
-        # Give slave a moment to switch context
-        time.sleep(0.1)
-        
-        # 2. Send Raw Bytes
-        chunk_size = 65536
-        sent = 0
-        dummy_chunk = b'\xAA' * chunk_size
-        
-        while sent < total_len:
-            rem = total_len - sent
-            if rem < chunk_size:
-                conn.sendall(dummy_chunk[:rem])
-                sent += rem
-            else:
-                conn.sendall(dummy_chunk)
-                sent += chunk_size
-            
-            # Update UI
-            elapsed = time.time() - start_time
-            speed = (sent / 1024) / elapsed if elapsed > 0 else 0
-            progress = (sent / total_len) * 100
-            self.panel.update_device(
-                tid, 
-                upload_progress=progress, 
-                upload_speed=speed, 
-                uploaded_bytes=sent
-            )
-            
-        # 3. Send End (NetBus Protocol)
-        time.sleep(0.1) 
-        self.send_pkt([tid], 0x2003, {"file_id": 0xFFFF})
-
-    def _ram_test_single_slave(self, tid, total_len, chunk_size, mode, ring_kb):
-        node = self.slaves.get(tid)
-        if not node:
-            raise Exception("設備離線")
-
-        start_time = time.time()
-        last_t = time.perf_counter()
-        last_sent = 0
-        speed_ema = 0.0
-        send_total = 0.0
-        run_id = int(time.time() * 1000) & 0xFFFF
-        node["ram_run_id"] = run_id
-        node["ram_report"] = None
-        node["ram_event"].clear()
-        
-        self.panel.update_device(
-            tid,
-            uploaded_bytes=0,
-            total_bytes=total_len,
-            upload_start_time=start_time
-        )
-        
-        self.send_pkt([tid], 0x1811, {
-            "run_id": run_id,
-            "total_size": total_len,
-            "chunk_size": chunk_size,
-            "mode": mode,
-            "ring_kb": ring_kb
-        })
-        time.sleep(0.1)
-        
-        sent = 0
-        seq = 0
-        dummy_chunk = b"\xAA" * chunk_size
-        while sent < total_len:
-            rem = total_len - sent
-            chunk = dummy_chunk if rem >= chunk_size else dummy_chunk[:rem]
-            t_send0 = time.perf_counter()
-            self.send_pkt([tid], 0x1812, {
-                "run_id": run_id,
-                "seq": seq,
-                "data": chunk
-            })
-            t_send1 = time.perf_counter()
-            send_total += (t_send1 - t_send0)
-            seq += 1
-            sent += len(chunk)
-
-            now_t = time.perf_counter()
-            dt = now_t - last_t
-            if dt > 0:
-                inst = ((sent - last_sent) / 1024) / dt
-                speed_ema = inst if speed_ema <= 0 else (speed_ema * 0.8 + inst * 0.2)
-                last_t = now_t
-                last_sent = sent
-            speed = speed_ema
-            progress = (sent / total_len) * 100 if total_len > 0 else 0
-            
-            self.panel.update_device(
-                tid,
-                upload_progress=progress,
-                upload_speed=speed,
-                send_speed=speed,
-                ack_rtt_ms=0.0,
-                upload_send_time=send_total,
-                upload_ack_time=0.0,
-                uploaded_bytes=sent
-            )
-            
-        self.send_pkt([tid], 0x1813, {"run_id": run_id})
-        if node["ram_event"].wait(timeout=5.0):
-            rep = node.get("ram_report") or {}
-            mb_s = (float(rep.get("mb_s_x1000", 0)) / 1000.0) if rep else 0.0
-            print(f"[RAM_BENCH] {tid} run={run_id} {mb_s:.2f} MB/s")
-
     # ==================== Step 4: 同步播放 (修復音訊) ====================
     def step_4_sync_play(self):
         self.load_config()  # Reload config
@@ -2032,7 +1755,6 @@ class NetBusMaster:
         print(" 4. Slice Animation    | 切分動畫數據")
         print(" 5. Deploy Data        | 部署到設備 (Flash)")
         print(" 6. Sync Play          | 同步播放 (支持暫停)")
-        print(" 7. RAM Speed Test     | 純 RAM 上傳測速 (Benchmark)")
         print(" 8. Raw Stream Test    | 極限 Raw Socket 測速 (No Protocol)")
         print(" 9. Set Decode Core    | 設定解碼 CPU 核心 (0/1)")
         print(" s. STOP ALL           | 緊急停止")
@@ -2109,9 +1831,6 @@ class NetBusMaster:
                 self._print_menu()
             elif ch == '6':
                 self.step_4_sync_play()
-                self._print_menu()
-            elif ch == '7':
-                self.step_7_ram_speed_test()
                 self._print_menu()
             elif ch == '8':
                 self.step_8_raw_stream_test()

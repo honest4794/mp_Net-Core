@@ -145,7 +145,7 @@ def test_view_mode():
     wv = hub.get_write_view()
     _check("get_write_view 回傳非 None（有空槽）", wv is not None)
     _check("write view 長度 == N", wv is not None and len(wv) == N)
-    # 直接寫入 view（模擬 ram_bench_actions 的 2-byte 長度前綴 + payload）
+    # 直接寫入 view（模擬 2-byte 長度前綴 + payload 的 hub 寫入路徑）
     wv[0], wv[1] = 0x05, 0x00
     wv[2:7] = b"HELLO"
     hub.commit()

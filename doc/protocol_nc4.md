@@ -205,7 +205,7 @@ decode 邊界行為(對接工具需注意):
 0x13xx — now         ESP-NOW
 0x14xx — hw          硬體控制
 0x15xx — waiting_to_trash  待清理功能
-0x18xx — ram_bench   記憶體效能測試
+0x18xx — bench       性能測試（通用接收吞吐）
 0x20xx — file        檔案傳輸/查詢
 0x30xx — stream      pixel 串流
 0x31xx — pixel      模式播放（LED/SERVO 模式清單、播放控制）
@@ -263,14 +263,14 @@ decode 邊界行為(對接工具需注意):
 | 0x1501 | WTT_CTL | Server → MCU | `mode(u8)` `brightness(u8)` | 待清理功能控制 |
 | 0x1502 | WTT_STATUS | MCU → Server | `mode(u8)` `brightness(u8)` `time(u8)` | 狀態回報 |
 
-### 6.7 ram_bench.json(0x18xx)
+### 6.7 bench.json(0x18xx)
 
 | CMD | 名稱 | 方向 | Payload | 說明 |
 |-----|------|------|---------|------|
-| 0x1811 | RAM_BENCH_START | Server → MCU | `run_id(u16)` `total_size(u32)` `chunk_size(u16)` `mode(u8)` `ring_kb(u16)` | 開始測試 |
-| 0x1812 | RAM_BENCH_CHUNK | Server → MCU | `run_id(u16)` `seq(u32)` `data(bytes_rest)` | 測試資料塊 |
-| 0x1813 | RAM_BENCH_STOP | Server → MCU | `run_id(u16)` | 停止測試 |
-| 0x1814 | RAM_BENCH_REPORT | MCU → Server | `run_id(u16)` `bytes(u32)` `chunks(u32)` `elapsed_ms(u32)` `mb_s_x1000(u32)` | 測試結果 |
+| 0x1811 | BENCH_READY | 發 → 收 | (空) | 清空計數器，回 0x1814 {ok:0} 證明已空 |
+| 0x1812 | BENCH_DATA | 發 → 收 | `data(bytes_rest)` | 測試資料包（4KB），CRC 通過 → ok+1，不回覆 |
+| 0x1813 | BENCH_RESULT | 發 → 收 | (空) | 回 0x1814 {ok:N} 統計結果，並清空計數器 |
+| 0x1814 | BENCH_REPORT | 收 → 發 | `ok(u32)` | 唯一回覆指令（READY 回 ok=0、RESULT 回 ok=N） |
 
 ### 6.8 file.json(0x20xx)
 
@@ -354,7 +354,7 @@ app.handle_stream(parser, pkt, transport_name="Test", send_func=print)
 | Header | 2+1+2+2+2 = 9B(不含 CRC) | 2+1+2+2+2 = **9B** |
 | CRC | CRC16-CCITT-FALSE,2B | **CRC32(binascii.crc32),4B** |
 | CRC 範圍 | VER..DATA | **VER..DATA(buffer[2:9+LEN])** |
-| 指令域 | 0x10xx sys / 0x11xx status / 0x12xx heartbeat+fs / 0x20xx file / 0x30xx stream | 0x10xx sys / 0x11xx status / 0x12xx heartbeat / 0x13xx now / 0x14xx hw / 0x15xx wtt / 0x18xx ram_bench / 0x20xx file / 0x30xx stream / 0x31xx pixel / 0x32xx mp4 |
+| 指令域 | 0x10xx sys / 0x11xx status / 0x12xx heartbeat+fs / 0x20xx file / 0x30xx stream | 0x10xx sys / 0x11xx status / 0x12xx heartbeat / 0x13xx now / 0x14xx hw / 0x15xx wtt / 0x18xx bench / 0x20xx file / 0x30xx stream / 0x31xx pixel / 0x32xx mp4 |
 | Payload 類型 | 同 | 同(u8/u16/u32/i16/i32/str_u16len/bytes_fixed/bytes_rest) |
 
 > `mp_Net-Light` 的 `ADD_NEW_CMD_FLOW.md` / `RUN_NETWORK_SERVER.md` 描述的組包/解析流程與本專案相同,只差 VER/CRC 常數。對接工具請以 `slave/lib/proto.py` 為準。

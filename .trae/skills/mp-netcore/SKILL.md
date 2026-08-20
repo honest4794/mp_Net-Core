@@ -22,14 +22,14 @@ slave/
 │   ├── heartbeat_actions.py
 │   ├── file_actions.py
 │   ├── stream_actions.py
-│   └── ram_bench_actions.py
+│   └── bench_actions.py
 ├── schema/                 # 協議定義：每個 <group>.json 定義該模組的 cmd 與 payload
 │   ├── sys.json
 │   ├── status.json
 │   ├── heartbeat.json
 │   ├── file.json
 │   ├── stream.json
-│   └── ram_bench.json
+│   └── bench.json
 └── tasks/                  # 任務層：雙核心 Runner 調度的背景任務
     ├── network.py          # NetworkTask: TCP/UDP/WS 收發 + Heartbeat + Supply Chain
     ├── bus_decode.py       # BusDecodeTask: 封包解析 + Dispatch
@@ -81,7 +81,7 @@ bus.shared["brightness"] = 128
 | 0x11xx | 狀態管理 | STATUS_GET, STATUS_RSP |
 | 0x12xx | 心跳 | HEARTBEAT |
 | 0x13xx | 檔案系統 | FS_TREE_GET |
-| 0x18xx | 效能測試 | RAM_BENCH |
+| 0x18xx | 效能測試 | BENCH |
 | 0x20xx | 檔案傳輸 | FILE_BEGIN/CHUNK/END |
 | 0x30xx | pixel 串流 | STREAM_FRAME, STREAM_PLAY |
 
@@ -303,7 +303,7 @@ cfg_manager.save_from_bus(update_key="System.refresh_rate_ms")
 當你需要具體的實作範例時，直接在專案中閱讀這些檔案（相對專案根目錄）：
 - **簡單指令** (請求→回覆)：參考 `slave/action/status_actions.py`
 - **多指令模組** (含 State)：參考 `slave/action/stream_actions.py`
-- **含內部狀態的模組**：參考 `slave/action/ram_bench_actions.py`
+- **含內部狀態的模組**：參考 `slave/action/bench_actions.py`
 - **檔案操作模組**：參考 `slave/action/file_actions.py`
 - **Task 範例**：參考 `slave/tasks/render.py` (Core 1) 或 `slave/tasks/network.py` (Core 0)
 - **Boot 初始化**：參考 `slave/boot.py`

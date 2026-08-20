@@ -136,7 +136,7 @@
 | `0x12xx` HEARTBEAT + `0x13xx` ESP-NOW | 心跳 + 無 WiFi 控制 | 無（靠 RS485 poll） |
 | `0x14xx` HW_CTL | 通用硬體控制（type/id/label/value） | 無通用硬體通道 |
 | `0x10xx` SYS_TASK_SET | 雙核任務親和性管理 | 無（單核 main loop） |
-| `0x18xx` RAM_BENCH | 記憶體效能測試 | 無 |
+| `0x18xx` BENCH | 性能測試（通用接收吞吐） | 無 |
 
 ---
 
@@ -303,14 +303,14 @@
 
 > `0x15xx` 命名為 waiting_to_trash：這組 cmd 碼/欄位待日後重整協議時清理（見 `slave/action/waiting_to_trash_actions.py` 註解）。
 
-### 8.7 ram_bench.json（0x18xx）
+### 8.7 bench.json（0x18xx）
 
 | CMD | 名稱 | Payload |
 |---|---|---|
-| 0x1811 | RAM_BENCH_START | `run_id(u16)`, `total_size(u32)`, `chunk_size(u16)`, `mode(u8)`, `ring_kb(u16)` |
-| 0x1812 | RAM_BENCH_CHUNK | `run_id(u16)`, `seq(u32)`, `data(bytes_rest)` |
-| 0x1813 | RAM_BENCH_STOP | `run_id(u16)` |
-| 0x1814 | RAM_BENCH_REPORT | `run_id(u16)`, `bytes(u32)`, `chunks(u32)`, `elapsed_ms(u32)`, `mb_s_x1000(u32)` |
+| 0x1811 | BENCH_READY | (空) |
+| 0x1812 | BENCH_DATA | `data(bytes_rest)` |
+| 0x1813 | BENCH_RESULT | (空) |
+| 0x1814 | BENCH_REPORT | `ok(u32)` |
 
 ### 8.8 file.json（0x20xx）
 

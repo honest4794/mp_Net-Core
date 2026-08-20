@@ -64,7 +64,7 @@ try:
 except Exception:
     _HAVE_PROTO = False
 
-# 虛擬測試 cmd (0x18xx = 效能測試範圍, 0x18F0 不衝突 ram_bench 的 0x1811-14)
+# 虛擬測試 cmd (0x18xx = 效能測試範圍, 0x18F0 不衝突 bench 的 0x1811-14)
 _CMD_BENCH_PROTO = 0x18F0
 
 # 直接用 heap_caps 申請緩存 (參考 health.py + jpeg_player_task 的 PSRAM 例外路徑)。
@@ -719,7 +719,7 @@ def download_burst(sock, rx_mv, total_bytes, crc=False):
 # ═══════════════════════════════════════════════════════════════
 
 def _make_proto_payload(seq, data_mv):
-    """模擬 NC4 schema payload: u16 seq + bytes_rest data (像 RAM_BENCH_CHUNK)。
+    """模擬 NC4 schema payload: u16 seq + bytes_rest data (像 BENCH_DATA)。
     用 struct.pack 前綴 + data 切片, 不依賴 SchemaCodec 的 viper 編譯。
     回傳 bytes (Proto.pack 會再包成完整幀)。"""
     # <H seq (2B) + data。這模仿 schema 的 {"seq":u16, "data":bytes_rest}
@@ -1078,10 +1078,10 @@ def profile_proto(chunk_size=4096, frames=500):
         from lib.schema_codec import SchemaCodec
         from lib.schema_loader import SchemaStore
         store = SchemaStore()
-        # 找一個有 bytes_rest 的現成 cmd 做解碼成本取樣 (用 ram_bench CHUNK 0x1812)
+        # 找一個有 bytes_rest 的現成 cmd 做解碼成本取樣 (用 bench DATA 0x1812)
         cmd_def = store.get(0x1812)
         if cmd_def:
-            test_payload = struct.pack("<HI", 1, 0) + bytes(mv)  # run_id + seq + data
+            test_payload = bytes(mv)  # BENCH_DATA: payload 就是純 data(bytes_rest)
             gc.collect()
             t0 = time.ticks_us()
             for _ in range(frames):
