@@ -31,6 +31,8 @@ CMD_NET_START_RSP = 0x1013
 CMD_GET_IP = 0x1014
 CMD_IP_RSP = 0x1015
 CMD_SET_MASTER = 0x1016
+CMD_WEBUI_CTRL = 0x1017
+CMD_WEBUI_RSP = 0x1018
 
 
 def _reply(ctx, rsp_cmd, fields):
@@ -161,6 +163,23 @@ def on_set_master(ctx, args):
     bus.master_cid = mc
 
 
+def on_webui_ctrl(ctx, args):
+    """0x1017: 查詢(0)/開(1)/關(2) Web UI。開關靠 task_manager.set_affinity("web_ui", ...),
+    與既有 WEB_CTRL(0x1009) 同一機制; 統一納入 net_actions 管理 (帶回應)。"""
+    action = args.get("action", 0)
+    tm = bus.get_service("task_manager")
+    if tm is None:
+        _reply(ctx, CMD_WEBUI_RSP, {"enabled": 0, "info": "no task_manager (worker_engine mode)"})
+        return
+    if action == 1:
+        tm.set_affinity("web_ui", (1, 0))
+    elif action == 2:
+        tm.set_affinity("web_ui", (0, 0))
+    affinity = tm.config.get("web_ui", (0, 0))
+    enabled = 1 if affinity[0] == 1 else 0
+    _reply(ctx, CMD_WEBUI_RSP, {"enabled": enabled, "info": "web_ui affinity={}".format(affinity)})
+
+
 def register(app):
     app.disp.on(CMD_IDENTIFY_REQ, on_identify_req)
     app.disp.on(CMD_REBOOT, on_reboot)
@@ -168,4 +187,5 @@ def register(app):
     app.disp.on(CMD_NET_START, on_net_start)
     app.disp.on(CMD_GET_IP, on_get_ip)
     app.disp.on(CMD_SET_MASTER, on_set_master)
+    app.disp.on(CMD_WEBUI_CTRL, on_webui_ctrl)
     print("✅ [Action] Net actions registered")

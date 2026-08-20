@@ -64,6 +64,13 @@
     ]},
     {"cmd": "0x1016", "name": "SET_MASTER", "payload": [
       {"name": "master_cid", "type": "u16"}
+    ]},
+    {"cmd": "0x1017", "name": "WEBUI_CTRL", "payload": [
+      {"name": "action", "type": "u8"}
+    ]},
+    {"cmd": "0x1018", "name": "WEBUI_RSP", "payload": [
+      {"name": "enabled", "type": "u8"},
+      {"name": "info", "type": "str_u16len"}
     ]}
   ]
 }
