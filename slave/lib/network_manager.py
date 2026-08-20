@@ -422,6 +422,72 @@ class NetworkManager:
             self.boot_time = 0
         self._init_wifi(wifi_cfg)
 
+    def enable_lan(self):
+        """[NET_START] 強制啟動有線 LAN (依 config 的 lan 參數)。
+
+        與 enable_wifi 對稱: force enable=1 再 _init_lan。若已在跑則跳過,
+        避免在同腳位重複建立 network.LAN。"""
+        lan_cfg = self.bus.shared.get('Network', {}).get('lan') or {}
+        if 'lan' in self.interfaces:
+            dprint("   LAN 已初始化, 略過")
+            return True
+        lan_cfg['enable'] = 1
+        try:
+            self.boot_time = time.time()
+        except Exception:
+            self.boot_time = 0
+        self._init_lan(lan_cfg)
+        return 'lan' in self.interfaces
+
+    def enable_ap(self):
+        """[NET_START] 強制啟動 AP 模式 (依 config 的 wifi 參數, 走 _start_ap_mode)。
+
+        注意: _start_ap_mode 會先關閉 STA 再開 AP (取代而非並存)。"""
+        wifi_cfg = self.bus.shared.get('Network', {}).get('wifi') or {}
+        self._start_ap_mode(wifi_cfg)
+        return 'wifi' in self.interfaces
+
+    def get_ips(self):
+        """回傳多介面 IP 清單 {"lan":…, "wifi":…, "ap":…}; 無 IP 的介面省略。
+
+        同時上線 LAN + WiFi STA (或 AP + 有線) 會各拿一個 IP, WebREPL 都能連。"""
+        out = {}
+        try:
+            import network
+            sta = network.WLAN(network.STA_IF)
+            ap = network.WLAN(network.AP_IF)
+        except Exception:
+            sta = ap = None
+
+        lan = self.interfaces.get('lan')
+        if lan is not None:
+            try:
+                ip = lan.ifconfig()[0]
+                if ip and ip not in ("0.0.0.0", ""):
+                    out["lan"] = ip
+            except Exception:
+                pass
+
+        # AP 模式: _start_ap_mode 把 AP 註冊進 interfaces['wifi']; 優先辨識 AP_IF
+        try:
+            if ap is not None and ap.active():
+                ip = ap.ifconfig()[0]
+                if ip and ip not in ("0.0.0.0", ""):
+                    out["ap"] = ip
+        except Exception:
+            pass
+
+        wifi = self.interfaces.get('wifi')
+        if wifi is not None:
+            try:
+                ip = wifi.ifconfig()[0]
+                if ip and ip not in ("0.0.0.0", "") and "ap" not in out:
+                    out["wifi"] = ip
+            except Exception:
+                pass
+
+        return out
+
     def set_app_connected(self, state=True):
         """
         [Command Method] 手動設置應用層連接狀態

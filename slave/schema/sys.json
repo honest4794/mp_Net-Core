@@ -31,6 +31,39 @@
     {"cmd": "0x100C", "name": "TIME_OFFSET_APPLY", "payload": [
       {"name": "offset_sign", "type": "u8"},
       {"name": "offset_ms", "type": "u32"}
+    ]},
+    {"cmd": "0x100D", "name": "IDENTIFY_REQ", "payload": [
+      {"name": "reply_addr", "type": "u16"}
+    ]},
+    {"cmd": "0x100E", "name": "IDENTIFY_RSP", "payload": [
+      {"name": "cid", "type": "u16"},
+      {"name": "slave_id", "type": "str_u16len"},
+      {"name": "ip", "type": "str_u16len"}
+    ]},
+    {"cmd": "0x100F", "name": "REBOOT", "payload": [
+      {"name": "delay_ms", "type": "u32"}
+    ]},
+    {"cmd": "0x1010", "name": "WREPL_CTRL", "payload": [
+      {"name": "action", "type": "u8"}
+    ]},
+    {"cmd": "0x1011", "name": "WREPL_RSP", "payload": [
+      {"name": "enabled", "type": "u8"},
+      {"name": "info", "type": "str_u16len"}
+    ]},
+    {"cmd": "0x1012", "name": "NET_START", "payload": [
+      {"name": "iface_type", "type": "u8"}
+    ]},
+    {"cmd": "0x1013", "name": "NET_START_RSP", "payload": [
+      {"name": "ok", "type": "u8"},
+      {"name": "iface", "type": "str_u16len"},
+      {"name": "ip", "type": "str_u16len"}
+    ]},
+    {"cmd": "0x1014", "name": "GET_IP", "payload": []},
+    {"cmd": "0x1015", "name": "IP_RSP", "payload": [
+      {"name": "ip", "type": "str_u16len"}
+    ]},
+    {"cmd": "0x1016", "name": "SET_MASTER", "payload": [
+      {"name": "master_cid", "type": "u16"}
     ]}
   ]
 }

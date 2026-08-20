@@ -52,5 +52,16 @@ def on_status_get(ctx, args):
 def register(app):
     """註冊狀態與健康查詢指令"""
     app.disp.on(0x1101, on_status_get)
-    # 你可以選擇在這裡也載入配置檔
+
+    # 多介面 IP 清單 provider (STATUS_GET 0x1101 的 metrics 帶 ips)
+    def _ips_provider():
+        nm = bus.get_service("network_manager")
+        if nm is None:
+            return {}
+        try:
+            return nm.get_ips()
+        except Exception:
+            return {}
+
+    bus.register_provider("ips", _ips_provider)
     print("✅ [Action] Status & Health actions integrated")

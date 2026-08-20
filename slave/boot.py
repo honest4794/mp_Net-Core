@@ -20,6 +20,14 @@ except Exception:
         bus.slave_id = "UNKNOWN"
 
 
+# ── WebREPL: 預設開啟 (與網絡狀態無關; 綁 0.0.0.0:8266 全介面, 不連線不消耗) ──
+try:
+    from lib import webrepl_ctl
+    webrepl_ctl.ensure()
+except Exception as _we:
+    print("[BOOT] WebREPL ensure error: {}".format(_we))
+
+
 from driver.spi_drv      import init_spi,      gpios as g_spi
 from driver.pin_drv      import init_pin,      gpios as g_pin
 from driver.i2c_drv      import init_i2c,      gpios as g_i2c
