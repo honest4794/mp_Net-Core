@@ -6,6 +6,7 @@ uart_drv.py — UART / RS485 管理
 
 RS485 方向腳:
   list 項目可加 "GPIO": {"en": <gpio>} 指定方向控制腳 (DE+RE)。
+  可加 "en_settle_ms": <ms> 調整 DE 使能穩定時間（預設 1ms，實測 0ms 不穩、1ms 穩定）。
   不填 en、或 en = -1 → 純 UART，行為與原本完全一致。
   有 en 時會包成 _Rs485Uart：write() 自動拉起 en → 等真正送完(txdone) → 放低回接收，
   對上層 (CircuitBus / action_task / uart_motor) 完全透明，仍是 readinto/read/write 介面。
@@ -25,10 +26,11 @@ class _Rs485Uart:
          資料真正送完才放低 DE 回接收。
     """
 
-    def __init__(self, uart, en_pin, baudrate):
+    def __init__(self, uart, en_pin, baudrate, settle_ms=1):
         self.io = uart
         self.en = en_pin
         self.baud = int(baudrate)
+        self.settle_ms = int(settle_ms)
         self.en.value(0)                       # 閒置 = 接收
 
     def _byte_ms(self):
@@ -70,10 +72,10 @@ class _Rs485Uart:
     def write(self, data):
         # 1) 發送前先聽線路：確認總線空閒才拉高 DE（避免撞上對端還在發）
         self._wait_bus_quiet()
-        # 2) 拉高 DE 發送。半自動方向模組(ZY-SP485)使能時間：掃描實測
-        #    20→2ms，接收端回覆端(本 driver)需 20ms 才穩定，10ms 會丟回覆開頭。
+        # 2) 拉高 DE 發送。DE settle 實測：0ms 不穩（start bit 會被吃）、1ms 穩定，
+        #    預設 1ms；可用 config 的 en_settle_ms 調整。
         self.en.value(1)
-        time.sleep_ms(20)
+        time.sleep_ms(self.settle_ms)
         try:
             n = self.io.write(data)
             # 3) 同步等送完，才放低 DE 回接收
@@ -110,7 +112,12 @@ def init_uart(sysbus=None):
 
         en = gpio.get("en", -1)
         if en is not None and int(en) >= 0:
-            uart = _Rs485Uart(uart, Pin(int(en), Pin.OUT, value=0), item.get("baudrate", 115200))
+            uart = _Rs485Uart(
+                uart,
+                Pin(int(en), Pin.OUT, value=0),
+                item.get("baudrate", 115200),
+                settle_ms=item.get("en_settle_ms", 1),
+            )
 
         uart_list.append(uart)
 
