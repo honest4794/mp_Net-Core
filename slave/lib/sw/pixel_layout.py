@@ -43,8 +43,12 @@ def _clamp12(v):
 
 
 def _parse_slice(s):
-    """slice 字串 → slice 物件。支援 '0:14' / '10:' / ':5' / ':' / '::2' /
-    '1:9:3' / '-5:' / '::-1' / '15:10:-1'（Python 語義，end 不含）。"""
+    """slice 字串 → (start, stop, step) 三元組。支援 '0:14' / '10:' / ':5' / ':' /
+    '::2' / '1:9:3' / '-5:' / '::-1' / '15:10:-1'（Python 語義，end 不含）。
+
+    刻意不用 slice()：部分 MicroPython build 不支援建立 slice 實例
+    （實測 ESP32-S3 1.29 preview 報 can't create 'slice' instances）。
+    """
     parts = s.split(":")
 
     def _i(x):
@@ -53,12 +57,45 @@ def _parse_slice(s):
 
     if len(parts) == 1:
         v = _i(parts[0])
-        return slice(v, v + 1)
+        return (v, v + 1, None)
     if len(parts) == 2:
-        return slice(_i(parts[0]), _i(parts[1]), None)
+        return (_i(parts[0]), _i(parts[1]), None)
     if len(parts) == 3:
-        return slice(_i(parts[0]), _i(parts[1]), _i(parts[2]))
+        return (_i(parts[0]), _i(parts[1]), _i(parts[2]))
     raise ValueError("非法 slice 字串: {!r}".format(s))
+
+
+def _slice_indices(spec, count):
+    """(start, stop, step) 三元組 + 長度 → index 列表（Python slice 語義）。"""
+    start, stop, step = spec
+    if step is None or step == 0:
+        step = 1
+    if step > 0:
+        if start is None or start < 0:
+            start = start + count if start is not None else 0
+            if start < 0:
+                start = 0
+        if stop is None:
+            stop = count
+        elif stop < 0:
+            stop = count + stop
+        if stop > count:
+            stop = count
+        if start >= stop:
+            return []
+        return list(range(start, stop, step))
+    # step < 0（反序）
+    if start is None:
+        start = count - 1
+    elif start < 0:
+        start = count + start
+    if stop is None:
+        stop = -1
+    elif stop < 0:
+        stop = count + stop
+    if start <= stop:
+        return []
+    return list(range(start, stop, step))
 
 
 def _expand_selector(spec, count):
@@ -67,7 +104,7 @@ def _expand_selector(spec, count):
         idx = spec if spec >= 0 else count + spec
         return [idx] if 0 <= idx < count else []
     if isinstance(spec, str):
-        return list(range(count))[_parse_slice(spec)]
+        return _slice_indices(_parse_slice(spec), count)
     raise ValueError("選擇器型別不受支援: {!r}".format(spec))
 
 

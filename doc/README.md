@@ -42,6 +42,7 @@
 | [08_pixel_subsystem.md](02_guides/08_pixel_subsystem.md) | pixel 子系統：效果 / mapping / modes / 播放清單 / 整合流程 |
 | [09_cores.md](02_guides/09_cores.md) | cores 核心實例：Core_LVGL / Core_Comm |
 | [10_file_update.md](02_guides/10_file_update.md) | 檔案更新流程：上傳/下載/兩段式 commit/斷點續傳/delta journal |
+| [11_developing_effects.md](02_guides/11_developing_effects.md) | **開發燈效指南**：效果介面 / 三種寫法 / 雙核播放 / 四層設定 / 效能踩坑 |
 
 ## 03_notes — 筆記
 

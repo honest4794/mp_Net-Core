@@ -34,7 +34,8 @@ def launcher():
     bus_sys = bus.shared["System"]
 
     if st_pixel:
-        hub = AtomicStreamHub(st_pixel.total_bytes * bus_sys["buffer_frames"])
+        # pixel_stream hub：slot = 一幀大小（total_bytes），num_buffers 預設 3（雙緩衝+備援）
+        hub = AtomicStreamHub(st_pixel.total_bytes)
         bus.register_service("pixel_stream", hub)
 
     app = App()
@@ -84,10 +85,13 @@ def launcher():
     from tasks.hw_sample_task import HwSampleTask
     tm.register_task("hw_sample", HwSampleTask, default_affinity=(0, 1), layer=0)
 
-    # ── pixel 子系統（管理 + 播放端）：初始化 effects/mapping/modes/registry，
-    #    並跑大隊列自動播放（pixel/registry.json 的 auto_play）。放 core1（重活）。──
+    # ── pixel 子系統（雙核播放）：
+    #   core1（計算核）PixelTask：初始化 effects/mapping/modes/registry + 效果計算 → pixel_stream hub
+    #   core0（播放核）RenderTask：固定 fps（20ms/50fps）從 hub 取幀推硬體（tasks/render.py）──
     from tasks.pixel_task import PixelTask
+    from tasks.render import RenderTask
     tm.register_task("pixel", PixelTask, default_affinity=(0, 1), layer=0)
+    tm.register_task("render", RenderTask, default_affinity=(1, 0), layer=0)
 
     # ── Layer 1: LVGL UI（依賴 TFT/LCD，沒 LCD 整段跳過）──
     # affinity=(1,0)=CPU0: LVGL 完整 UI 不能在 _thread(CPU1)裡跑

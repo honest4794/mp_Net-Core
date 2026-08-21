@@ -54,6 +54,7 @@ class PixelTask(Task):
         super().__init__(name, ctx)
         self._st = None
         self._lay = None
+        self._hub = None
         self._gens = {}
         self._modes = {}
         self._show = {"auto_play": False, "list": []}
@@ -81,7 +82,7 @@ class PixelTask(Task):
             get_log().error("[Pixel] 初始化失敗: {}".format(e))
 
     def _init_hw(self):
-        """確保 st_pixel 存在（播放器 = 硬體真值）；順便兜底 pixel_stream hub。"""
+        """確保 st_pixel 存在（播放器 = 硬體真值）；連到 pixel_stream hub 供 RenderTask 播放。"""
         st = bus.get_service("st_pixel")
         if st is None:
             from driver.pixel_drv import init_pixel
@@ -95,16 +96,20 @@ class PixelTask(Task):
             return
         self._st = st
 
-        if bus.get_service("pixel_stream") is None:
+        # 播放 hub：既有 pixel_stream（Core_Manager 建立，RenderTask 消費）。
+        # 本 task（計算核）scatter 進 hub slot，RenderTask（播放核）read_into 推硬體。
+        hub = bus.get_service("pixel_stream")
+        if hub is None:
             try:
                 from lib.sys.buffer_hub import AtomicStreamHub
-                frames = bus.shared.get("System", {}).get("buffer_frames", 1)
-                bus.register_service("pixel_stream", AtomicStreamHub(st.total_bytes * frames))
+                hub = AtomicStreamHub(st.total_bytes)
+                bus.register_service("pixel_stream", hub)
             except Exception as e:
                 get_log().error("[Pixel] pixel_stream hub 建立失敗: {}".format(e))
+        self._hub = hub
 
-        fps = bus.shared.get("System", {}).get("local_fps", 40)
-        self._interval_us = (1000 // fps) * 1000
+        fps = bus.shared.get("System", {}).get("local_fps", 50)
+        self._interval_us = (1000 * 1000) // fps
 
     def _init_effects(self):
         """py register + 載 effects.json → bus.shared["pixel_gens"]（存 cls/params，播放時建 Effect）。"""
@@ -298,12 +303,17 @@ class PixelTask(Task):
         self._release_player(self._cur)
         self._cur = None
         self._next_tick_us = time.ticks_us()
+        # 通知播放核（RenderTask）開始取幀
+        bus.shared["is_streaming"] = True
+        bus.shared["is_ready"] = True
         get_log().info("[Pixel] ▶ show 開始（{} mode(s)）".format(len(self._show_list)))
 
     def _stop(self):
         self._playing = False
         self._release_player(self._cur)
         self._cur = None
+        bus.shared["is_streaming"] = False
+        bus.shared["is_ready"] = False
         if self._st:
             buf = self._st.big_buffer
             for i in range(len(buf)):
@@ -367,9 +377,19 @@ class PixelTask(Task):
                     gen.release()
 
     def _tick_player(self, player):
-        """播放器推進一幀。回傳 True = 還在播；False = 全部 entry 耗盡（mode 結束）。"""
+        """播放器推進一幀。回傳 True = 還在播；False = 全部 entry 耗盡（mode 結束）。
+
+        只負責「計算」：scatter 進 pixel_stream hub 的 slot 後 commit()，不碰硬體。
+        硬體輸出由 RenderTask（core0）以固定 fps（20ms @ 50fps）節奏從 hub 取幀播放。
+        """
+        hub = self._hub
+        if hub is None:
+            return False
+        view = hub.get_write_view()
+        if view is None:
+            # hub 滿（播放端還沒消化）→ 這幀跳過（drop），不阻塞計算核
+            return True
         lay = self._lay
-        buf = self._st.big_buffer
         alive = False
         for e in player:
             if e["done"]:
@@ -379,23 +399,21 @@ class PixelTask(Task):
             except StopIteration:
                 e["done"] = True
                 continue
-            lay.scatter(buf, e["mref"], e["gref"], vals, e["write"])
+            lay.scatter(view, e["mref"], e["gref"], vals, e["write"])
             alive = True
         if not alive:
             return False
-        self._st.show_all()
+        hub.commit()
         return True
 
     def loop(self):
         if not self.running:
             return
         self._consume_cmds()
-        if not self._playing or self._paused or self._st is None:
+        if not self._playing or self._paused or self._st is None or self._hub is None:
             return
-        now = time.ticks_us()
-        if time.ticks_diff(now, self._next_tick_us) < 0:
-            return
-        self._next_tick_us = time.ticks_add(self._next_tick_us, self._interval_us)
+        # 計算核：全力算幀。hub 滿（播放核來不及消化）→ get_write_view 回 None，
+        # _tick_player 直接 drop 該幀，不阻塞。播放節奏完全由 RenderTask（core0）控制。
         if self._cur is None:
             self._find_next()
             if self._cur is None:

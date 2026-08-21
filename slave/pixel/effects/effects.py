@@ -313,6 +313,13 @@ register(breathing)
 register(eyes)
 register(wave)
 
+# ── 舊專案移植效果（獨立模組，自行合成，不繼承 Effect）────────────
+try:
+    from pixel.effects.diffusion_effect import diffusion as _diffusion_cls
+    register(_diffusion_cls)
+except Exception as _e:
+    print("[effects] diffusion 載入失敗: {}".format(_e))
+
 
 if __name__ == "__main__":
     # ── PC 快速自檢（不依賴硬體）────────────────────────

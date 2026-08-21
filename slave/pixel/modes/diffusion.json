@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "id": 2,
+  "name": "diffusion",
+  "index": 2,
+  "play_count": -1,
+  "play_interval": 1,
+  "mapping": "matrix",
+  "map": [
+    { "group": "matrix.full", "effect": "diffusion", "write": "rgb" }
+  ]
+}
