@@ -5,8 +5,8 @@ i2s_drv.py — I2S 音訊管理
 產物:    bus.register_service("i2s_list", [I2S_obj, ...])
 """
 from machine import Pin, I2S
-from lib.sys_bus import bus
-from lib.log_service import get_log
+from lib.sys.sys_bus import bus
+from lib.sys.log_service import get_log
 
 
 def init_i2s(sysbus=None):

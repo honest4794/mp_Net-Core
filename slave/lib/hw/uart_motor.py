@@ -16,7 +16,7 @@ uart_motor.py — UART 電機控制器（單一物件管理全部）
     可 calibrate() 記錄實測值做多段速度校準
 
 用法:
-    from lib.uart_motor import UartMotor
+    from lib.hw.uart_motor import UartMotor
 
     motor = UartMotor({
         'version': 1,          # 指令方法標記

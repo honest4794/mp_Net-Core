@@ -12,8 +12,8 @@ RS485 方向腳:
   對上層 (CircuitBus / action_task / uart_motor) 完全透明，仍是 readinto/read/write 介面。
 """
 from machine import UART, Pin
-from lib.sys_bus import bus
-from lib.log_service import get_log
+from lib.sys.sys_bus import bus
+from lib.sys.log_service import get_log
 import time
 
 

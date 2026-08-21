@@ -1,9 +1,9 @@
 import time
 import gc
 import ubinascii
-from lib.proto import Proto
-from lib.schema_codec import SchemaCodec
-from lib.sys_bus import bus
+from lib.sys.proto import Proto
+from lib.sys.schema_codec import SchemaCodec
+from lib.sys.sys_bus import bus
 
 BCAST_MAC = b'\xff\xff\xff\xff\xff\xff'
 
@@ -32,7 +32,7 @@ def on_now_init(ctx, args):
     now = bus.get_service("NowBus")
     if now is None:
         try:
-            from lib.now_bus import NowBus
+            from lib.sys.now_bus import NowBus
             wifi_cfg = bus.shared.get('Network', {}).get('wifi', {})
             wifi_enable = wifi_cfg.get('enable', 0)
             channel = esp_cfg.get('channel', 1)

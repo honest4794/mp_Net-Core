@@ -16,8 +16,8 @@
 # 整合自 slave new/ui/lvgl/board.py + Core1.py 的結構。
 
 import machine, ubinascii
-from lib.sys_bus import bus
-from lib.log_service import get_log
+from lib.sys.sys_bus import bus
+from lib.sys.log_service import get_log
 
 
 def start():
@@ -53,7 +53,7 @@ def _start_local_sampler():
     """若沒有外部 HwSampleTask，本核心自帶一條採樣緒。
     雙核心時通常另一個核心的 TaskManager 已在跑 HwSampleTask，這裡就不需要。"""
     import _thread
-    from lib.hw_manager import sample_inputs
+    from lib.sys.hw_manager import sample_inputs
 
     def _sampler_loop():
         sample_inputs()   # 首次建立基準

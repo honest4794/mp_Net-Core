@@ -5,7 +5,7 @@ i80_drv.py — 8080 並口總線管理
 產物:    bus.register_service("i80_bus", i80)
          bus.register_service("lcd_bus", [i80])
 """
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 
 
 def init_i80(sysbus=None):

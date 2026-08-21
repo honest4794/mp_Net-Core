@@ -1,7 +1,7 @@
-from lib.task import Task
-from lib.sys_bus import bus
-from lib.log_service import get_log
-from lib.fs_manager import fs
+from lib.sys.task import Task
+from lib.sys.sys_bus import bus
+from lib.sys.log_service import get_log
+from lib.sys.fs_manager import fs
 
 
 class FsScanTask(Task):

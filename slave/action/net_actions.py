@@ -17,9 +17,9 @@
 import json
 import machine
 import time
-from lib.sys_bus import bus
-from lib.proto import Proto, ADDR_BROADCAST
-from lib.schema_codec import SchemaCodec
+from lib.sys.sys_bus import bus
+from lib.sys.proto import Proto, ADDR_BROADCAST
+from lib.sys.schema_codec import SchemaCodec
 
 CMD_IDENTIFY_REQ = 0x100D
 CMD_IDENTIFY_RSP = 0x100E
@@ -86,7 +86,7 @@ def on_reboot(ctx, args):
 
 def on_wrepl_ctrl(ctx, args):
     """0x1010: 查詢(0)/確保開(1)/關(2) WebREPL。"""
-    from lib import webrepl_ctl
+    from lib.sys import webrepl_ctl
     action = args.get("action", 0)
     if action == 1:
         webrepl_ctl.ensure()
@@ -130,7 +130,7 @@ def on_net_start(ctx, args):
                 print("❌ [Net] AP start failed: {}".format(e))
     elif iface_type == 3:  # ESP-NOW
         try:
-            from lib.now_bus import NowBus
+            from lib.sys.now_bus import NowBus
             esp_cfg = bus.shared.get('Network', {}).get('ESP_now', {})
             ch = esp_cfg.get('channel', 1)
             now = bus.get_service("NowBus")

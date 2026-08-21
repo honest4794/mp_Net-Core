@@ -3,10 +3,10 @@ import machine, time
 import gc
 import os
 import json
-from lib.proto import Proto
-from lib.schema_codec import SchemaCodec
-from lib.sys_bus import bus
-from lib.ConfigManager import cfg_manager
+from lib.sys.proto import Proto
+from lib.sys.schema_codec import SchemaCodec
+from lib.sys.sys_bus import bus
+from lib.sys.ConfigManager import cfg_manager
 
 # 定義常量 (直接使用數值)
 CMD_DISCOVER = 0x1001

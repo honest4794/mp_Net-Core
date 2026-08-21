@@ -22,10 +22,10 @@ loop() = 播放端：大隊列（registry.list）依序播放，show 循環；mo
 
 import time
 import json
-from lib.task import Task
-from lib.sys_bus import bus
-from lib.log_service import get_log
-from lib.pixel_layout import PixelLayout
+from lib.sys.task import Task
+from lib.sys.sys_bus import bus
+from lib.sys.log_service import get_log
+from lib.sw.pixel_layout import PixelLayout
 
 EFFECTS_JSON = "/pixel/effects/effects.json"
 MAP_DIR = "/pixel/map"
@@ -97,7 +97,7 @@ class PixelTask(Task):
 
         if bus.get_service("pixel_stream") is None:
             try:
-                from lib.buffer_hub import AtomicStreamHub
+                from lib.sys.buffer_hub import AtomicStreamHub
                 frames = bus.shared.get("System", {}).get("buffer_frames", 1)
                 bus.register_service("pixel_stream", AtomicStreamHub(st.total_bytes * frames))
             except Exception as e:

@@ -8,9 +8,9 @@ pixel_drv.py — pixel 統一聚合層
 產物:    bus.register_service("pixel_list", [...])
          bus.register_service("st_pixel", PixelStreamer)
 """
-from lib.sys_bus import bus
-from lib.log_service import get_log
-from lib.PixelController import PixelStreamer
+from lib.sys.sys_bus import bus
+from lib.sys.log_service import get_log
+from lib.sw.PixelController import PixelStreamer
 
 
 def init_pixel(sysbus=None):

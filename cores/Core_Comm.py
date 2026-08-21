@@ -16,8 +16,8 @@
 #   Core_Comm.start()
 
 import machine, time, ubinascii
-from lib.sys_bus import bus
-from lib.log_service import get_log
+from lib.sys.sys_bus import bus
+from lib.sys.log_service import get_log
 from app import App
 from tasks.network import NetworkTask
 from tasks.circuit import CircuitTask

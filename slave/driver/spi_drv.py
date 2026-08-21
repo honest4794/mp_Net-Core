@@ -7,7 +7,7 @@ spi_drv.py — SPI 匯流排管理
 支援 lcd_bus (DMA) 與 machine.SPI fallback。
 """
 from machine import Pin, SPI
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 
 try:
     import lcd_bus
@@ -69,7 +69,7 @@ def init_spi(sysbus=None):
                 )
             except Exception as e:
                 try:
-                    from lib.log_service import get_log
+                    from lib.sys.log_service import get_log
                     get_log().warn(
                         "[spi_drv] SPI{} lcd_bus fail: {} → machine.SPI fallback "
                         "(無 DMA queue，效能會大幅下降)".format(item["id"], e))

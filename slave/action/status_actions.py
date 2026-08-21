@@ -4,9 +4,9 @@ import gc
 import os
 import time
 import machine, ubinascii
-from lib.sys_bus import bus
-from lib.proto import Proto
-from lib.schema_codec import SchemaCodec
+from lib.sys.sys_bus import bus
+from lib.sys.proto import Proto
+from lib.sys.schema_codec import SchemaCodec
 
 # 引用其他模組的狀態
 from action import stream_actions

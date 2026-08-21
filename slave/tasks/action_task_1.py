@@ -31,13 +31,13 @@ UART Display 協定 (與 DisplayController 相容):
 """
 
 import time
-from lib.task import Task
-from lib.sys_bus import bus
-from lib.hw_manager import HW, _PIN_CACHE
-from lib.log_service import get_log
-from lib.mp3_tf_16p import MP3TF16P
-from lib.proto import Proto
-from lib.schema_codec import SchemaCodec
+from lib.sys.task import Task
+from lib.sys.sys_bus import bus
+from lib.sys.hw_manager import HW, _PIN_CACHE
+from lib.sys.log_service import get_log
+from lib.hw.mp3_tf_16p import MP3TF16P
+from lib.sys.proto import Proto
+from lib.sys.schema_codec import SchemaCodec
 
 # ═══ UART 協定常數 ═══
 

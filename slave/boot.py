@@ -7,8 +7,8 @@
 #
 # 要停用某 driver：註解 Phase 1 與 Phase 2 對應兩行即可。
 
-from lib.ConfigManager import *
-from lib.sys_bus import bus
+from lib.sys.ConfigManager import *
+from lib.sys.sys_bus import bus
 import ubinascii, machine
 
 try:
@@ -22,7 +22,7 @@ except Exception:
 
 # ── WebREPL: 預設開啟 (與網絡狀態無關; 綁 0.0.0.0:8266 全介面, 不連線不消耗) ──
 try:
-    from lib import webrepl_ctl
+    from lib.sys import webrepl_ctl
     webrepl_ctl.ensure()
 except Exception as _we:
     print("[BOOT] WebREPL ensure error: {}".format(_we))
@@ -81,7 +81,7 @@ bus.gpio_dump()
 #     0 (預設) = best-effort，繼續開機
 #     1        = 任一 driver 失敗即 raise 中止整個 boot
 # ══════════════════════════════════════════════════════
-from lib.log_service import get_log
+from lib.sys.log_service import get_log
 
 _strict = bool(bus.shared.get("System", {}).get("boot_strict", 0))
 _boot_status = []   # [(name, "ok"/"FAIL", err_str)]
@@ -131,5 +131,5 @@ except Exception:
         _os.mkdir("/sd")
     except Exception:
         pass
-from lib.fs_manager import fs
+from lib.sys.fs_manager import fs
 bus.register_service("data", fs)

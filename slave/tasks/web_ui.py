@@ -2,9 +2,9 @@ import socket
 import json
 import time
 import os
-from lib.task import Task
-from lib.sys_bus import bus
-from lib.log_service import get_log
+from lib.sys.task import Task
+from lib.sys.sys_bus import bus
+from lib.sys.log_service import get_log
 
 class WebUITask(Task):
     def __init__(self, name, ctx):
@@ -232,8 +232,8 @@ class WebUITask(Task):
                 if not isinstance(payload_obj, dict):
                     payload_obj = {}
 
-                from lib.schema_codec import SchemaCodec
-                from lib.proto import StreamParser, MAX_PAYLOAD
+                from lib.sys.schema_codec import SchemaCodec
+                from lib.sys.proto import StreamParser, MAX_PAYLOAD
 
                 cmd_def = self.app.store.get(cmd_id)
                 if not cmd_def:
@@ -548,7 +548,7 @@ class WebUITask(Task):
 
             if save:
                 try:
-                    from lib.ConfigManager import cfg_manager
+                    from lib.sys.ConfigManager import cfg_manager
                     cfg_manager.save_from_bus(update_key="Network.wifi.ssid")
                     cfg_manager.save_from_bus(update_key="Network.wifi.ssid_pw")
                 except Exception as e:

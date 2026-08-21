@@ -11,7 +11,7 @@ def config(spi, dc, cs, rst, driver="ST7789", width=240, height=320,
            pixel_format="RGB565_BE", bytes_per_pixel=2, adapter=None,
            variant=None):
     """工廠函式 — 明確傳入 SPI / pin 物件"""
-    from lib.TFT import ST7789, ST7735, ST7796, GC9A01, GC9D01, ILI9341, NV3030B
+    from lib.hw.TFT import ST7789, ST7735, ST7796, GC9A01, GC9D01, ILI9341, NV3030B
 
     driver_map = {
         "ST7789":        ST7789,
@@ -27,7 +27,7 @@ def config(spi, dc, cs, rst, driver="ST7789", width=240, height=320,
     for lazy_drv in ("RM67162", "SH8601"):
         if driver == lazy_drv:
             try:
-                mod = __import__("lib.TFT", None, None, [lazy_drv])
+                mod = __import__("lib.hw.TFT", None, None, [lazy_drv])
                 driver_map[lazy_drv] = getattr(mod, lazy_drv)
             except (ImportError, AttributeError):
                 raise ValueError("{} not available — update lib/TFT.py on device".format(lazy_drv))
@@ -61,8 +61,8 @@ def config(spi, dc, cs, rst, driver="ST7789", width=240, height=320,
 
 def init_tft(sysbus=None):
     """boot 模式 — 從 bus.shared['TFT'] 讀設定，由 bus service 解析 SPI / pin"""
-    from lib.sys_bus import bus
-    from lib.bus_adapter import SpiBusAdapter
+    from lib.sys.sys_bus import bus
+    from lib.sys.bus_adapter import SpiBusAdapter
 
     sysbus = sysbus or bus
     cfg = sysbus.shared.get("TFT") or {}
@@ -130,8 +130,8 @@ def init_tft_i80(sysbus=None):
     """I80 boot 模式 — 適用 ST7796 + N16R8 (XL9555 控制 RST/背光)
     設定來源: bus.shared['TFT']
     """
-    from lib.sys_bus import bus
-    from lib.bus_adapter import I80BusAdapter
+    from lib.sys.sys_bus import bus
+    from lib.sys.bus_adapter import I80BusAdapter
 
     sysbus = sysbus or bus
     cfg = sysbus.shared.get("TFT") or {}

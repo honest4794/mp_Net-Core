@@ -1,5 +1,5 @@
-from lib.task import Task
-from lib.sys_bus import bus
+from lib.sys.task import Task
+from lib.sys.sys_bus import bus
 
 
 class NowTask(Task):
@@ -18,7 +18,7 @@ class NowTask(Task):
         self.now_bus = bus.get_service("NowBus")
         if self.now_bus is None:
             try:
-                from lib.now_bus import NowBus
+                from lib.sys.now_bus import NowBus
                 wifi_cfg = bus.shared.get('Network', {}).get('wifi', {})
                 wifi_enable = wifi_cfg.get('enable', 0)
                 channel = esp_cfg.get('channel', 1)

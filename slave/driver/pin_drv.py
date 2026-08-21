@@ -5,8 +5,8 @@ pin_drv.py — GPIO 腳位管理
 產物:    bus.register_service("pin_list", [Pin_obj, ...])
          bus.register_service("pin_by_label", {label: Pin_obj})
 """
-from lib.hw_manager import init_pins
-from lib.sys_bus import bus
+from lib.sys.hw_manager import init_pins
+from lib.sys.sys_bus import bus
 
 
 def init_pin(sysbus=None):

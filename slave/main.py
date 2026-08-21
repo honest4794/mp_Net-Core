@@ -6,7 +6,7 @@
 #
 # 硬件初始化已由 boot.py 完成
 
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 
 
 def main():

@@ -12,7 +12,7 @@
 #   與 lvgl-micropython 專案一致:Python 層只用一核,CPU1 工作在 C 層做。
 import time
 import lvgl as lv
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 
 _LINES = 40    # PARTIAL draw buffer 行數
 _BPP = 2       # RGB565

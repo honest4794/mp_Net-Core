@@ -6,8 +6,8 @@ xl9555_drv.py — XL9555 IO Expander (走 I2C)
 產物:    bus.register_service("xl9555", xl)
          (pins 追加進既有 pin_list / pin_by_label)
 """
-from lib.sys_bus import bus
-from lib.log_service import get_log
+from lib.sys.sys_bus import bus
+from lib.sys.log_service import get_log
 
 
 def init_xl9555(sysbus=None):
@@ -27,7 +27,7 @@ def init_xl9555(sysbus=None):
     if isinstance(dev_addr, str):
         dev_addr = int(dev_addr, 16)
 
-    from lib.xl9555 import XL9555, PIN_OUT
+    from lib.hw.xl9555 import XL9555, PIN_OUT
     xl = XL9555(i2c, dev_addr)
 
     # 初始化 IO

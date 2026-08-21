@@ -4,9 +4,9 @@ import time
 import gc
 import machine
 # 修正匯入路徑，使用你定義好的 Proto 類
-from lib.proto import Proto 
-from lib.schema_codec import SchemaCodec 
-from lib.sys_bus import bus
+from lib.sys.proto import Proto 
+from lib.sys.schema_codec import SchemaCodec 
+from lib.sys.sys_bus import bus
 # 全局變量記錄最後一次心跳時間
 _LAST_HB_TICK = 0
 

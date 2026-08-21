@@ -1,6 +1,6 @@
 import time
-from lib.task import Task
-from lib.sys_bus import bus
+from lib.sys.task import Task
+from lib.sys.sys_bus import bus
 
 
 class BusDecodeTask(Task):

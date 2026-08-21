@@ -3,8 +3,8 @@ network_drv.py — 網路管理 (無獨立 GPIO)
 
 產物: bus.register_service("network_manager", nm)
 """
-from lib.sys_bus import bus
-from lib.network_manager import NetworkManager
+from lib.sys.sys_bus import bus
+from lib.sys.network_manager import NetworkManager
 
 
 def init_network(sysbus=None):

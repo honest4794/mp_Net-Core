@@ -18,7 +18,7 @@
 #   - 同板 LVGL 頁面 → 直寫 bus.shared["_display_cmd"]（不過 dispatch，同板）。
 # 兩條路殊途同歸，action_task_1._consume_display_cmd() 統一消費。
 
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 
 _NO_CHANGE = 0xFF   # u8 約定：255 = 不改該欄位
 

@@ -5,9 +5,9 @@ apa102_drv.py — APA102 pixel 管理 (走 SPI)
          list item: {"spi": <spi_list index>, "Q": N, "order": "BGRW"}
 產物:    bus.register_service("apa1022_list", [...])
 """
-from lib.log_service import get_log
-from lib.apa102 import APA102
-from lib.sys_bus import bus
+from lib.sys.log_service import get_log
+from lib.hw.apa102 import APA102
+from lib.sys.sys_bus import bus
 
 
 def init_apa102(sysbus=None):
@@ -16,7 +16,7 @@ def init_apa102(sysbus=None):
     if not cfg.get("enable"):
         return []
 
-    from lib.PixelController import PixelController
+    from lib.sw.PixelController import PixelController
     spi_list = sysbus.get_service("spi_list") or []
     apa_list = []
     for item in cfg.get("list", []):

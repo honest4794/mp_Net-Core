@@ -1,7 +1,7 @@
 import time
-from lib.task import Task
-from lib.sys_bus import bus
-from lib.hw_manager import HW
+from lib.sys.task import Task
+from lib.sys.sys_bus import bus
+from lib.sys.hw_manager import HW
 
 
 class ActionTask(Task):

@@ -16,10 +16,10 @@ hw_sample_task.py — 統一硬體輸入採樣任務
 VBTN 不在此採樣（已有 bus.shared["_vbtn"] 快照機制，維持現狀）。
 """
 
-from lib.task import Task
-from lib.sys_bus import bus
-from lib.log_service import get_log
-from lib.hw_manager import sample_inputs
+from lib.sys.task import Task
+from lib.sys.sys_bus import bus
+from lib.sys.log_service import get_log
+from lib.sys.hw_manager import sample_inputs
 
 
 class HwSampleTask(Task):

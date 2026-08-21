@@ -1,12 +1,12 @@
 import time
-from lib.task import Task
-from lib.sys_bus import bus
-from lib.net_bus import NetBus
-from lib.bus_sources import BusSources
+from lib.sys.task import Task
+from lib.sys.sys_bus import bus
+from lib.sys.net_bus import NetBus
+from lib.sys.bus_sources import BusSources
 from action.sys_actions import on_connect_request
-from lib.network_manager import NetworkManager
+from lib.sys.network_manager import NetworkManager
 from action.stream_actions import handle_supply_chain
-from lib.log_service import get_log
+from lib.sys.log_service import get_log
 
 class NetworkTask(Task):
     def __init__(self, name, ctx):
@@ -56,7 +56,7 @@ class NetworkTask(Task):
         esp_cfg = bus.shared.get('Network', {}).get('ESP_now', {})
         if esp_cfg.get('enable', 0):
             try:
-                from lib.now_bus import NowBus
+                from lib.sys.now_bus import NowBus
                 wifi_cfg = bus.shared.get('Network', {}).get('wifi', {})
                 wifi_enable = wifi_cfg.get('enable', 0)
                 esp_ch = esp_cfg.get('channel', 1)

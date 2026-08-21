@@ -1,10 +1,10 @@
 # app.py
-from lib.schema_loader import SchemaStore
-from lib.dispatch import Dispatcher
-from lib.proto import StreamParser, MAX_PAYLOAD, ADDR_BROADCAST
+from lib.sys.schema_loader import SchemaStore
+from lib.sys.dispatch import Dispatcher
+from lib.sys.proto import StreamParser, MAX_PAYLOAD, ADDR_BROADCAST
 # from lib.file_rx import FileRx # 已移除
 from action.registry import register_all
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 
 import sys
 IS_MICROPYTHON = (sys.implementation.name == 'micropython')

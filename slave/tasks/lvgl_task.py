@@ -13,9 +13,9 @@ lvgl_task.py — LVGL UI 任務（任務模式）
 LVGL 獨佔 LCD（原與 jpeg_player 互斥二選一，播放器已移除）。
 """
 
-from lib.task import Task
-from lib.sys_bus import bus
-from lib.log_service import get_log
+from lib.sys.task import Task
+from lib.sys.sys_bus import bus
+from lib.sys.log_service import get_log
 
 
 class LvglTask(Task):
@@ -46,7 +46,7 @@ class LvglTask(Task):
             app.step()
         except Exception as e:
             try:
-                from lib.log_service import get_log
+                from lib.sys.log_service import get_log
                 get_log().error("[LvglTask] loop err: {}".format(e))
             except Exception:
                 print("[LvglTask] loop err:", e)

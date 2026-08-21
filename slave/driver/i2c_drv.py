@@ -5,7 +5,7 @@ i2c_drv.py — I2C 匯流排管理
 產物:    bus.register_service("i2c_list", [I2C_obj, ...])
 """
 from machine import Pin, I2C
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 
 
 def init_i2c(sysbus=None):

@@ -1,8 +1,9 @@
-from lib.task import Task
-from lib.sys_bus import bus
-from lib.circuit_bus import CircuitBus
-from lib.bus_sources import BusSources
-from lib.log_service import get_log
+from lib.sys.task import Task
+from lib.sys.sys_bus import bus
+from lib.sys.circuit_bus import CircuitBus
+from lib.sys.bus_sources import BusSources
+from lib.sys.log_service import get_log
+from lib.sys import bus_speed
 
 
 class CircuitTask(Task):
@@ -146,6 +147,9 @@ class CircuitTask(Task):
             return
         if not self._buses:
             return
+        # 臨時提速超時回滾: SYNCING 中 deadline 到 → 自動還原 config 舊速。
+        # 純時間檢查, 不依賴收到指令; 即使新速下收不到有效幀也會回滾。
+        bus_speed.bus_speed_poll()
         for b in self._buses:
             ctx_extra = self._ctx_by_bus_id.get(id(b), None)
             if ctx_extra is not None:

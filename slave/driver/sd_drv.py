@@ -10,8 +10,8 @@ S3 無 LDO 硬體、ldo kwarg 不編譯進去)，driver 層不介入。
 """
 import machine
 import os
-from lib.sys_bus import bus
-from lib.log_service import get_log
+from lib.sys.sys_bus import bus
+from lib.sys.log_service import get_log
 
 
 def init_sd(sysbus=None):

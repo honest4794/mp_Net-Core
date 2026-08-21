@@ -61,18 +61,18 @@ def build():
 
 
 def _sys_cfg():
-    from lib.sys_bus import bus
+    from lib.sys.sys_bus import bus
     return bus.shared.get("System", {}) or {}
 
 def _sys_str(key):
     return str(_sys_cfg().get(key, "") or "—")
 
 def _wifi_str(key):
-    from lib.sys_bus import bus
+    from lib.sys.sys_bus import bus
     return str(bus.shared.get("Network", {}).get("wifi", {}).get(key, "") or "—")
 
 def _sid():
-    from lib.sys_bus import bus
+    from lib.sys.sys_bus import bus
     return str(bus.slave_id or "—")
 
 def _mac():
@@ -108,7 +108,7 @@ def update(run):
     if run % 20 != 0:
         return
     try:
-        from lib.sys_bus import bus
+        from lib.sys.sys_bus import bus
         wenable = int(bus.shared.get("Network", {}).get("wifi", {}).get("enable", 0))
         if u.sw_get(_wifi_sw) != bool(wenable):
             u.sw_set(_wifi_sw, bool(wenable))

@@ -12,8 +12,8 @@
 #
 # 計數器為模組層單例，不分通道 —— 這套測試是純 NC4 協議層的通用吞吐測試。
 
-from lib.proto import Proto
-from lib.schema_codec import SchemaCodec
+from lib.sys.proto import Proto
+from lib.sys.schema_codec import SchemaCodec
 
 CMD_BENCH_READY = 0x1811
 CMD_BENCH_DATA = 0x1812

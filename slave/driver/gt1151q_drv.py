@@ -4,8 +4,8 @@ gt1151q_drv.py — GT1151Q 觸控驅動 (走 I2C)
 設定來源: bus.shared["GT1151Q"]  ({enable, i2c, addr, int_label})
 產物:    bus.register_service("touch", tp)
 """
-from lib.sys_bus import bus
-from lib.log_service import get_log
+from lib.sys.sys_bus import bus
+from lib.sys.log_service import get_log
 
 
 def init_gt1151q(sysbus=None):
@@ -26,7 +26,7 @@ def init_gt1151q(sysbus=None):
     int_label = cfg.get("GPIO", {}).get("int", "touch_int")
     int_pin = pin_by_label.get(int_label)
 
-    from lib.gt1151q import GT1151Q
+    from lib.hw.gt1151q import GT1151Q
 
     addr = cfg.get("addr", 0x5D)
     if isinstance(addr, str):

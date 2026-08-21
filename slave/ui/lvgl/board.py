@@ -15,7 +15,7 @@
 # 啟動唯一前置條件:bus.has_lcd()(boot.py 的 init_tft 成功)。
 # LVGL 獨佔 LCD（原與 jpeg player 共用互斥，播放器已移除）。
 import sys
-from lib.sys_bus import bus
+from lib.sys.sys_bus import bus
 from ui.lvgl import app
 from ui.lvgl import ui_common
 from ui.lvgl import lvgl_init
@@ -34,7 +34,7 @@ def _make_inputs():
 
     按鈕 label 預設 encC / btn,可在 config PIN 段改名。
     active-low;confirm/exit 為去抖後按壓邊緣(讀取即清除,按住不重複觸發)。"""
-    from lib.hw_manager import consume_input
+    from lib.sys.hw_manager import consume_input
 
     print("[board] inputs: via hw_manager snapshot (encC/btn)")
     return _make_snapshot_inputs(consume_input)
@@ -65,7 +65,7 @@ def run():
         return
 
     try:
-        from lib.log_service import get_log
+        from lib.sys.log_service import get_log
     except Exception:
         get_log = None
     if get_log:
@@ -128,7 +128,7 @@ def _loop_once():
         app.step()
     except Exception as e:
         try:
-            from lib.log_service import get_log
+            from lib.sys.log_service import get_log
             get_log().error("[board] loop err: {}".format(e))
         except Exception:
             print("[board] loop err:", e)

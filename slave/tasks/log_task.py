@@ -1,12 +1,12 @@
 import time
-from lib.task import Task
-from lib.log_service import get_log, _viper_read_i32
+from lib.sys.task import Task
+from lib.sys.log_service import get_log, _viper_read_i32
+from lib.sys.sys_bus import bus
 
 
 class LogTask(Task):
     def on_start(self):
         super().on_start()
-        from lib.sys_bus import bus
         bus.shared["log_task_ready"] = True
         self._cpu0 = False
         self._cpu1 = False
@@ -77,7 +77,6 @@ class LogTask(Task):
         others = self._others
 
         now = time.ticks_ms()
-        from lib.sys_bus import bus
         interval = int(bus.shared.get("log_print_interval_ms", 1000) or 1000)
         if interval <= 0:
             interval = 1000

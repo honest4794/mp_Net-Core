@@ -1,8 +1,8 @@
 # action/stream_actions.py
-from lib.sys_bus import bus
-from lib.proto import Proto
-from lib.schema_codec import SchemaCodec
-from lib.fs_manager import fs
+from lib.sys.sys_bus import bus
+from lib.sys.proto import Proto
+from lib.sys.schema_codec import SchemaCodec
+from lib.sys.fs_manager import fs
 def on_stream_state_set(ctx, args):
     """0x3009: 準備分塊與文件模式"""
     bus.shared.update({

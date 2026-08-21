@@ -1,8 +1,8 @@
-from lib.proto import Proto
-from lib.schema_codec import SchemaCodec
+from lib.sys.proto import Proto
+from lib.sys.schema_codec import SchemaCodec
 import ubinascii
-from lib.sys_bus import bus
-from lib.fs_manager import fs
+from lib.sys.sys_bus import bus
+from lib.sys.fs_manager import fs
 import _thread
 
 def on_file_begin(ctx, args):

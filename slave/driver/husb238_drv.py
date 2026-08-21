@@ -7,8 +7,8 @@ husb238_drv.py — HUSB238 USB PD Sink 控制器 (走 I2C)
 
 addr 為選用，HUSB238 固定 0x08；啟用時會掃描確認。
 """
-from lib.sys_bus import bus
-from lib.log_service import get_log
+from lib.sys.sys_bus import bus
+from lib.sys.log_service import get_log
 
 
 def init_husb238(sysbus=None):
@@ -40,7 +40,7 @@ def init_husb238(sysbus=None):
             addr, [hex(a) for a in found]))
         return None
 
-    from lib.husb238 import HUSB238
+    from lib.hw.husb238 import HUSB238
     dev = HUSB238(i2c, addr)
 
     # 若設定預設電壓，開機即嘗試協商

@@ -144,7 +144,7 @@ def build():
 def _init_local():
     """以 bus 現值初始化本機值(啟動時 echo 即為實際狀態,無 pending)。"""
     global _local_mode, _local_bright, _pend_mode, _pend_bright
-    from lib.sys_bus import bus
+    from lib.sys.sys_bus import bus
     _local_mode = int(bus.shared.get("_display_mode", 0)) & 0xFF
     _local_bright = max(0, min(36, int(bus.shared.get("_display_brightness", 0))))
     _pend_mode = False
@@ -170,7 +170,7 @@ def _send_cmd(mode=None, brightness=None):
     """發指令給 action_task_1 via bus.shared['_display_cmd']。
     同板直寫；跨板時由 waiting_to_trash_actions.on_ctl 翻譯進同一欄位。
     action_task_1._consume_display_cmd() 統一消費 → set_display_state() → UART 執行。"""
-    from lib.sys_bus import bus
+    from lib.sys.sys_bus import bus
     cmd = {}
     if mode is not None:
         cmd["mode"] = int(mode) & 0xFF
@@ -183,7 +183,7 @@ def _send_cmd(mode=None, brightness=None):
 def _echo_mode():
     """讀 bus 的 _display_mode 回傳(被控制端/跨板 echo)。
     欄位不存在(尚未有回覆)→ 回 None,不得視為已確認。"""
-    from lib.sys_bus import bus
+    from lib.sys.sys_bus import bus
     if "_display_mode" not in bus.shared:
         return None
     return int(bus.shared["_display_mode"]) & 0xFF
@@ -207,7 +207,7 @@ def _set_mode_byte(v):
 
 def _state():
     """本頁自用快取 dict(非協議欄位,如 is_running)。"""
-    from lib.sys_bus import bus
+    from lib.sys.sys_bus import bus
     s = bus.shared.get("control_panel")
     if not isinstance(s, dict):
         s = {}
@@ -349,7 +349,7 @@ def update(run):
     if run % 10 != 0:
         return
     try:
-        from lib.sys_bus import bus
+        from lib.sys.sys_bus import bus
         # ── mode echo 採納:有 pending 等回覆,一致即確認轉綠;無 pending 才採納外部值 ──
         _sync_echo_mode(bus)
         _sync_echo_bright(bus)

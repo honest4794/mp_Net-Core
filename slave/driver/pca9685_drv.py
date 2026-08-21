@@ -5,9 +5,9 @@ pca9685_drv.py — PCA9685 PWM pixel 管理 (走 I2C)
          list item: {"i2c": <i2c_list index>, "address": ["0x40"]}
 產物:    bus.register_service("pca9685_list", [...])
 """
-from lib.log_service import get_log
-from lib.pca9685 import PCA9685
-from lib.sys_bus import bus
+from lib.sys.log_service import get_log
+from lib.hw.pca9685 import PCA9685
+from lib.sys.sys_bus import bus
 
 
 def init_pca9685(sysbus=None):
@@ -16,7 +16,7 @@ def init_pca9685(sysbus=None):
     if not cfg.get("enable"):
         return []
 
-    from lib.PixelController import PixelController
+    from lib.sw.PixelController import PixelController
     i2c_list = sysbus.get_service("i2c_list") or []
     pca_list = []
     for item in cfg.get("list", []):

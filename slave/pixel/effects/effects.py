@@ -45,7 +45,7 @@ effects.py — 效果目錄 + Effect 類別（12-bit 整數、免查表、可 re
 # ══════════════════════════════════════════════════════════════
 
 from array import array as _array
-from lib.PixelMathMethod import mt
+from lib.sw.PixelMathMethod import mt
 
 try:
     import micropython
@@ -317,7 +317,7 @@ register(wave)
 if __name__ == "__main__":
     # ── PC 快速自檢（不依賴硬體）────────────────────────
     import math
-    from lib.PixelMathMethod import _wave01_q12
+    from lib.sw.PixelMathMethod import _wave01_q12
 
     # 1. 多項式逼近準確率（math.sin 只用於測試對照，正式運算路徑無浮點）
     max_err = 0.0
