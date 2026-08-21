@@ -15,12 +15,13 @@
 | 檔案 | 範圍 | 狀態 |
 |---|---|---|
 | [01_file_update.md](01_file_update.md) | 檔案更新流程（FILE_* 0x20xx） | loopback 自測通過，實測待補 |
+| [02_rs485_de.md](02_rs485_de.md) | RS485 半雙工 DE 控制（1ms / rs485_hd 全自動） | 1ms 實測通過，rs485_hd 待真機驗證 |
 | `_template.md` | 新清單範本 | — |
 
 ## 待開清單的模組（依 doc/02_guides 順序）
 
 - [ ] `01_fast_io` — SD raw 高速儲存
-- [ ] `02_uart_motor` — UART 電機控制器
+- [ ] `02_uart_motor` — UART 電機控制器（RS485 通道測試可參考 [02_rs485_de.md](02_rs485_de.md)）
 - [ ] `04_lcd_bus` / `05_tft_usage` — LCD/TFT
 - [ ] `06_lvgl_ui` — LVGL UI
 - [ ] `07_jpeg` — JPEG 解碼

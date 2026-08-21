@@ -68,3 +68,4 @@
 - `Skills/mp-netcore` — slave 新增功能模組完整流程（schema / action / task / config）
 - `slave/pixel/` — pixel 子系統程式碼（四層資料檔案）
 - `cores/` — 獨立核心實例（Core_LVGL / Core_Comm）
+- `todo/` — **測試追蹤清單**（各模組待測項目 / 給下一位測試者的步驟）
