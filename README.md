@@ -26,6 +26,7 @@ ESP32-S3 MicroPython slave 專案 — 高效能 Server ⇄ MCU 傳輸控制系�
 - [JPEG 模組](doc/02_guides/07_jpeg.md)
 - [pixel 子系統](doc/02_guides/08_pixel_subsystem.md)
 - [cores 核心實例](doc/02_guides/09_cores.md)
+- [檔案更新流程](doc/02_guides/10_file_update.md) — 上傳/下載/兩段式 commit/斷點續傳
 
 ### 筆記（`doc/03_notes/`）— 維護者 / 想了解設計脈絡的人
 

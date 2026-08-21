@@ -185,3 +185,23 @@ lib/
 - `slave/action/net_actions.py` / `hw_actions.py` — 新指令 handler 實作。
 - `slave/lib/sys/bus_speed.py` — 提速狀態機。
 - `slave/lib/sys/proto.py` — 封包 + pop_frame。
+
+---
+
+## 8) 檔案更新流程重設計（2026-08-21）
+
+FILE_* 0x20xx 檔案傳輸鏈路的重新設計：接收端完全被動、傳輸無關；新增兩段式 commit、斷點續傳、manifest 分離與 delta journal。
+
+| 項目 | 內容 |
+|------|------|
+| 新增指令 | `0x2008 FILE_CONFIRM`、`0x200A FILE_UNDO`、`0x200D FILE_MOVE`、`0x200E FILE_PARTIAL_QUERY`、`0x200F FILE_PARTIAL_RSP`、`0x2010 FILE_ERROR_RSP` |
+| 加欄位 | `FILE_QUERY_RSP`(0x2006) 加 `free` `pending`；`FILE_SCAN`(0x200B) 加 `target` |
+| 兩段式 commit | 同名覆蓋不再直接刪舊檔：寫 pending → 舊檔 `.bak` → 新檔上位 → 更新 manifest；CONFIRM/UNDO 收尾 |
+| 斷點續傳 | `.tmp` + delta `partial` 紀錄；正確性由 FILE_END 整檔 sha256 保證 |
+| manifest 分離 | 本地 `/manifest.json` + SD `/sd/.manifest.json`，不融合，write-through 維護 |
+| delta journal | `/sd/.delta.json`，`partial` + `pending` 兩段 |
+| 自測 | `tools/selftest_file.py` loopback，真機 17 通過 0 失敗 |
+
+關鍵檔案：`slave/lib/sys/fs_manager.py`、`slave/action/file_actions.py`、`slave/schema/file.json`（`echo/lib/fs_manager.py` 已同步）。完整用法見 `02_guides/10_file_update.md`。
+
+> 已知限制：Slave 端回應幀仍走廣播（`Proto.pack` 不帶 addr）。單一 master 沒問題，但真正 MCU↔MCU 對等（多節點共享介質）需補「來源位址 + 回給來源」，建議單獨一輪做，避免與檔案流程耦合。
