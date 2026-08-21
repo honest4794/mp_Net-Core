@@ -26,7 +26,7 @@
 | [06_migration_guide.md](01_protocol/06_migration_guide.md) | 對方指令遷移對照（人讀版：每條舊指令變成什麼） |
 | [07_merge_comparison.md](01_protocol/07_merge_comparison.md) | 兩套系統全景比對（含對方 RS485 catalog 留存） |
 | [08_performance_benchmark.md](01_protocol/08_performance_benchmark.md) | 網路 + 協議性能基準（甜蜜點 / 瓶頸 / 修改方法） |
-| [09_bus_speed_protocol.md](01_protocol/09_bus_speed_protocol.md) | 臨時提速（bus_speed）協商流程（0x1403-0x1408） |
+| [09_bus_speed_protocol.md](01_protocol/09_bus_speed_protocol.md) | 臨時提速（bus_speed）**完整工作流程**：協商 / 時序 / 失敗處理 / master 整合範例 |
 
 ## 02_guides — 使用教學
 

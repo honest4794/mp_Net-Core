@@ -1,4 +1,4 @@
-# 更新紀錄：遠端更新鏈路 / 臨時提速 / lib 三級分類 / 解碼性能
+# 更新紀錄：遠端更新鏈路 / 臨時提速 / lib 三級分類 / 解碼性能 / 重複 import 清理
 
 > **用途**：整合說明本次一系列更新的完整設計、指令集、檔案結構與行為語意。
 > **分類**：筆記（03_notes）
@@ -15,6 +15,7 @@
 | 臨時提速 | 協商式 UART 提速 + 超時回滾 | `action/hw_actions.py`、`schema/hw.json`、`lib/sys/bus_speed.py` |
 | lib 三級分類 | `lib/` 拆為 `hw/ sys/ sw/` | `lib/hw/`、`lib/sys/`、`lib/sw/` |
 | 解碼性能優化 | `pop_frame` 零拷貝 + 非 generator、ADDR 過濾、native handle_stream | `lib/sys/proto.py`、`app.py` |
+| 重複 import 清理 | 熱路徑內（`loop`/handler）的函式內 import 提到模組頂部 | `lib/sys/task.py`、`action/hw_actions.py`、`action/net_actions.py` |
 
 ---
 
@@ -105,12 +106,12 @@ master 對 addr=X 發 IDENTIFY_REQ(0x100D, payload 帶 reply_addr)
 ```
 lib/
 ├── __init__.py
-├── hw/  (8)  apa102, gt1151q, husb238, mp3_tf_16p, pca9685, TFT, uart_motor, xl9555
-├── sys/ (21) buffer_hub, bus_adapter, bus_sources, bus_speed, circuit_bus,
+├── hw/  (8 模組 + __init__.py = 9 檔)  apa102, gt1151q, husb238, mp3_tf_16p, pca9685, TFT, uart_motor, xl9555
+├── sys/ (21 模組 + __init__.py = 22 檔) buffer_hub, bus_adapter, bus_sources, bus_speed, circuit_bus,
 │             ConfigManager, dispatch, fast_io, fs_manager, hw_manager,
 │             log_service, net_bus, network_manager, now_bus, proto,
 │             schema_codec, schema_loader, sys_bus, task, task_manager, webrepl_ctl
-└── sw/  (3)  PixelController, PixelMathMethod, pixel_layout
+└── sw/  (3 模組 + __init__.py = 4 檔)  PixelController, PixelMathMethod, pixel_layout
 ```
 
 ### import 規則
@@ -147,6 +148,22 @@ lib/
 ### 5.3 緩衝重用（已探討、未採用）
 
 - 「從 hub slot 零拷貝 pop」原型量到 6.85 MB/s，但因 MicroPython `memoryview` 無 `.find`、`bytes()` 拷貝 + GIL 串行下打崩，**不採用**；實際瓶頸在 feed 拷貝，已由 pop_frame 吸收大部分。
+
+### 5.4 重複 import 清理（熱路徑 hoist 到頂部）
+
+掃描全部函式體內的 import，分「該提」與「該留」兩類，只提前者：
+
+**提到模組頂部（熱路徑 / 重複觸發，無循環依賴）：**
+- `lib/sys/task.py`：`fcache_get()`（每 loop 都呼叫的快取讀取）內的 `from lib.sys.sys_bus import bus` 提到頂部。
+- `action/hw_actions.py`：4 個 SPEED handler 內的 `from lib.sys import bus_speed` 提到頂部。
+- `action/net_actions.py`：`on_wrepl_ctrl` 內的 `from lib.sys import webrepl_ctl` 提到頂部。
+
+**刻意保留（lazy import，動了會壞）：**
+- `from lib.sys.now_bus import NowBus`（now_bus import `espnow`，硬性依賴，不能 eager）。
+- `fs_manager` / `log_service` / `network_manager` 內部的 `sys_bus` / `cfg_manager` import（避免循環依賴 + 延遲載入）。
+- `tft_drv` / `gt1151q_drv` / `husb238_drv` / `xl9555_drv` / `PixelController` 等可選硬體驅動（沒啟用就不吃記憶體）。
+
+> 原因：MicroPython 的 `import` 靠 `sys.modules` 快取，模組只載入一次、不會重複佔記憶體；但**函式體內的 `from lib import X` 每次執行都做 dict 查表**。在 `loop()` 這種巨大循環內，每輪查表會累積；在 handler（收到指令才觸發）內則可接受。規則：熱路徑一律模組級 import，handler 可保留函式內 import。
 
 ---
 

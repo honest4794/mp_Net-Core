@@ -228,4 +228,4 @@
 - `03_ota_protocol.md` — OTA 0x22xx 完整設計（改版理由、payload、長度限制、推薦流程）
 - `04_pixel_protocol.md` — PIXEL 0x31xx 完整定義（含 mode_type 語義、byte 佔位）
 - `05_integration_overview.md` — 協議整合總規格（與 master_timer_slave 的統一合約）
-- `09_bus_speed_protocol.md` — 臨時提速協商流程
+- `09_bus_speed_protocol.md` — 臨時提速完整工作流程（協商 / 時序 / 失敗處理 / master 整合）
