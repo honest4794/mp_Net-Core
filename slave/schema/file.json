@@ -100,6 +100,14 @@
         {
           "name": "path",
           "type": "str_u16len"
+        },
+        {
+          "name": "free",
+          "type": "u32"
+        },
+        {
+          "name": "pending",
+          "type": "u8"
         }
       ]
     },
@@ -122,6 +130,16 @@
       ]
     },
     {
+      "cmd": "0x2008",
+      "name": "FILE_CONFIRM",
+      "payload": [
+        {
+          "name": "path",
+          "type": "str_u16len"
+        }
+      ]
+    },
+    {
       "cmd": "0x2009",
       "name": "FILE_DELETE",
       "payload": [
@@ -132,9 +150,121 @@
       ]
     },
     {
+      "cmd": "0x200A",
+      "name": "FILE_UNDO",
+      "payload": [
+        {
+          "name": "path",
+          "type": "str_u16len"
+        }
+      ]
+    },
+    {
       "cmd": "0x200B",
       "name": "FILE_SCAN",
-      "payload": []
+      "payload": [
+        {
+          "name": "target",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "cmd": "0x200D",
+      "name": "FILE_MOVE",
+      "payload": [
+        {
+          "name": "src",
+          "type": "str_u16len"
+        },
+        {
+          "name": "dst",
+          "type": "str_u16len"
+        }
+      ]
+    },
+    {
+      "cmd": "0x200E",
+      "name": "FILE_PARTIAL_QUERY",
+      "payload": [
+        {
+          "name": "path",
+          "type": "str_u16len"
+        }
+      ]
+    },
+    {
+      "cmd": "0x200F",
+      "name": "FILE_PARTIAL_RSP",
+      "payload": [
+        {
+          "name": "partial",
+          "type": "u8"
+        },
+        {
+          "name": "written",
+          "type": "u32"
+        },
+        {
+          "name": "total_size",
+          "type": "u32"
+        },
+        {
+          "name": "sha256",
+          "type": "bytes_fixed",
+          "len": 32
+        },
+        {
+          "name": "path",
+          "type": "str_u16len"
+        }
+      ]
+    },
+    {
+      "cmd": "0x2010",
+      "name": "FILE_ERROR_RSP",
+      "payload": [
+        {
+          "name": "err_no_space",
+          "type": "u8"
+        },
+        {
+          "name": "err_write_fail",
+          "type": "u8"
+        },
+        {
+          "name": "err_offset_mismatch",
+          "type": "u8"
+        },
+        {
+          "name": "err_id_mismatch",
+          "type": "u8"
+        },
+        {
+          "name": "err_sha_mismatch",
+          "type": "u8"
+        },
+        {
+          "name": "err_not_active",
+          "type": "u8"
+        },
+        {
+          "name": "err_busy",
+          "type": "u8"
+        },
+        {
+          "name": "failed_offset",
+          "type": "u32"
+        },
+        {
+          "name": "written_up_to",
+          "type": "u32"
+        },
+        {
+          "name": "path",
+          "type": "str_u16len"
+        }
+      ]
     }
   ]
 }

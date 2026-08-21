@@ -146,15 +146,29 @@
 
 | CMD | 名稱 | 方向 | Payload | 說明 |
 |-----|------|------|---------|------|
-| 0x2001 | FILE_BEGIN | 雙向 | `file_id(u16)` `total_size(u32)` `chunk_size(u16)` `sha256(bytes_fixed 32)` `path(str)` | 開始傳輸 |
-| 0x2002 | FILE_CHUNK | 雙向 | `file_id(u16)` `offset(u32)` `data(bytes_rest)` | 傳輸塊 |
-| 0x2003 | FILE_END | 雙向 | `file_id(u16)` | 傳輸完成 |
-| 0x2004 | FILE_ACK | 雙向 | `file_id(u16)` `offset(u32)` | 確認（斷點續傳） |
-| 0x2005 | FILE_QUERY | Server → MCU | `path(str)` | 查詢檔案 |
-| 0x2006 | FILE_QUERY_RSP | MCU → Server | `exists(u8)` `sha256(bytes_fixed 32)` `size(u32)` `path(str)` | 檔案資訊 |
-| 0x2007 | FILE_READ | Server → MCU | `path(str)` `offset(u32)` `length(u16)` | 讀取檔案片段 |
-| 0x2009 | FILE_DELETE | Server → MCU | `path(str)` | 刪除檔案 |
-| 0x200B | FILE_SCAN | Server → MCU | (空) | 掃描檔案系統 |
+| 0x2001 | FILE_BEGIN | 發 → 收 | `file_id(u16)` `total_size(u32)` `chunk_size(u16)` `sha256(bytes_fixed 32)` `path(str)` | 開始傳輸；同 path+size+sha 且存在 .tmp 時自動斷點續傳 |
+| 0x2002 | FILE_CHUNK | 發 → 收 | `file_id(u16)` `offset(u32)` `data(bytes_rest)` | 傳輸塊 |
+| 0x2003 | FILE_END | 發 → 收 | `file_id(u16)` | 傳輸完成 → 驗 sha → 兩段式 commit |
+| 0x2004 | FILE_ACK | 收 → 發 | `file_id(u16)` `offset(u32)` | 逐 chunk 確認（offset 回聲） |
+| 0x2005 | FILE_QUERY | 發 → 收 | `path(str)` | 查詢檔案 |
+| 0x2006 | FILE_QUERY_RSP | 收 → 發 | `exists(u8)` `sha256(bytes_fixed 32)` `size(u32)` `path(str)` `free(u32)` `pending(u8)` | 檔案資訊 + 卷剩餘空間 + 是否有待確認覆蓋 |
+| 0x2007 | FILE_READ | 發 → 收 | `path(str)` `offset(u32)` `length(u16)` | 讀取檔案片段（下載） |
+| 0x2008 | FILE_CONFIRM | 發 → 收 | `path(str)` | 確認覆蓋：刪 `.bak` + 清 pending delta |
+| 0x2009 | FILE_DELETE | 發 → 收 | `path(str)` | 刪除檔案 |
+| 0x200A | FILE_UNDO | 發 → 收 | `path(str)` | 復原覆蓋：刪新檔 + `.bak` 改回 + 清 pending delta |
+| 0x200B | FILE_SCAN | 發 → 收 | `target(u8)` | 掃描檔案系統（0=本地 flash、1=SD） |
+| 0x200D | FILE_MOVE | 發 → 收 | `src(str)` `dst(str)` | 通用改名/移動（走 manifest，不碰 delta；限同卷） |
+| 0x200E | FILE_PARTIAL_QUERY | 發 → 收 | `path(str)` | 查詢斷點續傳進度 |
+| 0x200F | FILE_PARTIAL_RSP | 收 → 發 | `partial(u8)` `written(u32)` `total_size(u32)` `sha256(bytes_fixed 32)` `path(str)` | 續傳進度（partial=1 才有效） |
+| 0x2010 | FILE_ERROR_RSP | 收 → 發 | 7 個 `err_*` bool + `failed_offset(u32)` `written_up_to(u32)` `path(str)` | 失敗回覆（schema 自描述，無列舉常數） |
+
+> `FILE_ERROR_RSP` 錯誤 bool 群：`err_no_space` / `err_write_fail` / `err_offset_mismatch` / `err_id_mismatch` / `err_sha_mismatch` / `err_not_active` / `err_busy`。
+
+> **chunk_size 參考值**：實測 sweet point = **4096**；其他 transport 參考值 RS485≈224 / I2C≈56。
+
+> **兩段式 commit**（同名覆蓋）：FILE_END 驗 sha 通過後，先寫 `pending` delta → 舊檔改名 `.bak` → 新檔 `.tmp` 改名正式檔 → 更新 manifest。此時 `FILE_QUERY_RSP.pending=1`；直到收到 FILE_CONFIRM（刪 `.bak`）或 FILE_UNDO（復原 `.bak`）才清掉 pending。全新檔案無 `.bak`，直接單段式 rename。
+
+> **斷線續傳**：`.tmp` 留在 SD + delta journal 記 `partial{tmp,total_size,sha256}`。重連後打 FILE_PARTIAL_QUERY 拿 `written`，從該 offset 續傳；正確性由 FILE_END 的整檔 sha256 比對保證。
 
 ---
 

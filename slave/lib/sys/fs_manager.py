@@ -5,7 +5,9 @@ import ubinascii
 import hashlib
 from lib.sys.dispatch import dprint
 
-MANIFEST_FILE = "/manifest.json"
+MANIFEST_FILE = "/manifest.json"          # 本地 flash 的 manifest
+MANIFEST_FILE_SD = "/sd/.manifest.json"   # SD 的 manifest (與本地分開存放)
+DELTA_FILE = "/sd/.delta.json"            # 兩段式 commit + 斷點續傳 journal (存 SD)
 
 class FileSystemManager:
     """
@@ -17,7 +19,9 @@ class FileSystemManager:
     4. File Reception Logic (replacing FileRx)
     """
     def __init__(self):
-        self.manifest = {}
+        self.manifest_local = {}   # 本地 flash 檔案 (存 /manifest.json)
+        self.manifest_sd = {}      # SD 檔案 (存 /sd/.manifest.json)
+        self.delta = {"partial": {}, "pending": {}}  # 兩段式 commit + 斷點續傳
         self.scanning = False
         self._scan_files = []
         self._scan_manifest = {}
@@ -53,9 +57,11 @@ class FileSystemManager:
             "fp": None,
             "file_id": 0,
             "written": 0,
+            "total_size": 0,
             "sha_expect_hex": None,
             "last_error": None,
-            "last_sha_hex": ""
+            "last_sha_hex": "",
+            "last_pending": 0
         }
 
         # 串流讀取狀態
@@ -66,13 +72,23 @@ class FileSystemManager:
     def load_manifest(self):
         try:
             with open(MANIFEST_FILE, "r") as f:
-                self.manifest = ujson.load(f)
-            print(f"📦 [FS] Manifest loaded: {len(self.manifest)} files")
+                self.manifest_local = ujson.load(f)
+            print(f"📦 [FS] Local manifest loaded: {len(self.manifest_local)} files")
         except:
-            print("⚠️ [FS] Manifest missing or corrupt, starting scan...")
-            self.manifest = {}
+            print("⚠️ [FS] Local manifest missing or corrupt, starting scan...")
+            self.manifest_local = {}
             # Start background scan if manifest is missing
             self.scan_all()
+
+        try:
+            with open(MANIFEST_FILE_SD, "r") as f:
+                self.manifest_sd = ujson.load(f)
+            print(f"📦 [FS] SD manifest loaded: {len(self.manifest_sd)} files")
+        except:
+            print("⚠️ [FS] SD manifest missing or corrupt (filled on demand)")
+            self.manifest_sd = {}
+
+        self._load_delta()
 
     def _load_scan_ignore(self):
         prefixes = []
@@ -97,22 +113,32 @@ class FileSystemManager:
                 return True
         return False
 
-    def save_manifest(self):
+    def _manifest_target(self, path):
+        """依路徑回傳 (manifest_dict, full_path, manifest_file)。"""
+        kind, full, _ = self.resolve(path)
+        if kind == "sd":
+            return self.manifest_sd, full, MANIFEST_FILE_SD
+        return self.manifest_local, full, MANIFEST_FILE
+
+    def manifest_lookup(self, path):
+        """依路徑查對應的 manifest 條目。回傳 (entry_or_None, full_path)。"""
+        d, full, _ = self._manifest_target(path)
+        return d.get(full), full
+
+    def _write_manifest(self, mfile, d):
         try:
-            with open(MANIFEST_FILE, "w") as f:
+            with open(mfile, "w") as f:
                 # Custom Pretty Dump for Manifest
                 f.write("{\n")
                 # Sort keys for consistent order
-                keys = sorted(self.manifest.keys())
+                keys = sorted(d.keys())
                 for i, k in enumerate(keys):
-                    entry = self.manifest[k]
-                    # Use json.dumps for key to handle escaping
+                    entry = d[k]
                     key_str = ujson.dumps(k)
-                    # Entry is small, keep it one line: {"s": 123, "h": "..."}
                     entry_str = ujson.dumps(entry)
-                    
+
                     f.write(f'    {key_str}: {entry_str}')
-                    
+
                     if i < len(keys) - 1:
                         f.write(",\n")
                     else:
@@ -121,17 +147,50 @@ class FileSystemManager:
         except Exception as e:
             print(f"❌ [FS] Save manifest failed: {e}")
 
+    def save_manifest(self):
+        """兩份 manifest 各自落盤。"""
+        self._write_manifest(MANIFEST_FILE, self.manifest_local)
+        self._write_manifest(MANIFEST_FILE_SD, self.manifest_sd)
+
     def update_manifest_entry(self, path, size, sha_hex):
-        self.manifest[path] = {
+        d, full, mfile = self._manifest_target(path)
+        d[full] = {
             "s": size,
             "h": sha_hex
         }
-        self.save_manifest()
+        self._write_manifest(mfile, d)
 
     def remove_manifest_entry(self, path):
-        if path in self.manifest:
-            del self.manifest[path]
-            self.save_manifest()
+        d, full, mfile = self._manifest_target(path)
+        if full in d:
+            del d[full]
+            self._write_manifest(mfile, d)
+
+    # ==================== Delta Journal (SD) ====================
+    # 存 /sd/.delta.json，兩段:
+    #   partial — 傳輸中 (斷點續傳用): {path: {tmp, total_size, sha256}}
+    #   pending — 已覆蓋待確認:        {path: {bak, old_sha, old_size, new_sha}}
+
+    def _load_delta(self):
+        try:
+            with open(DELTA_FILE, "r") as f:
+                d = ujson.load(f)
+            self.delta = {
+                "partial": d.get("partial", {}),
+                "pending": d.get("pending", {})
+            }
+            print(f"🧾 [FS] Delta loaded: {len(self.delta['partial'])} partial, "
+                  f"{len(self.delta['pending'])} pending")
+        except Exception:
+            self.delta = {"partial": {}, "pending": {}}
+
+    def _save_delta(self):
+        try:
+            self._ensure_parent(DELTA_FILE)
+            with open(DELTA_FILE, "w") as f:
+                f.write(ujson.dumps(self.delta))
+        except Exception as e:
+            print(f"❌ [FS] Save delta failed: {e}")
 
     # ==================== File Reception Logic ====================
     
@@ -145,51 +204,82 @@ class FileSystemManager:
                 pass
         self.session["fp"] = None
 
+    def _resume_match(self, temp_path, path, total_size, sha_hex):
+        """判斷現有 .tmp 是否可續傳: .tmp 存在且 delta.partial 身分一致。"""
+        try:
+            os.stat(temp_path)
+        except Exception:
+            return False
+        rec = self.delta.get("partial", {}).get(path)
+        if not rec:
+            return False
+        return (rec.get("total_size") == total_size
+                and rec.get("sha256") == sha_hex)
+
     def begin_write(self, args: dict) -> bool:
         """FILE_BEGIN (0x2001)"""
         self._close_session()
-        
+
+        path = args.get("path")
+        file_id = int(args.get("file_id", 0))
+        total_size = int(args.get("total_size", 0))
+
+        sha_bytes = args.get("sha256")
+        sha_expect_hex = ubinascii.hexlify(sha_bytes).decode() if sha_bytes else None
+
         # Reset Session
         self.session.update({
             "active": False,
-            "path": args.get("path"),
-            "file_id": int(args.get("file_id", 0)),
+            "path": path,
+            "file_id": file_id,
             "written": 0,
-            "last_error": None
+            "total_size": total_size,
+            "sha_expect_hex": sha_expect_hex,
+            "last_error": None,
+            "last_pending": 0
         })
-        
-        sha_bytes = args.get("sha256")
-        self.session["sha_expect_hex"] = ubinascii.hexlify(sha_bytes).decode() if sha_bytes else None
-        
-        if not self.session["path"]:
+
+        if not path:
             self.session["last_error"] = "MISSING_PATH"
             return False
 
         try:
-            # Create Temp Path
-            self.session["temp_path"] = self.session["path"] + ".tmp"
-            
+            temp_path = path + ".tmp"
+            self.session["temp_path"] = temp_path
+
             # Ensure Directory
-            parent = "/".join(self.session["temp_path"].split("/")[:-1])
-            if parent:
-                parts = parent.split("/")
-                curr = ""
-                for p in parts:
-                    if not p: continue
-                    curr += "/" + p
-                    try:
-                        os.stat(curr)
-                    except:
-                        try:
-                            os.mkdir(curr)
-                        except:
-                            pass
-            
-            # Open Temp File
-            self.session["fp"] = open(self.session["temp_path"], "wb")
+            self._ensure_parent(temp_path)
+
+            # 斷點續傳: .tmp 存在且 delta.partial 身分一致 (path+size+sha)
+            resumed = False
+            written = 0
+            if self._resume_match(temp_path, path, total_size, sha_expect_hex):
+                try:
+                    st = os.stat(temp_path)
+                    written = st[6]
+                    self.session["fp"] = open(temp_path, "r+b")
+                    self.session["fp"].seek(written)
+                    resumed = True
+                    print(f"♻️ [FS] Resume: {path} @ {written} bytes")
+                except Exception:
+                    written = 0
+
+            if not resumed:
+                self.session["fp"] = open(temp_path, "wb")
+                written = 0
+
+            self.session["written"] = written
             self.session["active"] = True
+
+            # 記錄 partial 身分供斷線後續傳; written 由 os.stat 導出, 不每包落盤
+            self.delta["partial"][path] = {
+                "tmp": temp_path,
+                "total_size": total_size,
+                "sha256": sha_expect_hex or ""
+            }
+            self._save_delta()
             return True
-            
+
         except Exception as e:
             self.session["last_error"] = f"OPEN_FAIL: {e}"
             return False
@@ -207,11 +297,16 @@ class FileSystemManager:
             
         off = int(args.get("offset", 0))
         data = args.get("data", b"")
-        
+        if not isinstance(data, (bytes, bytearray, memoryview)):
+            data = bytes(data)
+
+        # 中途容量安全網 (前置 QUERY.free 才是主力)
+        if self.free_bytes(self.session["path"]) < len(data) + 4096:
+            self.session["last_error"] = "NO_SPACE"
+            return False
+
         try:
-            if off != self.session["written"]:
-                self.session["fp"].seek(off)
-            
+            self.session["fp"].seek(off)
             self.session["fp"].write(data)
             self.session["written"] = off + len(data)
             return True
@@ -228,7 +323,7 @@ class FileSystemManager:
         self._close_session()
         
         try:
-            ok, result = self._finalize_atomic_write(
+            ok, result, pending = self._finalize_atomic_write(
                 self.session["path"], 
                 self.session["temp_path"], 
                 self.session["sha_expect_hex"]
@@ -236,21 +331,32 @@ class FileSystemManager:
             
             if ok:
                 self.session["last_sha_hex"] = result
+                self.session["last_pending"] = 1 if pending else 0
                 self.session["active"] = False
                 return True
             else:
                 self.session["last_error"] = f"FINALIZE_ERR: {result}"
                 self.session["last_sha_hex"] = "00"*32
+                self.session["last_pending"] = 0
                 self.session["active"] = False
                 return False
                 
         except Exception as e:
             self.session["last_error"] = f"VERIFY_ERR: {e}"
+            self.session["last_pending"] = 0
             self.session["active"] = False
             return False
 
     def _finalize_atomic_write(self, path, temp_path, expected_sha):
-        """Internal finalize logic"""
+        """Internal finalize logic. 回傳 (ok, sha_hex_or_err, pending_flag)。
+
+        同名覆蓋走兩段式 commit:
+          1. 寫 pending delta
+          2. 舊檔 path → path.bak
+          3. 新檔 .tmp → path
+          4. 更新 manifest
+        全新檔案 (無舊檔) 單段式: .tmp → path。
+        """
         try:
             # 1. Calc SHA
             h = hashlib.sha256()
@@ -269,27 +375,166 @@ class FileSystemManager:
             if expected_sha and got_sha != expected_sha:
                 print(f"❌ [FS] SHA Mismatch! Got: {got_sha}, Exp: {expected_sha}")
                 os.remove(temp_path)
-                return False, "SHA_MISMATCH"
-            
-            # 3. Rename (Atomic Replace)
+                self.delta["partial"].pop(path, None)
+                self._save_delta()
+                return False, "SHA_MISMATCH", 0
+
+            # 3. 判斷是否有舊檔 (同名覆蓋 → 兩段式)
+            old_exists = False
             try:
                 os.stat(path)
-                os.remove(path)
-            except:
+                old_exists = True
+            except Exception:
                 pass
-                
+
+            if old_exists:
+                old_sha = ""
+                old_size = 0
+                d, _, _ = self._manifest_target(path)
+                entry = d.get(path)
+                if entry and entry.get("h"):
+                    old_sha = entry["h"]
+                    old_size = entry.get("s", 0)
+                else:
+                    old_sha = self.calc_sha256(path) or ""
+                    try:
+                        old_size = os.stat(path)[6]
+                    except Exception:
+                        old_size = 0
+
+                bak = path + ".bak"
+                self.delta["pending"][path] = {
+                    "bak": bak,
+                    "old_sha": old_sha,
+                    "old_size": old_size,
+                    "new_sha": got_sha
+                }
+
+            # 4. 清 partial + (若有) 寫 pending, 一次落盤於 rename 之前
+            self.delta["partial"].pop(path, None)
+            self._save_delta()
+
+            # 5. rename: 舊檔 → .bak (舊檔絕不直接刪), 新檔上位
+            if old_exists:
+                bak = path + ".bak"
+                try:
+                    os.stat(bak)
+                    os.remove(bak)
+                except Exception:
+                    pass
+                os.rename(path, bak)
+
             os.rename(temp_path, path)
             
-            # 4. Update Manifest
+            # 6. Update Manifest
             self.update_manifest_entry(path, size, got_sha)
             print(f"✅ [FS] Written: {path} (Size: {size})")
-            return True, got_sha
+            return True, got_sha, 1 if old_exists else 0
             
         except Exception as e:
             print(f"❌ [FS] Finalize failed: {e}")
             try: os.remove(temp_path)
             except: pass
-            return False, str(e)
+            return False, str(e), 0
+
+    # ==================== Commit / Undo / Partial / Move ====================
+
+    def confirm_commit(self, path):
+        """FILE_CONFIRM (0x2008): 確認覆蓋 → 刪 .bak + 清 pending。回 True/False。"""
+        _, full, _ = self._manifest_target(path)
+        rec = self.delta.get("pending", {}).get(full)
+        if not rec:
+            return False
+        bak = rec.get("bak")
+        try:
+            if bak:
+                os.stat(bak)
+                os.remove(bak)
+        except Exception:
+            pass
+        self.delta["pending"].pop(full, None)
+        self._save_delta()
+        print(f"✅ [FS] Confirmed: {full} (backup removed)")
+        return True
+
+    def undo_commit(self, path):
+        """FILE_UNDO (0x200A): 復原 → 刪新檔 + .bak 改回 path + 清 pending。回 True/False。"""
+        _, full, _ = self._manifest_target(path)
+        rec = self.delta.get("pending", {}).get(full)
+        if not rec:
+            return False
+        bak = rec.get("bak")
+        try:
+            os.stat(full)
+            os.remove(full)
+        except Exception:
+            pass
+        try:
+            if bak:
+                os.stat(bak)
+                os.rename(bak, full)
+        except Exception as e:
+            print(f"❌ [FS] Undo rename-back failed: {e}")
+            return False
+        self.delta["pending"].pop(full, None)
+        self._save_delta()
+
+        # 復原後 manifest 回填舊檔資訊 (若有)
+        old_sha = rec.get("old_sha")
+        old_size = rec.get("old_size", 0)
+        if old_sha:
+            self.update_manifest_entry(full, old_size, old_sha)
+        else:
+            self.remove_manifest_entry(full)
+        print(f"♻️ [FS] Undone: {full} (old restored)")
+        return True
+
+    def partial_query(self, path):
+        """FILE_PARTIAL_QUERY (0x200E): 回傳 (partial, written, total_size, sha_hex, full)。"""
+        _, full, _ = self._manifest_target(path)
+        rec = self.delta.get("partial", {}).get(full)
+        if not rec:
+            return 0, 0, 0, "", full
+        # 活躍 session 的 written 是權威值 (檔案尚未 flush, os.stat 可能回 0)
+        if self.session.get("active") and self.session.get("path") == full:
+            written = int(self.session.get("written", 0) or 0)
+        else:
+            tmp = rec.get("tmp")
+            written = 0
+            try:
+                st = os.stat(tmp)
+                written = st[6]
+            except Exception:
+                pass
+        return 1, written, rec.get("total_size", 0), rec.get("sha256", ""), full
+
+    def move_file(self, src, dst):
+        """FILE_MOVE (0x200D): 通用改名/移動。走 manifest, 不碰 delta。回 True/False。
+
+        只支援同一卷 (sd→sd 或 local→local), 避免跨卷 rename 的隱性複製成本。
+        """
+        if not src or not dst:
+            return False
+        s_kind, s_full, _ = self.resolve(src)
+        d_kind, d_full, _ = self.resolve(dst)
+        if s_kind != d_kind:
+            print("❌ [FS] MOVE cross-volume not supported")
+            return False
+        try:
+            self._ensure_parent(d_full)
+            os.rename(s_full, d_full)
+        except Exception as e:
+            print(f"❌ [FS] Move failed: {e}")
+            return False
+
+        # manifest: 舊條目搬到新鍵
+        d, _, mfile = self._manifest_target(s_full)
+        entry = d.pop(s_full, None)
+        if entry is not None:
+            d[d_full] = entry
+            self._write_manifest(mfile, d)
+        print(f"📦 [FS] Moved: {s_full} -> {d_full}")
+        return True
 
     # ==================== Unified Data Layer ====================
     # 路徑前綴決定目的地：
@@ -584,6 +829,49 @@ class FileSystemManager:
         except:
             return None
 
+    def free_bytes(self, path):
+        """回傳 path 所在卷的可用位元組數; 失敗回 0。"""
+        try:
+            kind, _, _ = self.resolve(path)
+            if kind == "sd":
+                st = os.statvfs("/sd")
+            else:
+                st = os.statvfs("/")
+            return st[0] * st[3]  # block_size * free_blocks
+        except Exception:
+            return 0
+
+    def scan_sd(self):
+        """FILE_SCAN(target=1): 同步掃描 /sd, 重算 sha256, 更新 SD manifest。"""
+        ignore = {".manifest.json", ".delta.json"}
+        found = {}
+
+        def _walk(d):
+            try:
+                for name, ftype, *_ in os.ilistdir(d):
+                    full = (d.rstrip("/") + "/" + name) if d != "/" else "/" + name
+                    if name in ignore:
+                        continue
+                    if ftype == 0x4000:  # directory
+                        _walk(full)
+                    else:
+                        sha = self.calc_sha256(full)
+                        if sha is None:
+                            continue
+                        try:
+                            size = os.stat(full)[6]
+                        except Exception:
+                            size = 0
+                        found[full] = {"s": size, "h": sha}
+            except Exception as e:
+                print(f"⚠️ [FS] SD scan walk error {d}: {e}")
+
+        _walk("/sd")
+        self.manifest_sd = found
+        self._write_manifest(MANIFEST_FILE_SD, self.manifest_sd)
+        print(f"📦 [FS] SD scan done: {len(found)} files")
+        return len(found)
+
     def scan_all(self):
         """
         Request background scan (set flag for Core 1)
@@ -704,13 +992,13 @@ class FileSystemManager:
             get_log().set_metric("fs_scan_done", 0)
             return
 
-        self.manifest = new_manifest
-        self.save_manifest()
+        self.manifest_local = new_manifest
+        self._write_manifest(MANIFEST_FILE, self.manifest_local)
 
         bus.shared["fs_scan_done"] = False
         bus.shared["fs_scan_result"] = None
         get_log().set_metric("fs_scan_done", 0)
-        get_log().info("FS Manifest saved by Core 0 ({} entries).".format(len(self.manifest)))
+        get_log().info("FS Manifest saved by Core 0 ({} entries).".format(len(self.manifest_local)))
 
 # Singleton Instance
 fs = FileSystemManager()

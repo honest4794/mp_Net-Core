@@ -5,83 +5,132 @@ from lib.sys.sys_bus import bus
 from lib.sys.fs_manager import fs
 import _thread
 
+
+def _hex_to_bytes(hexstr, fallback=b'\x00' * 32):
+    try:
+        return ubinascii.unhexlify(hexstr)
+    except Exception:
+        return fallback
+
+
+def _send(ctx, cmd, fields):
+    """統一送出回應幀 (無 addr = 廣播, 沿用既有行為)。"""
+    app = ctx["app"]
+    if "send" not in ctx:
+        return
+    try:
+        cmd_def = app.store.get(cmd)
+        if not cmd_def:
+            return
+        data = SchemaCodec.encode(cmd_def, fields)
+        ctx["send"](Proto.pack(cmd, data))
+    except Exception as e:
+        print(f"⚠️ [File] send 0x{cmd:04X} failed: {e}")
+
+
+def _send_error(ctx, error_key):
+    """依 fs.session['last_error'] 對應出 FILE_ERROR_RSP 的錯誤 bool。"""
+    err = fs.session.get("last_error") or ""
+    fields = {
+        "err_no_space": 0,
+        "err_write_fail": 0,
+        "err_offset_mismatch": 0,
+        "err_id_mismatch": 0,
+        "err_sha_mismatch": 0,
+        "err_not_active": 0,
+        "err_busy": 0,
+        "failed_offset": 0,
+        "written_up_to": int(fs.session.get("written", 0) or 0),
+        "path": fs.session.get("path") or "",
+    }
+    if error_key:
+        fields[error_key] = 1
+    else:
+        if "SHA_MISMATCH" in err:
+            fields["err_sha_mismatch"] = 1
+        elif "ID_MISMATCH" in err:
+            fields["err_id_mismatch"] = 1
+        elif "NO_SPACE" in err:
+            fields["err_no_space"] = 1
+        elif "NO_ACTIVE_SESSION" in err:
+            fields["err_not_active"] = 1
+        else:
+            fields["err_write_fail"] = 1
+    _send(ctx, 0x2010, fields)
+
+
 def on_file_begin(ctx, args):
     if args.get("path", False):
         # 統一前綴：永遠落在 /sd (無卡時 /sd 在 flash 上)
         args['path'] = fs.resolve(args['path'])[1]
 
     ok = fs.begin_write(args)
-    if ok: print(f"📂 [File] Start -> {fs.session['path']} (Atomic)")
+    if ok:
+        print(f"📂 [File] Start -> {fs.session['path']} (Atomic)")
+    else:
+        _send_error(ctx, None)
+
 
 def on_file_chunk(ctx, args):
-    app = ctx["app"]
     if fs.write_chunk(args):
         # 🚀 關鍵：每收到一包就回傳 ACK
         # 讓 PC 知道可以發下一包了
-        if "send" in ctx:
-            ack_def = app.store.get(0x2004)
-            ack_data = SchemaCodec.encode(ack_def, {
-                "file_id": args["file_id"],
-                "offset": args["offset"]
-            })
-            ctx["send"](Proto.pack(0x2004, ack_data))
+        _send(ctx, 0x2004, {
+            "file_id": args["file_id"],
+            "offset": args["offset"]
+        })
     else:
-        # ⚠️ 如果寫入失敗，打印原因方便調試
+        # ⚠️ 寫入失敗：回錯誤碼 (容量不足 / offset 不符 / id 不符 / 寫入失敗)
         print(f"⚠️ [File] Chunk Failed: Off={args.get('offset')} Err={fs.session['last_error']}")
+        _send_error(ctx, None)
+
 
 def on_file_end(ctx, args):
-    app = ctx["app"]
-    # 執行校驗 (內部會調用 fs.atomic_write_finalize)
+    # 執行校驗 (內部會調用 fs._finalize_atomic_write 兩段式 commit)
     ok = fs.end_write(args)
-    
+
     path = fs.session["path"]
     sha = fs.session["last_sha_hex"]
-    
+    pending = fs.session.get("last_pending", 0)
+
     if ok:
         print("-" * 40)
         print(f"🏁 [File] End Success: {path}")
         print(f"🔒 [SHA256] {sha}")
         print("-" * 40)
 
-        # 回覆最終狀態 (0x2006)
-        # 優先從 manifest 取值
-        if path in fs.manifest:
-            entry = fs.manifest[path]
-            size = entry["s"]
-            try:
-                sha_bytes = ubinascii.unhexlify(entry["h"])
-            except:
-                sha_bytes = b'\x00'*32
+        # 回覆最終狀態 (0x2006)，附 free + pending
+        size = 0
+        sha_bytes = b'\x00' * 32
+        entry, _ = fs.manifest_lookup(path)
+        if entry:
+            size = entry.get("s", 0)
+            sha_bytes = _hex_to_bytes(entry.get("h", ""))
         else:
-            # Fallback
-            import os
             try:
+                import os
                 st = os.stat(path)
                 size = st[6]
-                sha_bytes = ubinascii.unhexlify(sha) if sha else b'\x00'*32
-            except:
+                sha_bytes = _hex_to_bytes(sha) if sha else b'\x00' * 32
+            except Exception:
                 size = 0
-                sha_bytes = b'\x00'*32
+                sha_bytes = b'\x00' * 32
 
-        if "send" in ctx:
-            try:
-                rsp_def = app.store.get(0x2006)
-                rsp_data = SchemaCodec.encode(rsp_def, {
-                    "exists": 1,
-                    "sha256": sha_bytes,
-                    "size": size,
-                    "path": path
-                })
-                ctx["send"](Proto.pack(0x2006, rsp_data))
-                print(f"📤 [File] Sent Final SHA256 (0x2006)")
-            except Exception as e:
-                print(f"⚠️ [File] Failed to send final SHA: {e}")
+        _send(ctx, 0x2006, {
+            "exists": 1,
+            "sha256": sha_bytes,
+            "size": size,
+            "path": path,
+            "free": fs.free_bytes(path),
+            "pending": 1 if pending else 0
+        })
     else:
         err = fs.session['last_error']
         print(f"❌ [File] End Failed: {err}")
+        _send_error(ctx, None)
+
 
 def on_file_query(ctx, args):
-    app = ctx["app"]
     path = args.get("path")
     if path:
         # 與寫入端一致：manifest 鍵為 /sd 完整路徑
@@ -90,45 +139,44 @@ def on_file_query(ctx, args):
     exists = 0
     sha = b'\x00' * 32
     size = 0
-    
-    # 優先查 Manifest
-    if path in fs.manifest:
-        entry = fs.manifest[path]
+    pending = 0
+
+    # 優先查對應卷的 Manifest
+    entry, full = fs.manifest_lookup(path)
+    if entry:
         exists = 1
-        size = entry["s"]
-        try:
-            sha = ubinascii.unhexlify(entry["h"])
-            print(f"🔍 [Query] Cache Hit: {path} (Size:{size})")
-        except:
-            pass 
+        size = entry.get("s", 0)
+        sha = _hex_to_bytes(entry.get("h", ""))
+        print(f"🔍 [Query] Cache Hit: {full} (Size:{size})")
     else:
         # Cache Miss: 實時檢查
         try:
             import os
-            st = os.stat(path)
+            st = os.stat(full)
             exists = 1
             size = st[6]
-            # 實時計算
-            sha_hex = fs.calc_sha256(path)
+            sha_hex = fs.calc_sha256(full)
             if sha_hex:
                 sha = ubinascii.unhexlify(sha_hex)
-            print(f"🔍 [Query] Realtime: {path} (Size:{size})")
-        except:
-            print(f"🔍 [Query] {path} not found.")
+            print(f"🔍 [Query] Realtime: {full} (Size:{size})")
+        except Exception:
+            print(f"🔍 [Query] {full} not found.")
 
-    # 回傳結果
-    if "send" in ctx:
-        rsp_def = app.store.get(0x2006)
-        rsp_data = SchemaCodec.encode(rsp_def, {
-            "exists": exists,
-            "sha256": sha,
-            "size": size,
-            "path": path
-        })
-        ctx["send"](Proto.pack(0x2006, rsp_data))
+    # 是否有待確認覆蓋 (pending delta)
+    if full in fs.delta.get("pending", {}):
+        pending = 1
+
+    _send(ctx, 0x2006, {
+        "exists": exists,
+        "sha256": sha,
+        "size": size,
+        "path": full,
+        "free": fs.free_bytes(full),
+        "pending": pending
+    })
+
 
 def on_file_read(ctx, args):
-    app = ctx["app"]
     path = args.get("path")
     offset = args.get("offset", 0)
     length = args.get("length", 1024)
@@ -146,33 +194,28 @@ def on_file_read(ctx, args):
             data = f.read(length)
         finally:
             f.close()
-            
-        if "send" in ctx:
-            rsp_def = app.store.get(0x2002)
-            rsp_data = SchemaCodec.encode(rsp_def, {
-                "file_id": 0,
-                "offset": offset,
-                "data": data
-            })
-            ctx["send"](Proto.pack(0x2002, rsp_data))
-            print(f"📤 [File] Read Chunk: {full_path} Off:{offset} Len:{len(data)}")
+
+        _send(ctx, 0x2002, {
+            "file_id": 0,
+            "offset": offset,
+            "data": data
+        })
+        print(f"📤 [File] Read Chunk: {full_path} Off:{offset} Len:{len(data)}")
     except Exception as e:
         print(f"❌ [File] Read Failed: {full_path} - {e}")
         # Send empty data to indicate error/eof if needed, or just silence
-        if "send" in ctx:
-             rsp_def = app.store.get(0x2002)
-             rsp_data = SchemaCodec.encode(rsp_def, {
-                "file_id": 0,
-                "offset": offset,
-                "data": b""
-            })
-             ctx["send"](Proto.pack(0x2002, rsp_data))
+        _send(ctx, 0x2002, {
+            "file_id": 0,
+            "offset": offset,
+            "data": b""
+        })
+
 
 def on_file_delete(ctx, args):
-    app = ctx["app"]
     path = args.get("path")
-    
-    if not path: return
+
+    if not path:
+        return
 
     # 統一刪除：依前綴路由，同步更新 alloc / manifest table
     fs.remove(path)
@@ -180,12 +223,80 @@ def on_file_delete(ctx, args):
     # 操作後查詢狀態並回傳
     on_file_query(ctx, {"path": fs.resolve(path)[1]})
 
+
 def on_file_scan(ctx, args):
     """
-    手動觸發全盤掃描
+    FILE_SCAN: 依 target 選擇掃描範圍
+      0 = 本地 flash (背景掃描, 跳過 /sd)
+      1 = SD (同步掃描)
     """
-    print("🔄 [File] Manual Scan Requested")
-    _thread.start_new_thread(fs.scan_all, ())
+    target = int(args.get("target", 0) or 0)
+    if target == 1:
+        print("🔄 [File] SD Scan Requested")
+        _thread.start_new_thread(fs.scan_sd, ())
+    else:
+        print("🔄 [File] Local Scan Requested")
+        _thread.start_new_thread(fs.scan_all, ())
+
+
+def on_file_confirm(ctx, args):
+    """FILE_CONFIRM (0x2008): 確認覆蓋 → 刪 .bak + 清 pending。"""
+    path = args.get("path")
+    if not path:
+        return
+    path = fs.resolve(path)[1]
+    fs.confirm_commit(path)
+    # 確認後回傳新檔現況 (pending 已清 = 0)
+    on_file_query(ctx, {"path": path})
+
+
+def on_file_undo(ctx, args):
+    """FILE_UNDO (0x200A): 復原 → 刪新檔 + .bak 改回 path + 清 pending。"""
+    path = args.get("path")
+    if not path:
+        return
+    path = fs.resolve(path)[1]
+    ok = fs.undo_commit(path)
+    # 復原後回傳舊檔現況 (查 manifest)
+    on_file_query(ctx, {"path": path})
+
+
+def on_file_move(ctx, args):
+    """FILE_MOVE (0x200D): 通用改名/移動 (走 manifest, 不碰 delta)。"""
+    src = args.get("src")
+    dst = args.get("dst")
+    if not src or not dst:
+        return
+    ok = fs.move_file(src, dst)
+    if not ok:
+        _send(ctx, 0x2010, {
+            "err_no_space": 0,
+            "err_write_fail": 1,
+            "err_offset_mismatch": 0,
+            "err_id_mismatch": 0,
+            "err_sha_mismatch": 0,
+            "err_not_active": 0,
+            "err_busy": 0,
+            "failed_offset": 0,
+            "written_up_to": 0,
+            "path": fs.resolve(src)[1]
+        })
+
+
+def on_file_partial_query(ctx, args):
+    """FILE_PARTIAL_QUERY (0x200E): 回傳斷點續傳進度。"""
+    path = args.get("path")
+    if not path:
+        return
+    partial, written, total_size, sha_hex, full = fs.partial_query(path)
+    _send(ctx, 0x200F, {
+        "partial": partial,
+        "written": written,
+        "total_size": total_size,
+        "sha256": _hex_to_bytes(sha_hex) if sha_hex else b'\x00' * 32,
+        "path": full
+    })
+
 
 def register(app):
     app.disp.on(0x2001, on_file_begin)
@@ -193,5 +304,9 @@ def register(app):
     app.disp.on(0x2003, on_file_end)
     app.disp.on(0x2005, on_file_query)
     app.disp.on(0x2007, on_file_read)
+    app.disp.on(0x2008, on_file_confirm)
     app.disp.on(0x2009, on_file_delete)
+    app.disp.on(0x200A, on_file_undo)
     app.disp.on(0x200B, on_file_scan)
+    app.disp.on(0x200D, on_file_move)
+    app.disp.on(0x200E, on_file_partial_query)
