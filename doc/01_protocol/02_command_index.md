@@ -18,7 +18,6 @@
 0x22xx — ota         韌體 OTA（合作方合同）
 0x30xx — stream      pixel 串流
 0x31xx — pixel      模式播放（LED/SERVO）
-0x32xx — mp4         MP4 播放器
 ```
 
 ---
@@ -220,17 +219,6 @@
 | 0x3106 | MODE_STOP | Master → MCU | `action(u8)` | 停止（0=暫停、1=全關閉） |
 | 0x3107 | MODE_DETAIL_QUERY | Master → MCU | `mode_type(u8)` `mode_id(u8)` | 查單一模式細節 |
 | 0x3108 | MODE_DETAIL_RSP | MCU → Master | `mode_type(u8)` `mode_id(u8)` `total_ms(u32)` `name(str_u16len)` | 模式細節（含名稱 UTF-8） |
-
----
-
-## 12) mp4.json（0x32xx）— MP4 播放器
-
-| CMD | 名稱 | 方向 | Payload | 說明 |
-|-----|------|------|---------|------|
-| 0x3201 | MP4_PLAYER_CTL | Server → MCU | `action(u8)` `value(u32)` | 播放器控制 |
-| 0x3202 | MP4_SOURCE_SET | Server → MCU | `source(str)` `mode(u8)` `start(u32)` `range(u32)` | 設定來源 |
-| 0x3203 | MP4_STATUS_GET | Server → MCU | (空) | 查詢狀態 |
-| 0x3204 | MP4_STATUS_RSP | MCU → Server | `playing(u8)` `paused(u8)` `mode(u8)` `frame(u32)` `total(u32)` `source(str)` `err(str)` | 狀態回報 |
 
 ---
 

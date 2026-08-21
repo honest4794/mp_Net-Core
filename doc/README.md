@@ -40,7 +40,7 @@
 | [06_lvgl_ui.md](02_guides/06_lvgl_ui.md) | LVGL UI：架構 / 啟動 / 螢幕方向 / 字型生成 / 踩坑 |
 | [07_jpeg.md](02_guides/07_jpeg.md) | JPEG 模組：decode / decode_into / block decode / benchmark |
 | [08_pixel_subsystem.md](02_guides/08_pixel_subsystem.md) | pixel 子系統：效果 / mapping / modes / 播放清單 / 整合流程 |
-| [09_cores.md](02_guides/09_cores.md) | cores 核心實例：Core_LVGL / Core_MP4 / Core_Comm |
+| [09_cores.md](02_guides/09_cores.md) | cores 核心實例：Core_LVGL / Core_Comm |
 
 ## 03_notes — 筆記
 
@@ -65,4 +65,4 @@
 - `Skills/buffer-conventions` — 緩衝層使用規範（alloc_dma / AtomicStreamHub / DMA）
 - `Skills/mp-netcore` — slave 新增功能模組完整流程（schema / action / task / config）
 - `slave/pixel/` — pixel 子系統程式碼（四層資料檔案）
-- `cores/` — 獨立核心實例（Core_LVGL / Core_MP4 / Core_Comm）
+- `cores/` — 獨立核心實例（Core_LVGL / Core_Comm）

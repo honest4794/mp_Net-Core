@@ -218,7 +218,6 @@ decode 邊界行為（對接工具需注意）：
 0x22xx — ota         韌體 OTA（合作方合同）
 0x30xx — stream      pixel 串流
 0x31xx — pixel      模式播放（LED/SERVO 模式清單、播放控制）
-0x32xx — mp4         MP4 播放器
 ```
 
 > 各域詳細指令表已收錄在 `02_command_index.md`，本文件不再重複列出，直接前往查詢。
@@ -252,7 +251,7 @@ app.handle_stream(parser, pkt, transport_name="Test", send_func=print)
 | Header | 2+1+2+2+2 = 9B（不含 CRC） | 2+1+2+2+2 = **9B** |
 | CRC | CRC16-CCITT-FALSE，2B | **CRC32（binascii.crc32），4B** |
 | CRC 範圍 | VER..DATA | **VER..DATA（buffer[2:9+LEN]）** |
-| 指令域 | 0x10xx sys / 0x11xx status / 0x12xx heartbeat+fs / 0x20xx file / 0x30xx stream | 0x10xx sys / 0x11xx status / 0x12xx heartbeat / 0x13xx now / 0x14xx hw / 0x15xx wtt / 0x18xx bench / 0x20xx file / 0x22xx ota / 0x30xx stream / 0x31xx pixel / 0x32xx mp4 |
+| 指令域 | 0x10xx sys / 0x11xx status / 0x12xx heartbeat+fs / 0x20xx file / 0x30xx stream | 0x10xx sys / 0x11xx status / 0x12xx heartbeat / 0x13xx now / 0x14xx hw / 0x15xx wtt / 0x18xx bench / 0x20xx file / 0x22xx ota / 0x30xx stream / 0x31xx pixel |
 | Payload 類型 | 同 | 同（u8/u16/u32/i16/i32/str_u16len/bytes_fixed/bytes_rest） |
 
 > `mp_Net-Light` 的 `ADD_NEW_CMD_FLOW.md` / `RUN_NETWORK_SERVER.md` 描述的組包/解析流程與本專案相同，只差 VER/CRC 常數。對接工具請以 `slave/lib/sys/proto.py` 為準。

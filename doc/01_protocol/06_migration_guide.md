@@ -60,8 +60,8 @@ Slave 1–20（執行）                       Slave（執行）
 | `0x10xx` | 系統（discover/wifi/task/**時鐘同步**） | `0x22xx` | **OTA**（韌體更新） |
 | `0x11xx` | 狀態 | `0x30xx` | Stream（串流） |
 | `0x12xx` | 心跳 | `0x31xx` | **PIXEL**（模式播放） |
-| `0x13xx` | ESP-NOW | `0x32xx` | MP4 |
-| `0x14xx` | 硬體 | `0x20xx` | File（檔案傳輸） |
+| `0x13xx` | ESP-NOW | `0x20xx` | File（檔案傳輸） |
+| `0x14xx` | 硬體 | | |
 | `0x15xx` | WTT（待清理） | | |
 | `0x18xx` | RAM 測試 | | |
 

@@ -103,7 +103,6 @@ const showPage = (route) => {
   pageTitle.textContent =
     route === "wifi" ? "Wi‑Fi 設定" :
     route === "console" ? "指令台" :
-    route === "mp4" ? "MP4 處理器" :
     "Net‑Core";
 };
 
@@ -111,7 +110,6 @@ const getRoute = () => {
   const h = (location.hash || "").replace(/^#\/?/, "");
   const r = (h.split("/")[0] || "").trim();
   if (r === "console") return "console";
-  if (r === "mp4") return "mp4";
   return "wifi";
 };
 
@@ -120,7 +118,6 @@ const ensureModule = async (route) => {
   const mod =
     route === "wifi" ? await import("./pages/wifi.mjs") :
     route === "console" ? await import("./pages/console.mjs") :
-    route === "mp4" ? await import("./pages/mp4.mjs") :
     null;
   if (!mod || typeof mod.init !== "function") return null;
   const api = await mod.init(ctx);

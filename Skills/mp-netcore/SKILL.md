@@ -30,7 +30,7 @@ slave/
 │   └── jpeg_actions.py     # 依賴 LCD；無 LCD 時 registry 整段跳過
 ├── schema/                 # 協議定義：每個 <group>.json 定義該模組的 cmd 與 payload
 │   ├── sys.json / status.json / heartbeat.json / file.json / stream.json
-│   ├── now.json / hw.json / bench.json / jpeg.json / mp4.json
+│   ├── now.json / hw.json / bench.json
 │   └── waiting_to_trash.json
 └── tasks/                  # 任務層：雙核心 Runner 調度的背景任務
     ├── network.py          # NetworkTask: WS/UDP/TCP/ESP-NOW 收發 + 供應鏈 (Core 0)
@@ -92,7 +92,7 @@ bus.shared["brightness"] = 128
 - **CRC32**：`binascii.crc32`，範圍 `VER..DATA`（不含 SOF/CRC），覆蓋 buffer[2:9+LEN]。
 - **組包**：`Proto.pack(cmd, payload)`（共享 buffer 零分配，回傳值**必須立即消費**）。
 - **拆包**：`StreamParser.feed()` + `pop()` 生成器（黏包/拆包/SOF 重同步/CRC 驗證）。
-- **指令域**：0x10xx sys / 0x11xx status / 0x12xx heartbeat / 0x13xx now / 0x14xx hw / 0x15xx waiting_to_trash / 0x18xx bench / 0x20xx file / 0x30xx stream / 0x31xx jpeg / 0x32xx mp4。
+- **指令域**：0x10xx sys / 0x11xx status / 0x12xx heartbeat / 0x13xx now / 0x14xx hw / 0x15xx waiting_to_trash / 0x18xx bench / 0x20xx file / 0x22xx ota / 0x30xx stream / 0x31xx pixel。
 - ⚠️ 舊文件(`mp_Net-Light/doc/AI_CONTEXT.md`)的 VER=3 + CRC16 是舊版，對接以 `lib/proto.py` 為準。
 
 ## 新增 Command (最常見的擴展)
@@ -113,8 +113,7 @@ bus.shared["brightness"] = 128
 | 0x18xx | 效能測試 | BENCH_READY |
 | 0x20xx | 檔案傳輸 | FILE_BEGIN/CHUNK/END |
 | 0x30xx | pixel 串流 | STREAM_INFO, STREAM_PLAY |
-| 0x31xx | JPEG 播放器 | JPEG_PLAYER_CTL |
-| 0x32xx | MP4 播放器 | MP4_PLAYER_CTL |
+| 0x31xx | Pixel 模式播放 | MODE_LIST_QUERY, MODE_SET |
 
 ### Step 2: 定義 Schema
 

@@ -18,7 +18,7 @@
 | 角色 | **Timer（面板）/ Master（指揮）/ Slave 1–20（執行）** 三層 | 單一 codebase，「面板」與「執行」兩種角色，靠 ESP-NOW 互連 + Server 直連 |
 | 面板 → 指揮 | UART 固定 5-byte | UART 5-byte + ESP-NOW `0x1501/0x1502` |
 | 指揮 → 執行 | RS485（UART 460800）或 I2C，二進位 frame | NC4 二進位封包，5 種 transport（WS/UDP/TCP/UART/ESP-NOW） |
-| Slave 職責 | 燈光 + 馬達（servo）動作 | 燈光（pixel/stream/jpeg/mp4）+ 馬達（GPIO） |
+| Slave 職責 | 燈光 + 馬達（servo）動作 | 燈光（pixel/stream/jpeg）+ 馬達（GPIO） |
 
 ---
 
@@ -133,7 +133,6 @@
 | `0x30xx` STREAM_* + `0x3003` Direct Mode | 逐幀像素串流 | 無（Slave 本機跑燈效，不傳像素） |
 | `0x20xx` FILE_* | 檔案傳輸/查詢/斷點續傳 | 只有 OTA 韌體，無通用檔案傳輸 |
 | `0x31xx` PIXEL_*（模式播放：MODE_LIST/GET/SET/STOP/DETAIL） | LED／SERVO 模式清單與播放控制 | 對方有 RS485 MODE_SET/STORY_SET（已併入） |
-| `0x32xx` MP4_* | 影片播放 | 無 |
 | `0x12xx` HEARTBEAT + `0x13xx` ESP-NOW | 心跳 + 無 WiFi 控制 | 無（靠 RS485 poll） |
 | `0x14xx` HW_CTL | 通用硬體控制（type/id/label/value） | 無通用硬體通道 |
 | `0x10xx` SYS_TASK_SET | 雙核任務親和性管理 | 無（單核 main loop） |
