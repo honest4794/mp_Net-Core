@@ -1,0 +1,243 @@
+# 完整指令索引（NC4 全部指令域）
+
+> **用途**：單一查詢表，收錄本專案全部指令域的完整指令定義。對接/新增指令前先查這裡。
+> **分類**：協議層（01_protocol）
+> **最後更新**：2026-08-21
+> **權威來源**：`slave/schema/*.json`；本文件是整理後的說明，衝突以 schema 為準。
+> **指令碼分配**：
+
+```
+0x10xx — sys         系統發現/控制/任務管理/定址/遠端更新
+0x11xx — status      狀態查詢/配置更新
+0x12xx — heartbeat   心跳
+0x13xx — now         ESP-NOW
+0x14xx — hw          硬體控制 + 臨時提速
+0x15xx — waiting_to_trash  待清理功能
+0x18xx — bench       性能測試（通用接收吞吐）
+0x20xx — file        檔案傳輸/查詢
+0x22xx — ota         韌體 OTA（合作方合同）
+0x30xx — stream      pixel 串流
+0x31xx — pixel      模式播放（LED/SERVO）
+0x32xx — mp4         MP4 播放器
+```
+
+---
+
+## 1) sys.json（0x10xx）— 系統
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x1001 | DISCOVER | Server → MCU | `server_ip(str)` `ws_url(str)` | UDP 廣播發現從機 |
+| 0x1002 | SLAVE_ANNOUNCE | MCU → Server | `slave_id(str)` `pixel_count(u16)` `hw_version(str)` | 從機回報身份 |
+| 0x1004 | SYS_CTRL | Server → MCU | `wifi_enable(u8)` `core_control(u8)` | 系統控制 |
+| 0x1005 | SYS_TASK_QUERY | Server → MCU | (空) | 查詢任務清單 |
+| 0x1006 | SYS_TASK_RSP | MCU → Server | `tasks_json(str)` | 回報任務清單 |
+| 0x1007 | SYS_TASK_SET | Server → MCU | `task_name(str)` `affinity_c0(u8)` `affinity_c1(u8)` | 設定任務核心親和性 |
+| 0x1008 | WIFI_CTRL | Server → MCU | `wifi_enable(u8)` | WiFi 開關 |
+| 0x1009 | WEB_CTRL | Server → MCU | `web_enable(u8)` | Web UI 開關（舊式、無回應，不動合同） |
+
+### 時鐘同步（選用，併入 sys.json）
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x100A | TIME_SYNC | Master → Slave（可廣播） | `master_time_ms(u32)` | 送出當下的 Master `millis()` |
+| 0x100B | TIME_SYNC_RSP | Slave → Master | `received_at_ms(u32)` | Slave 收到當下的本機 `millis()` |
+| 0x100C | TIME_OFFSET_APPLY | Master → Slave | `offset_sign(u8)` `offset_ms(u32)` | 覆寫 Slave 端 offset（`offset_sign`: 0=正、1=負） |
+
+### 定址 / 遠端更新鏈路（空編號 0x100D 起）
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x100D | IDENTIFY_REQ | Master→Slave | `reply_addr(u16)` | 逐 address 掃描；帶 reply_addr 告知 master_cid |
+| 0x100E | IDENTIFY_RSP | Slave→Master | `cid(u16)` `slave_id(str)` `ip(str)` | 回應；`ip`=多介面 JSON |
+| 0x100F | REBOOT | Master→Slave | `delay_ms(u32)` | 延遲後 `machine.reset()` |
+| 0x1010 | WREPL_CTRL | Master→Slave | `action(u8)` 0=查 1=開 2=關 | 回 0x1011 |
+| 0x1011 | WREPL_RSP | Slave→Master | `enabled(u8)` `info(str)` | WebREPL 狀態 |
+| 0x1012 | NET_START | Master→Slave | `iface_type(u8)` 0=lan 1=wifi 2=ap 3=espnow | 依 config 啟動，回 0x1013 |
+| 0x1013 | NET_START_RSP | Slave→Master | `ok(u8)` `iface(str)` `ip(str)` | 啟動結果 |
+| 0x1014 | GET_IP | Master→Slave | (空) | 回 0x1015 |
+| 0x1015 | IP_RSP | Slave→Master | `ip(str)` | `ip`=多介面 JSON |
+| 0x1016 | SET_MASTER | Master→Slave | `master_cid(u16)` | 顯式設 master_cid |
+| 0x1017 | WEBUI_CTRL | Master→Slave | `action(u8)` 0=查 1=開 2=關 | 回 0x1018 |
+| 0x1018 | WEBUI_RSP | Slave→Master | `enabled(u8)` `info(str)` | WebUI 狀態 |
+
+---
+
+## 2) status.json（0x11xx）— 狀態
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x1101 | STATUS_GET | Server → MCU | `query_type(u8)` | 請求狀態（0=全部，1=精簡） |
+| 0x1102 | STATUS_RSP | MCU → Server | `status_json(str)` | 回傳 JSON 狀態 |
+| 0x1103 | STATUS_UPDATE | Server → MCU | `config_json(str)` | 更新配置 |
+| 0x1104 | STATUS_UPDATE_ACK | MCU → Server | `success(u8)` `message(str)` | 更新結果 |
+
+---
+
+## 3) heartbeat.json（0x12xx）— 心跳
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x1201 | HEARTBEAT | MCU → Server | `slave_id(str)` `uptime_ms(u32)` `mem_free(u32)` `ws_connected(u8)` | 從機主動心跳 |
+| 0x1202 | HEARTBEAT_ACK | Server → MCU | `server_time(u32)` `success(u8)` | Server 確認存活 |
+
+---
+
+## 4) now.json（0x13xx）— ESP-NOW
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x1301 | NOW_INIT | Server → MCU | (空) | 初始化 ESP-NOW |
+| 0x1302 | NOW_SEND_HB | Server → MCU | `target_mac(str)` `count(u8)` | 送心跳測試 |
+| 0x1303 | NOW_STATS | Server → MCU | (空) | 查詢 ESP-NOW 統計 |
+
+---
+
+## 5) hw.json（0x14xx）— 硬體 + 臨時提速
+
+### 硬體控制
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x1401 | HW_CTL | Server → MCU | `type(u8)` `id(u8)` `label(str)` `value(u16)` | 硬體控制 |
+| 0x1402 | HW_QUERY | Server → MCU | `type(u8)` `id(u8)` | 硬體查詢 |
+
+### 臨時提速（協商式 UART 提速 + 超時回滾）
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x1403 | SPEED_SET | M→S | `bus_type(u8)` `bus_id(u8)` `speed(u32)` `timeout_ms(u32)` | 記 old/target/timeout_at，回 0x1404 後立即切速 |
+| 0x1404 | SPEED_ACK | S→M | `ok(u8)` `bus_type(u8)` `bus_id(u8)` `cur_speed(u32)` `target_speed(u32)` | 同步點（送出即切） |
+| 0x1405 | SPEED_COMMIT | M→S | `bus_type(u8)` `bus_id(u8)` | 鎖定新速、取消回滾 |
+| 0x1406 | SPEED_REVERT | M→S | `bus_type(u8)` `bus_id(u8)` | 還原 old_baud（config 舊速） |
+| 0x1407 | SPEED_QUERY | M→S | `bus_type(u8)` `bus_id(u8)` | 查狀態，回 0x1408 |
+| 0x1408 | SPEED_STATUS | S→M | `state(u8)` `bus_type(u8)` `bus_id(u8)` `cur_speed(u32)` `target_speed(u32)` `remain_ms(u32)` | 狀態回報 |
+
+> - `state`：0=IDLE、1=SYNCING（已切、待 COMMIT）、2=COMMITTED（鎖定）。
+> - `bus_type` 沿用 `hw_manager.HW` 常數：UART=7、SPI=2、I2C=3。**第一階段只實作 UART**；SPI/I2C 回 `ok=0`（not supported）。
+> - `speed` 用 u32（baudrate 如 921600 超 u16）。
+> - `timeout_ms` 是「沒 COMMIT 就回滾」的保險，不是 apply delay。
+> - 流程細節見 `09_bus_speed_protocol.md`。
+
+---
+
+## 6) waiting_to_trash.json（0x15xx）— 待清理功能
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x1501 | WTT_CTL | Server → MCU | `mode(u8)` `brightness(u8)` | 待清理功能控制 |
+| 0x1502 | WTT_STATUS | MCU → Server | `mode(u8)` `brightness(u8)` `time(u8)` | 狀態回報 |
+
+> `0x15xx` 命名為 waiting_to_trash：這組 cmd 碼/欄位待日後重整協議時清理（見 `slave/action/waiting_to_trash_actions.py` 註解）。
+
+---
+
+## 7) bench.json（0x18xx）— 性能測試
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x1811 | BENCH_READY | 發 → 收 | (空) | 清空計數器，回 0x1814 {ok:0} 證明已空 |
+| 0x1812 | BENCH_DATA | 發 → 收 | `data(bytes_rest)` | 測試資料包（4KB），CRC 通過 → ok+1，不回覆 |
+| 0x1813 | BENCH_RESULT | 發 → 收 | (空) | 回 0x1814 {ok:N} 統計結果，並清空計數器 |
+| 0x1814 | BENCH_REPORT | 收 → 發 | `ok(u32)` | 唯一回覆指令（READY 回 ok=0、RESULT 回 ok=N） |
+
+---
+
+## 8) file.json（0x20xx）— 檔案傳輸
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x2001 | FILE_BEGIN | 雙向 | `file_id(u16)` `total_size(u32)` `chunk_size(u16)` `sha256(bytes_fixed 32)` `path(str)` | 開始傳輸 |
+| 0x2002 | FILE_CHUNK | 雙向 | `file_id(u16)` `offset(u32)` `data(bytes_rest)` | 傳輸塊 |
+| 0x2003 | FILE_END | 雙向 | `file_id(u16)` | 傳輸完成 |
+| 0x2004 | FILE_ACK | 雙向 | `file_id(u16)` `offset(u32)` | 確認（斷點續傳） |
+| 0x2005 | FILE_QUERY | Server → MCU | `path(str)` | 查詢檔案 |
+| 0x2006 | FILE_QUERY_RSP | MCU → Server | `exists(u8)` `sha256(bytes_fixed 32)` `size(u32)` `path(str)` | 檔案資訊 |
+| 0x2007 | FILE_READ | Server → MCU | `path(str)` `offset(u32)` `length(u16)` | 讀取檔案片段 |
+| 0x2009 | FILE_DELETE | Server → MCU | `path(str)` | 刪除檔案 |
+| 0x200B | FILE_SCAN | Server → MCU | (空) | 掃描檔案系統 |
+
+---
+
+## 9) ota.json（0x22xx）— 韌體 OTA
+
+> 合作方合同（fastLED master_timer_slave 整合），**不動、不增減、不實作、不用**。
+> 完整設計見 `03_ota_protocol.md`。
+
+| CMD | NAME | 方向 | Payload 摘要 |
+|---:|---|---|---|
+| `0x2201` | `OTA_BEGIN` | Master → Slave | `image_size:u32`, `chunk_size:u16`, `sha256[32]`, `fw_ver:str` |
+| `0x2202` | `OTA_WRITE` | Master → Slave | `offset:u32`, `data:bytes_rest` |
+| `0x2203` | `OTA_END` | Master → Slave | — |
+| `0x2204` | `OTA_ACK` | Slave → Master | `offset:u32`, `written:u32` |
+| `0x2205` | `OTA_ABORT` | Master → Slave | — |
+| `0x2206` | `OTA_VERSION_QUERY` | Master → Slave | — |
+| `0x2207` | `OTA_VERSION_RSP` | Slave → Master | `fw_ver`, `app_sha256[32]`, `running_slot`, `running_seq`, `free_slot`, `partition_size` |
+| `0x2210` | `OTA_CAPS_QUERY` | Master → Slave | — |
+| `0x2211` | `OTA_CAPS_RSP` | Slave → Master | `max_chunk_size:u16` + 4 bool（secure_boot / flash_encrypt / rollback_support / diff_ota_support） |
+| `0x2212` | `OTA_LAST_QUERY` | Master → Slave | — |
+| `0x2213` | `OTA_LAST_RSP` | Slave → Master | 7 bool（last_ota_*）+ `last_ota_fw_ver`, `last_ota_sha256[32]` |
+| `0x2214` | `OTA_PARTITION_STATUS` | Master → Slave | — |
+| `0x2215` | `OTA_PARTITION_STATUS_RSP` | Slave → Master | `slot0_seq`, `slot0_valid`, `slot1_seq`, `slot1_valid`, `running_idx` |
+| `0x2216` | `OTA_VERIFY` | Master → Slave | — |
+| `0x2217` | `OTA_VERIFY_RSP` | Slave → Master | `verify_ok` + 3 bool（verify_fail_sha / header / crc）+ `verified_sha256[32]`, `target_slot_seq:u32` |
+| `0x2218` | `OTA_PROGRESS_QUERY` | Master → Slave | — |
+| `0x2219` | `OTA_PROGRESS_RSP` | Slave → Master | `image_size:u32`, `written:u32`, `target_slot:str` |
+| `0x221A` | `OTA_STATE_QUERY` | Master → Slave | — |
+| `0x221B` | `OTA_STATE_RSP` | Slave → Master | 4 bool（state_idle / writing / verified / error）+ `target_slot:str` |
+| `0x221C` | `OTA_ERROR_RSP` | Slave → Master | 11 bool（err_*）+ `failed_offset:u32`, `written_up_to:u32`, `target_slot:str` |
+| `0x2220` | `OTA_APPLY` | Master → Slave | `set_boot_only:u8`, `restart_delay_ms:u32` |
+
+---
+
+## 10) stream.json（0x30xx）— 像素串流
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x3001 | STREAM_INFO | MCU → Server | `total_blocks(u32)` `frames_per_block(u32)` `fps(u8)` | 串流資訊 |
+| 0x3002 | STREAM_STOP | Server → MCU | (空) | 停止串流 |
+| 0x3003 | STREAM_FRAME | Server → MCU | `pixel_data(bytes_rest)` | Direct Mode 直接推幀（注意：schema JSON 未定義，由 action 直接註冊） |
+| 0x3004 | STREAM_SEEK | Server → MCU | `target_block(u32)` `target_frame(u32)` | 跳轉 |
+| 0x3005 | STREAM_PAUSE | Server → MCU | `pause(u8)` | 暫停/恢復 |
+| 0x3008 | STREAM_READY_ACK | MCU → Server | `block_id(u32)` | 準備完成 |
+| 0x3009 | STREAM_STATE_SET | Server → MCU | `file_name(str)` `block_id(u32)` `play_mode(u8)` | 設定播放檔案與區塊 |
+| 0x300A | STREAM_PLAY | Server → MCU | `start_frame(u32)` | 開始播放 |
+
+---
+
+## 11) pixel.json（0x31xx）— 模式播放
+
+> 原 jpeg.json（0x31xx）已移除；0x31xx 域改由 pixel（模式播放）使用。權威定義見 `slave/schema/pixel.json`。
+> 詳細定義見 `04_pixel_protocol.md`。
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x3101 | MODE_LIST_QUERY | Master → MCU | `mode_type(u8)` | 查模式清單（0=全部、1=LED、2=SERVO） |
+| 0x3102 | MODE_LIST_RSP | MCU → Master | `mode_type(u8)` `count(u8)` `entries(bytes_rest)` | 清單（mode_type 回音 query；每筆 `mode_type(u8)`+`mode_id(u8)`+`total_ms(u32)`） |
+| 0x3103 | MODE_GET | Master → MCU | (空) | 查目前狀態 |
+| 0x3104 | MODE_GET_RSP | MCU → Master | `mode_type(u8)` `mode_id(u8)` `elapsed_ms(u32)` `total_ms(u32)` `running(u8)` | 目前狀態 |
+| 0x3105 | MODE_SET | Master → MCU | `mode_type(u8)` `mode_id(u8)` `start_delay_ms(u16)` `brightness(u8)` | 切換模式（brightness 0–30，0xFF=不設置） |
+| 0x3106 | MODE_STOP | Master → MCU | `action(u8)` | 停止（0=暫停、1=全關閉） |
+| 0x3107 | MODE_DETAIL_QUERY | Master → MCU | `mode_type(u8)` `mode_id(u8)` | 查單一模式細節 |
+| 0x3108 | MODE_DETAIL_RSP | MCU → Master | `mode_type(u8)` `mode_id(u8)` `total_ms(u32)` `name(str_u16len)` | 模式細節（含名稱 UTF-8） |
+
+---
+
+## 12) mp4.json（0x32xx）— MP4 播放器
+
+| CMD | 名稱 | 方向 | Payload | 說明 |
+|-----|------|------|---------|------|
+| 0x3201 | MP4_PLAYER_CTL | Server → MCU | `action(u8)` `value(u32)` | 播放器控制 |
+| 0x3202 | MP4_SOURCE_SET | Server → MCU | `source(str)` `mode(u8)` `start(u32)` `range(u32)` | 設定來源 |
+| 0x3203 | MP4_STATUS_GET | Server → MCU | (空) | 查詢狀態 |
+| 0x3204 | MP4_STATUS_RSP | MCU → Server | `playing(u8)` `paused(u8)` `mode(u8)` `frame(u32)` `total(u32)` `source(str)` `err(str)` | 狀態回報 |
+
+---
+
+## 相關文件
+
+- `01_nc4_protocol.md` — 封包格式 / CRC / schema / 傳輸層
+- `03_ota_protocol.md` — OTA 0x22xx 完整設計（改版理由、payload、長度限制、推薦流程）
+- `04_pixel_protocol.md` — PIXEL 0x31xx 完整定義（含 mode_type 語義、byte 佔位）
+- `05_integration_overview.md` — 協議整合總規格（與 master_timer_slave 的統一合約）
+- `09_bus_speed_protocol.md` — 臨時提速協商流程
