@@ -1,5 +1,6 @@
 import time
 from lib.sys.log_service import _viper_write_i32
+from lib.sys.sys_bus import bus
 
 class Task:
     log_schema = []
@@ -42,7 +43,6 @@ class Task:
         self.running = False
 
     def fcache_get(self, key, default=None, ttl_ms=500):
-        from lib.sys.sys_bus import bus
         now = time.ticks_ms()
         if time.ticks_diff(now, self._fcache_ts) > ttl_ms:
             self._fcache.clear()

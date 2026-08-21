@@ -20,6 +20,7 @@ import time
 from lib.sys.sys_bus import bus
 from lib.sys.proto import Proto, ADDR_BROADCAST
 from lib.sys.schema_codec import SchemaCodec
+from lib.sys import webrepl_ctl
 
 CMD_IDENTIFY_REQ = 0x100D
 CMD_IDENTIFY_RSP = 0x100E
@@ -86,7 +87,6 @@ def on_reboot(ctx, args):
 
 def on_wrepl_ctrl(ctx, args):
     """0x1010: 查詢(0)/確保開(1)/關(2) WebREPL。"""
-    from lib.sys import webrepl_ctl
     action = args.get("action", 0)
     if action == 1:
         webrepl_ctl.ensure()

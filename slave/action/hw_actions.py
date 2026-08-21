@@ -2,6 +2,7 @@ from lib.sys.sys_bus import bus
 from lib.sys.hw_manager import HW
 from lib.sys.proto import Proto
 from lib.sys.schema_codec import SchemaCodec
+from lib.sys import bus_speed
 
 
 def _reply(ctx, rsp_cmd, fields):
@@ -83,7 +84,6 @@ def on_hw_query(ctx, args):
 
 def on_speed_set(ctx, args):
     """0x1403: 記 old/target/timeout, 回 ACK(舊速), 立即切速。"""
-    from lib.sys import bus_speed
     bus_type = int(args.get("bus_type", 0) or 0)
     bus_id   = int(args.get("bus_id", 0) or 0)
     speed    = int(args.get("speed", 0) or 0)
@@ -98,7 +98,6 @@ def on_speed_set(ctx, args):
 
 def on_speed_commit(ctx, args):
     """0x1405: 鎖定新速、取消回滾。"""
-    from lib.sys import bus_speed
     bus_type = int(args.get("bus_type", 0) or 0)
     bus_id   = int(args.get("bus_id", 0) or 0)
     ok = bus_speed.bus_speed_commit(bus_type, bus_id)
@@ -108,7 +107,6 @@ def on_speed_commit(ctx, args):
 
 def on_speed_revert(ctx, args):
     """0x1406: 還原 old_baud。"""
-    from lib.sys import bus_speed
     bus_type = int(args.get("bus_type", 0) or 0)
     bus_id   = int(args.get("bus_id", 0) or 0)
     bus_speed.bus_speed_revert(bus_type, bus_id)
@@ -116,7 +114,6 @@ def on_speed_revert(ctx, args):
 
 def on_speed_query(ctx, args):
     """0x1407: 查狀態, 回 0x1408。"""
-    from lib.sys import bus_speed
     bus_type = int(args.get("bus_type", 0) or 0)
     bus_id   = int(args.get("bus_id", 0) or 0)
     state, bt, bid, cur, target, remain = bus_speed.bus_speed_query(bus_type, bus_id)
