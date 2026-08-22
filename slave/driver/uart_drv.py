@@ -108,6 +108,8 @@ def init_uart(sysbus=None):
             baudrate=item.get("baudrate", 115200),
             tx=Pin(gpio["tx"]) if gpio.get("tx") is not None else None,
             rx=Pin(gpio["rx"]) if gpio.get("rx") is not None else None,
+            rxbuf=item.get("rxbuf", 16384),     # 接收：≥ 最大幀 8205B，一次給足留餘裕
+            txbuf=item.get("txbuf", 16384),     # 發送：≥ 最大幀 8205B，一次給足避免 write 分次/截斷
         )
 
         en = gpio.get("en", -1)

@@ -1,0 +1,37 @@
+⚡ [Schema] dispatch=776B field=436B cmds=97
+
+============================================================
+解碼路徑 (ADDR 過濾 + viper decode) 驗證
+============================================================
+  [PASS] decode 往返正確
+  [PASS] ADDR 過濾
+  [PASS] batch 解碼數量
+  [PASS] 重量 decode 往返
+------------------------------------------------------------
+正確性: 4 通過, 0 失敗
+------------------------------------------------------------
+  [輕量] 核心迴圈 (parser + ADDR 過濾 + viper), SLAVE_ANNOUNCE 18B payload:
+    env       : MicroPython (viper 真實)
+    iters=2000 batch=3幀/93B  總耗時=6168832us (6168.83ms)
+    每幀(輸入)=1028.14us  每幀(解碼)=1542.21us
+    吞吐=648解碼幀/s | 0.03MB/s
+  [重量] 核心迴圈, FILE_CHUNK 2054B payload (2KB bytes_rest):
+    iters=500 幀=2067B  總耗時=870276us (870.28ms)
+    每幀=1740.55us  吞吐=1.19MB/s
+  [native] app.handle_stream 全路徑 (含 dispatch, no-op handler):
+📂 [FS] FAT mode (alloc.json not found)
+⚠️ [FS] Local manifest missing or corrupt, starting scan...
+📦 [FS] SD manifest loaded: 0 files
+🧾 [FS] Delta loaded: 0 partial, 0 pending
+⚡ [Schema] dispatch=776B field=436B cmds=97
+✅ [Action] Status & Health actions integrated
+✅ [Action] Sys actions registered
+[HB] Heartbeat actions registered
+✅ [Action] bench actions registered
+[NOW] ESP-NOW actions registered
+[HW] Hardware actions registered
+[Action] waiting_to_trash actions registered
+✅ [Action] Net actions registered
+    iters=2000  總耗時=4653871us (4653.87ms)  每幀(輸入)=775.65us  吞吐=1289幀/s
+    (與核心迴圈差 = dispatch + native loop 開銷)
+============================================================

@@ -3,7 +3,7 @@
     "/sd"
   ],
   "System": {
-    "dual_core_mode": "0",
+    "dual_core_mode": 0,
     "boot_strict": 0,
     "c_lum": 1.0,
     "hostname": "",
@@ -60,7 +60,7 @@
     }
   },
   "CircuitDecode": {
-    "enable": 0,
+    "enable": 1,
     "list": [
       {
         "GPIO": {
@@ -108,8 +108,8 @@
         "id": 1,
         "baudrate": 115200,
         "GPIO": {
-          "tx": 39,
-          "rx": 41
+          "tx": 9,
+          "rx": 8
         }
       }
     ]
@@ -192,7 +192,7 @@
     ]
   },
   "ENC": {
-    "enable": 1,
+    "enable": 0,
     "list": [
       {
         "id": 0,

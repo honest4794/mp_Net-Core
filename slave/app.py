@@ -65,4 +65,11 @@ class App:
                 continue
             packet_found = True
             disp.dispatch(cmd, payload, ctx)
+        if packet_found:
+            # 收到有效通訊 → 刷新提速的 COMMITTED 層 idle 倒數（通訊空閒超時重置）
+            try:
+                from lib.sys import bus_speed
+                bus_speed.bus_speed_touch()
+            except Exception:
+                pass
         return packet_found

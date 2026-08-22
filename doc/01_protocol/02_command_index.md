@@ -161,8 +161,16 @@
 | 0x200E | FILE_PARTIAL_QUERY | 發 → 收 | `path(str)` | 查詢斷點續傳進度 |
 | 0x200F | FILE_PARTIAL_RSP | 收 → 發 | `partial(u8)` `written(u32)` `total_size(u32)` `sha256(bytes_fixed 32)` `path(str)` | 續傳進度（partial=1 才有效） |
 | 0x2010 | FILE_ERROR_RSP | 收 → 發 | 7 個 `err_*` bool + `failed_offset(u32)` `written_up_to(u32)` `path(str)` | 失敗回覆（schema 自描述，無列舉常數） |
+| 0x2011 | FILE_PROMOTE | 發 → 收 | `src(str)` `dst(str)` | 把 SD 暫存檔「交換」到根目錄正式上線（自動留 `.bak` 備份，見下方說明） |
 
 > `FILE_ERROR_RSP` 錯誤 bool 群：`err_no_space` / `err_write_fail` / `err_offset_mismatch` / `err_id_mismatch` / `err_sha_mismatch` / `err_not_active` / `err_busy`。
+
+> **FILE_PROMOTE（0x2011）— SD → 根目錄固件交換**：把 `src`（通常 `/sd/...` 暫存）的內容「正式上線」到 `dst`（根目錄 `/app.py` 等系統檔）。用「讀+寫+刪」三步法，跨檔案系統安全（未來接真 SD 卡、獨立掛載點也能用，不靠 `os.rename`）：
+>   1. `src` 串流複製到 `dst.tmp`
+>   2. 舊 `dst` → `dst.bak`（備份，舊 bak 先刪；此步失敗自動還原）
+>   3. `dst.tmp` → `dst`（正式上線）
+>   4. 刪 `src`（SD 暫存清除）
+>   成功回 `FILE_QUERY_RSP`（`path=dst`、`exists=1`、`size`）；失敗回 `FILE_ERROR_RSP`。備份 `.bak` 保留在同目錄，供 FILE_UNDO 回滾。
 
 > **chunk_size 參考值**：實測 sweet point = **4096**；其他 transport 參考值 RS485≈224 / I2C≈56。
 

@@ -1,0 +1,142 @@
+📂 [FS] FAT mode (alloc.json not found)
+⚠️ [FS] Local manifest missing or corrupt, starting scan...
+📦 [FS] SD manifest loaded: 0 files
+🧾 [FS] Delta loaded: 0 partial, 0 pending
+[Config] ⚠ 無損更新失敗：找不到路徑 System.cID
+[Config] ✓ 配置已同步 (已自動忽略 _obj 對象)
+[Config] ✓ cID auto-filled: FE44
+⚡ [Schema] dispatch=776B field=436B cmds=97
+✅ [Action] Status & Health actions integrated
+✅ [Action] Sys actions registered
+[HB] Heartbeat actions registered
+✅ [Action] bench actions registered
+[NOW] ESP-NOW actions registered
+[HW] Hardware actions registered
+[Action] waiting_to_trash actions registered
+✅ [Action] Net actions registered
+
+== 場景 A: 全新上傳 + 查詢 + 下載 + 刪除 ==
+🔹 [LOOP] FILE_QUERY (0x2005)
+🔍 [Query] /sd/_selftest.bin not found.
+  ✅ A.前置查詢 exists=0
+🔹 [LOOP] FILE_BEGIN (0x2001)
+📂 [File] Start -> /sd/_selftest.bin (Atomic)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_END (0x2003)
+✅ [FS] Written: /sd/_selftest.bin (Size: 20000)
+----------------------------------------
+🏁 [File] End Success: /sd/_selftest.bin
+🔒 [SHA256] 0d358b6d56044754d4b78317b23115ae2fa8e762c87d3d2a236942aa1fa9e4ec
+----------------------------------------
+  ✅ A.上傳完成 sha/size 正確、pending=0
+🔹 [LOOP] FILE_READ (0x2007)
+📤 [File] Read Chunk: /sd/_selftest.bin Off:1000 Len:4096
+  ✅ A.下載片段內容正確
+🔹 [LOOP] FILE_DELETE (0x2009)
+🗑️ [FS] File removed: /sd/_selftest.bin
+🔍 [Query] /sd/_selftest.bin not found.
+  ✅ A.刪除後 exists=0
+
+== 場景 B: 同名覆蓋 + 兩段式 commit (confirm/undo) ==
+🔹 [LOOP] FILE_BEGIN (0x2001)
+📂 [File] Start -> /sd/_selftest.bin (Atomic)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_END (0x2003)
+✅ [FS] Written: /sd/_selftest.bin (Size: 8000)
+----------------------------------------
+🏁 [File] End Success: /sd/_selftest.bin
+🔒 [SHA256] 96a52e52403e48323d614e7c867451026020ed5a34739daa28033a5a35058bfb
+----------------------------------------
+  ✅ B.首傳 v1 pending=0
+🔹 [LOOP] FILE_BEGIN (0x2001)
+📂 [File] Start -> /sd/_selftest.bin (Atomic)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_END (0x2003)
+✅ [FS] Written: /sd/_selftest.bin (Size: 8000)
+----------------------------------------
+🏁 [File] End Success: /sd/_selftest.bin
+🔒 [SHA256] eebe2c66e9d6c4f93ddb33fa4a74ebf944e6393340537d950927cfbaea436155
+----------------------------------------
+  ✅ B.覆蓋 v2 後 pending=1
+🔹 [LOOP] FILE_CONFIRM (0x2008)
+✅ [FS] Confirmed: /sd/_selftest.bin (backup removed)
+🔍 [Query] Cache Hit: /sd/_selftest.bin (Size:8000)
+  ✅ B.CONFIRM 後 pending=0 且保留 v2
+🔹 [LOOP] FILE_BEGIN (0x2001)
+📂 [File] Start -> /sd/_selftest.bin (Atomic)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_END (0x2003)
+✅ [FS] Written: /sd/_selftest.bin (Size: 8000)
+----------------------------------------
+🏁 [File] End Success: /sd/_selftest.bin
+🔒 [SHA256] 0e749299152eb985e483416c48c3e5b96119de7b5508e90c999ab83957834d0b
+----------------------------------------
+  ✅ B.覆蓋 v3 後 pending=1
+🔹 [LOOP] FILE_UNDO (0x200A)
+♻️ [FS] Undone: /sd/_selftest.bin (old restored)
+🔍 [Query] Cache Hit: /sd/_selftest.bin (Size:8000)
+  ✅ B.UNDO 後回到 v2
+
+== 場景 C: sha 不符 → 拒絕落地 ==
+🔹 [LOOP] FILE_BEGIN (0x2001)
+📂 [File] Start -> /sd/_selftest.bin (Atomic)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_END (0x2003)
+❌ [FS] SHA Mismatch! Got: 14c9ba97ed7b1faf20421c36655aff348eaf1ae682a59d9d5a159bf014824dc4, Exp: 8810ad581e59f2bc3928b261707a71308f7e139eb04820366dc4d5c18d980225
+❌ [File] End Failed: FINALIZE_ERR: SHA_MISMATCH
+  ✅ C.回 err_sha_mismatch
+🔹 [LOOP] FILE_QUERY (0x2005)
+🔍 [Query] /sd/_selftest.bin not found.
+  ✅ C.檔案未落地且無 pending
+
+== 場景 D: 斷點續傳 ==
+🔹 [LOOP] FILE_BEGIN (0x2001)
+📂 [File] Start -> /sd/_selftest.bin (Atomic)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_PARTIAL_QUERY (0x200E)
+  ✅ D.中斷後 partial written=8192
+🔹 [LOOP] FILE_BEGIN (0x2001)
+♻️ [FS] Resume: /sd/_selftest.bin @ 8192 bytes
+📂 [File] Start -> /sd/_selftest.bin (Atomic)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_END (0x2003)
+✅ [FS] Written: /sd/_selftest.bin (Size: 10000)
+----------------------------------------
+🏁 [File] End Success: /sd/_selftest.bin
+🔒 [SHA256] 931636882f941d108225d2dcf56c9c7ba24680bb26a8666062c45a70e9467f80
+----------------------------------------
+  ✅ D.續傳完成 sha/size 正確
+🔹 [LOOP] FILE_PARTIAL_QUERY (0x200E)
+  ✅ D.完成後 partial=0
+
+== 場景 E: 通用改名 (FILE_MOVE) ==
+🔹 [LOOP] FILE_BEGIN (0x2001)
+📂 [File] Start -> /sd/_selftest.bin (Atomic)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_END (0x2003)
+✅ [FS] Written: /sd/_selftest.bin (Size: 3000)
+----------------------------------------
+🏁 [File] End Success: /sd/_selftest.bin
+🔒 [SHA256] 72668226f6acde1ebc7f612280a945a1c251c5b5249b0b9c550a907a268732db
+----------------------------------------
+  ✅ E.上傳準備完成
+🔹 [LOOP] FILE_MOVE (0x200D)
+📦 [FS] Moved: /sd/_selftest.bin -> /sd/_selftest.bin.renamed
+🔹 [LOOP] FILE_QUERY (0x2005)
+🔍 [Query] /sd/_selftest.bin not found.
+  ✅ E.原路徑不存在
+🔹 [LOOP] FILE_QUERY (0x2005)
+🔍 [Query] Cache Hit: /sd/_selftest.bin.renamed (Size:3000)
+  ✅ E.新路徑存在且 sha 正確
+
+========================================
+結果: 17 通過, 0 失敗
+🎉 全部通過

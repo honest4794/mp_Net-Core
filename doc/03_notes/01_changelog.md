@@ -63,8 +63,8 @@ master 對 addr=X 發 IDENTIFY_REQ(0x100D, payload 帶 reply_addr)
 
 | CMD | 名稱 | 方向 | Payload | 行為 |
 |---|---|---|---|---|
-| 0x1403 | SPEED_SET | M→S | `bus_type(u8)` `bus_id(u8)` `speed(u32)` `timeout_ms(u32)` | 記 old/target/timeout_at，回 0x1404 後立即切速 |
-| 0x1404 | SPEED_ACK | S→M | `ok(u8)` `bus_type(u8)` `bus_id(u8)` `cur_speed(u32)` `target_speed(u32)` | 同步點（送出即切） |
+| 0x1403 | SPEED_SET | M→S | `bus_type(u8)` `bus_id(u8)` `speed(u32)` `timeout_ms(u32)` | 記 old/target/timeout_at（**不切速**），先回 0x1404(舊速) 再 apply 切速 |
+| 0x1404 | SPEED_ACK | S→M | `ok(u8)` `bus_type(u8)` `bus_id(u8)` `cur_speed(u32)` `target_speed(u32)` | 同步點（收到後兩邊一起切速） |
 | 0x1405 | SPEED_COMMIT | M→S | `bus_type(u8)` `bus_id(u8)` | 鎖定新速、取消回滾 |
 | 0x1406 | SPEED_REVERT | M→S | `bus_type(u8)` `bus_id(u8)` | 還原 old_baud（config 舊速） |
 | 0x1407 | SPEED_QUERY | M→S | `bus_type(u8)` `bus_id(u8)` | 查狀態，回 0x1408 |
@@ -78,18 +78,20 @@ master 對 addr=X 發 IDENTIFY_REQ(0x100D, payload 帶 reply_addr)
 
 ```
 1. [舊速] master 發 SPEED_SET(0x1403: bus_type, bus_id, speed, timeout_ms)
-2. slave 記 old_baud / target / timeout_at → 回 SPEED_ACK(0x1404, 舊速)
-3. slave 送出 0x1404 後「同一 handler 內立即」uart.init(baudrate=target) 切速
-   master 收到 0x1404 後立即切速
-4. [新速] master 用既有 STATUS_GET(0x1101) / IDENTIFY_REQ(0x100D) 敲門驗證
-5. 驗證 OK → SPEED_COMMIT(0x1405) 鎖定(取消回滾)
+2. slave 記 old_baud / target / timeout_at（進 SYNCING，**尚未切速**）
+3. slave 回 SPEED_ACK(0x1404, 舊速)
+4. slave 送出 0x1404 後呼叫 bus_speed_apply()：等 txdone() 排空 + margin，再 uart.init(target) 切速
+   master 收到 0x1404 後立即切速（兩邊同步切）
+5. [新速] master 在 timeout_ms 內「不斷敲門」驗證（SPEED_QUERY/STATUS_GET/IDENTIFY）
+6. 驗證 OK → SPEED_COMMIT(0x1405) 鎖定（取消回滾，進入 COMMITTED + 啟動 idle 超時）
    ; 否則 timeout_at 到 → 自動回滾 config 舊速 → IDLE
-6. 傳輸完成 → SPEED_REVERT(0x1406) 還原 old_baud
+7. 傳輸完成 → SPEED_REVERT(0x1406) 還原 old_baud
 ```
 
-- **唯一的「等待」是 `timeout_ms`**（沒 COMMIT 就回滾的保險），不是 apply delay。
-- **「亂碼不回覆」是切速瞬間外部 bus 的自然現象，Net-Core 不偵測亂碼、不 auto-baud**。
+- **兩層 timeout**：①SYNCING 層 `timeout_at`（SET 的 `timeout_ms`，敲門失敗回滾）；②COMMITTED 層 `idle_timeout_at`（進入通訊後 N 秒無有效通訊回滾，`app.handle_stream` 每收到有效幀呼叫 `bus_speed_touch()` 刷新）。目前兩層暫共用同一 `timeout_ms`。
+- **同步點 = SPEED_ACK**：slave「先回 ACK(舊速) 再切速」，master 收到 ACK 後一起切速。避免舊版「先切速再回 ACK」造成 ACK 以新速發出、master 收不到的時序 bug。
 - 回滾 = 純時間檢查，由 `CircuitTask.loop` 每輪呼叫 `bus_speed_poll()`；即使新速下收不到有效幀，loop 照跑、照樣回滾（解掉「收不到指令→惰性檢查不觸發」死結）。
+- **`_cur_baud` 修正**：MicroPython UART 無 `baudrate` 屬性，`_cur_baud` 回 0 會導致 `old_baud=0`、REVERT 不切速。已加 `_config_baud(bus_id)` 從 config 讀舊速，`_reinit_uart()` 切速時保留 rxbuf/txbuf（避免 `uart.init(baudrate=...)` 把 buffer 縮回預設 256）。
 
 ---
 
@@ -205,3 +207,50 @@ FILE_* 0x20xx 檔案傳輸鏈路的重新設計：接收端完全被動、傳輸
 關鍵檔案：`slave/lib/sys/fs_manager.py`、`slave/action/file_actions.py`、`slave/schema/file.json`（`echo/lib/fs_manager.py` 已同步）。完整用法見 `02_guides/10_file_update.md`。
 
 > 已知限制：Slave 端回應幀仍走廣播（`Proto.pack` 不帶 addr）。單一 master 沒問題，但真正 MCU↔MCU 對等（多節點共享介質）需補「來源位址 + 回給來源」，建議單獨一輪做，避免與檔案流程耦合。
+
+---
+
+## 9) 2026-08-23 新增：FILE_PROMOTE + buffer 調校 + 測試工具（晚間）
+
+> 更新日期 2026-08-23。這輪圍繞「雙板 UART 檔案傳輸 + 固件交換上線」做了三塊：①新增 FILE_PROMOTE 指令；②UART 接收 buffer 對齊 + 多插槽；③master 端互動/安全更新工具。
+
+### 9.1 FILE_PROMOTE（0x2011）— SD → 根目錄固件正式上線
+
+新增獨立指令，把「先上傳到 SD 驗證、確認無損再交換到根目錄正式上線」的需求落地。設計要點：
+
+| 面向 | 內容 |
+|------|------|
+| 指令 | `FILE_PROMOTE 0x2011`，payload `src(str)` + `dst(str)` |
+| 語意 | 把 `src`（/sd 暫存）內容「正式上線」到 `dst`（根目錄系統檔），舊 `dst` 自動留 `.bak` |
+| 跨卷安全 | 用「讀+寫+刪」三步法，**不靠 `os.rename`**（未來接真 SD 卡、獨立掛載點也能用） |
+| 流程 | ①src 串流複製到 dst.tmp → ②舊 dst→dst.bak（失敗自動還原）→ ③dst.tmp→dst → ④刪 src |
+| 成功回覆 | `FILE_QUERY_RSP`（path=dst、exists=1、size） |
+| 失敗回覆 | `FILE_ERROR_RSP`（err_write_fail=1） |
+
+實作檔案：`slave/schema/file.json`、`slave/lib/sys/fs_manager.py::promote_file()`、`slave/action/file_actions.py::on_file_promote`。
+
+### 9.2 UART 接收 buffer 對齊 + 多插槽
+
+- `slave/driver/uart_drv.py`：UART `rxbuf/txbuf` 都改 16384（原先 txbuf 只有 4096，裝不下最大幀 8205B）。
+- `slave/lib/sys/proto.py`：`RX_BUF_SIZE` 4096 → **4115**（一幀剛好一槽，避免拆幀）。
+- `slave/lib/sys/circuit_bus.py`：`u8_rx_slots` 預設 2→8、上限 4→16（多插槽扛消費延遲，而非單槽變大）。
+- `slave/lib/sys/bus_speed.py`：`_reinit_uart()` 切速時保留 rxbuf/txbuf（`uart.init(baudrate=...)` 會把 buffer 縮回預設 256）。
+
+> 判斷：這批 buffer 調校方向正確，115200 下 4KB chunk 傳輸已穩定（8/10，重試可到近 100%）。高速 460800 可正常收發（3/5），剩餘掉包是 CircuitTask 排程 / bus_decode 消費速度問題，尚未根治（見 `08_night_test_results.md` §18）。
+
+### 9.3 master 端工具（`test/protocol/night_run/`）
+
+| 檔案 | 用途 |
+|------|------|
+| `master_agent.py` | master 測試 agent：NC4 組/拆幀 + SPEED/FILE 指令 + 手動 decoder + `send_wait` 重試 |
+| `safe_update.py` | 安全檔案更新流程：`stage`/`verify_stage`/`apply`/`promote`/`confirm`/`undo`/`cleanup` |
+| `interactive_master.py` | 互動式選單（仿 NetBusMaster 風格）：敲門/檔案傳輸/固件更新/查詢/刪除/提速 |
+| `repl_upload.py` | 透過 normal REPL(ctrl-B) base64 寫檔的工具（繞過 TaskManager 佔用 raw REPL） |
+| `espnow_transfer.py` | ESP-NOW 板間傳檔框架（未端到端實測） |
+
+### 9.4 尚未完成
+
+- **端到端 FILE_PROMOTE 實測**：卡在多 chunk 連續傳輸掉包（單 4KB chunk 可過，8KB 兩 chunk 連發偶發失敗）。
+- **掉包根因**：slave 端 `bus_decode` 每輪只讀 1 slot（`decode_budget_slots` 預設 1）+ CircuitTask 排程，是架構級瓶頸，需進一步調整。
+- **RS485 半雙工**：master 端時序要照 `_Rs485Uart`（listen-before-talk + DE 切換 + txdone）重寫；目前是點對點全雙工。
+- **無線 ESP-NOW 傳檔**：鏈路驗證過、腳本備好，端到端未測。

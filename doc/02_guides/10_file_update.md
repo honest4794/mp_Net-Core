@@ -27,6 +27,7 @@
 | 0x200E | FILE_PARTIAL_QUERY | 發 → 收 | `path(str)` | 查詢斷點續傳進度 |
 | 0x200F | FILE_PARTIAL_RSP | 收 → 發 | `partial(u8)` `written(u32)` `total_size(u32)` `sha256(bytes_fixed 32)` `path(str)` | 續傳進度（partial=1 才有效） |
 | 0x2010 | FILE_ERROR_RSP | 收 → 發 | 7 個 `err_*` bool + `failed_offset(u32)` `written_up_to(u32)` `path(str)` | 失敗回覆（schema 自描述） |
+| 0x2011 | FILE_PROMOTE | 發 → 收 | `src(str)` `dst(str)` | SD 暫存 → 根目錄正式上線（自動 `.bak` 備份，見 §七） |
 
 > `FILE_ERROR_RSP` 錯誤 bool 群：`err_no_space` / `err_write_fail` / `err_offset_mismatch` / `err_id_mismatch` / `err_sha_mismatch` / `err_not_active` / `err_busy`。讀欄位名即知問題，不需查 enum。
 
@@ -170,7 +171,49 @@ FILE_SCAN {target=1}   # 掃 SD（重算 sha256，更新 /sd/.manifest.json）
 
 ---
 
-## 八、自測（loopback，單機即可）
+## 八、SD → 根目錄固件交換（FILE_PROMOTE 0x2011）
+
+### 8.1 用途
+
+固件更新的典型流程：先上傳到 SD 暫存、驗證無損，確認後才「正式上線」到根目錄系統檔（`/app.py`、`/driver/*.py` 等），且舊檔自動留 `.bak` 備份、可回滾。
+
+```
+1. FILE_BEGIN/CHUNK/END  把新固件傳到 /sd/_XD_xxx（暫存，驗 sha）
+2. FILE_READ             讀回暫存檔，比對 sha256 確認無損
+3. FILE_PROMOTE {src: "/sd/_XD_xxx", dst: "/app.py"}   ← 交換上線
+   內部：src 複製到 dst.tmp → 舊 dst 改名 dst.bak → dst.tmp 改名 dst → 刪 src
+4. 上線後若要回滾 → FILE_UNDO {path: "/app.py"}（.bak 蓋回）
+```
+
+### 8.2 設計要點
+
+- **跨卷安全**：用「讀 + 寫 + 刪」三步法，**不靠 `os.rename`**。現在 `/sd` 是 flash 目錄（假 SD），未來接真 SD 卡（`machine.SDCard` 獨立掛載點）時，`os.rename` 跨檔案系統會失敗，但讀+寫不會。
+- **備份在同目錄**：舊檔存成 `dst.bak`，跟正式檔放一起，回滾最快。
+- **失敗自動還原**：任一步失敗會嘗試把 `.bak` 蓋回、清掉 `.tmp`，不留下半成品。
+- **成功回覆**：`FILE_QUERY_RSP`（`path=dst`、`exists=1`、`size`）。**失敗回覆**：`FILE_ERROR_RSP`（`err_write_fail=1`）。
+
+### 8.3 限制
+
+- `dst` 必須是根目錄路徑（`/xxx`），不接受 `/sd/...`（那是資料區，不是系統檔）。
+- promote 是「複製 + 刪 src」的語意，不是 rename：src 內容會被複製到 dst，src 本身刪除。
+
+### 8.4 備份 / 還原 / 確認（pending delta）
+
+- promote 落根目錄後，會寫一筆 pending 記錄到 `/sd/.delta.json`（key = 根目錄路徑 `/xxx`，欄位含 `bak`/`old_sha`/`old_size`/`new_sha`/`boots`）。
+- **FILE_UNDO（0x200A）**：刪新檔 + `.bak` 蓋回 + 清 pending，回填舊 manifest。
+- **FILE_CONFIRM（0x2008）**：刪 `.bak` + 清 pending，正式生效。
+- 若 `dst` 原本不存在（全新檔），promote 後 `bak` 為空，undo 等於刪新檔。
+
+### 8.5 開機自動恢復（boot recovery）
+
+- 每次開機 `FileSystemManager` 會先做 **boot recovery 檢查**（最高優先）：
+  1. 讀 `/sd/.delta.json`，若有 pending 備份 → 該記錄 `boots` +1 並落盤。
+  2. 若某記錄 `boots >= 3`（連續 3 次開機仍未確認）→ 自動還原：刪新檔 + `.bak` 蓋回 + 清 pending。
+- 用途：新固件 promote 後若一直無法上線確認（例如新固件起唔到、無法執行 FILE_CONFIRM），連續 3 次開機就自動回滾舊檔，避免壞固件令板子卡死。
+
+---
+
+## 九、自測（loopback，單機即可）
 
 `tools/selftest_file.py` 利用解碼器把「發起端」和「接收端」接在一起，同一顆 MCU 自己當 master 又當 slave：
 

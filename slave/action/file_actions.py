@@ -130,16 +130,64 @@ def on_file_end(ctx, args):
         _send_error(ctx, None)
 
 
+def _root_file_exists(path):
+    """判斷 path 是否為「根目錄的普通檔案」（FILE_PROMOTE 落地的固件）。"""
+    import os
+    try:
+        st = os.stat(path)
+        return (st[0] & 0x4000) == 0
+    except Exception:
+        return False
+
+
 def on_file_query(ctx, args):
     path = args.get("path")
     if path:
-        # 與寫入端一致：manifest 鍵為 /sd 完整路徑
-        path = fs.resolve(path)[1]
+        # FILE_PROMOTE 落根目錄的檔用真實根路徑（不 resolve → /sd）；
+        # 其餘依「非 /ram//sd → /sd」慣例解析。
+        raw = "/" + str(path).lstrip("/")
+        if _root_file_exists(raw):
+            path = raw
 
     exists = 0
     sha = b'\x00' * 32
     size = 0
     pending = 0
+
+    if path and _root_file_exists(path):
+        # 根目錄檔：用絕對路徑查 manifest（跳過 resolve 映射）
+        entry, full = fs.manifest_lookup_abs(path)
+        if entry:
+            exists = 1
+            size = entry.get("s", 0)
+            sha = _hex_to_bytes(entry.get("h", ""))
+            print(f"🔍 [Query] Root Cache Hit: {full} (Size:{size})")
+        else:
+            try:
+                import os
+                st = os.stat(full)
+                exists = 1
+                size = st[6]
+                sha_hex = fs.calc_sha256(full)
+                if sha_hex:
+                    sha = ubinascii.unhexlify(sha_hex)
+                print(f"🔍 [Query] Root Realtime: {full} (Size:{size})")
+            except Exception:
+                print(f"🔍 [Query] {full} not found.")
+        if full in fs.delta.get("pending", {}):
+            pending = 1
+        _send(ctx, 0x2006, {
+            "exists": exists,
+            "sha256": sha,
+            "size": size,
+            "path": full,
+            "free": fs.free_bytes("/"),
+            "pending": pending
+        })
+        return
+
+    if path:
+        path = fs.resolve(path)[1]
 
     # 優先查對應卷的 Manifest
     entry, full = fs.manifest_lookup(path)
@@ -244,7 +292,6 @@ def on_file_confirm(ctx, args):
     path = args.get("path")
     if not path:
         return
-    path = fs.resolve(path)[1]
     fs.confirm_commit(path)
     # 確認後回傳新檔現況 (pending 已清 = 0)
     on_file_query(ctx, {"path": path})
@@ -255,10 +302,44 @@ def on_file_undo(ctx, args):
     path = args.get("path")
     if not path:
         return
-    path = fs.resolve(path)[1]
     ok = fs.undo_commit(path)
     # 復原後回傳舊檔現況 (查 manifest)
     on_file_query(ctx, {"path": path})
+
+
+def on_file_promote(ctx, args):
+    """FILE_PROMOTE (0x2011): SD 暫存 → 根目錄正式上線（自動 .bak 備份）。"""
+    src = args.get("src")
+    dst = args.get("dst")
+    if not src or not dst:
+        _send(ctx, 0x2010, {
+            "err_no_space": 0, "err_write_fail": 1, "err_offset_mismatch": 0,
+            "err_id_mismatch": 0, "err_sha_mismatch": 0, "err_not_active": 0,
+            "err_busy": 0, "failed_offset": 0, "written_up_to": 0, "path": str(dst),
+        })
+        return
+    ok = fs.promote_file(src, dst)
+    if not ok:
+        _send(ctx, 0x2010, {
+            "err_no_space": 0, "err_write_fail": 1, "err_offset_mismatch": 0,
+            "err_id_mismatch": 0, "err_sha_mismatch": 0, "err_not_active": 0,
+            "err_busy": 0, "failed_offset": 0, "written_up_to": 0, "path": str(dst),
+        })
+        return
+    # 成功：回 FILE_QUERY_RSP（path = 真正的根目錄 dst，不經 resolve 映射）
+    import os
+    exists = 0
+    size = 0
+    try:
+        st = os.stat(dst)
+        exists = 1
+        size = st[6]
+    except Exception:
+        pass
+    _send(ctx, 0x2006, {
+        "exists": exists, "sha256": b'\x00' * 32, "size": size,
+        "path": dst, "free": fs.free_bytes("/sd"), "pending": 0,
+    })
 
 
 def on_file_move(ctx, args):
@@ -310,3 +391,4 @@ def register(app):
     app.disp.on(0x200B, on_file_scan)
     app.disp.on(0x200D, on_file_move)
     app.disp.on(0x200E, on_file_partial_query)
+    app.disp.on(0x2011, on_file_promote)

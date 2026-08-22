@@ -265,6 +265,20 @@
           "type": "str_u16len"
         }
       ]
+    },
+    {
+      "cmd": "0x2011",
+      "name": "FILE_PROMOTE",
+      "payload": [
+        {
+          "name": "src",
+          "type": "str_u16len"
+        },
+        {
+          "name": "dst",
+          "type": "str_u16len"
+        }
+      ]
     }
   ]
 }

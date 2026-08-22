@@ -69,6 +69,9 @@ class FileSystemManager:
 
         self.load_manifest()
 
+        # 開機最高優先：pending 備份 boots+1，滿 3 次未確認 → 自動還原 .bak
+        self._boot_recovery_check()
+
     def load_manifest(self):
         try:
             with open(MANIFEST_FILE, "r") as f:
@@ -124,6 +127,16 @@ class FileSystemManager:
         """依路徑查對應的 manifest 條目。回傳 (entry_or_None, full_path)。"""
         d, full, _ = self._manifest_target(path)
         return d.get(full), full
+
+    def manifest_lookup_abs(self, path):
+        """直接用「絕對路徑」查 manifest，不做 resolve 映射。
+
+        供 FILE_PROMOTE（落根目錄 /xxx）與其查詢/還原使用：根目錄檔的 manifest
+        鍵就是 /xxx 本身，走 resolve 會被誤映射成 /sd/xxx。"""
+        p = "/" + str(path).lstrip("/")
+        if p == "/sd" or p.startswith("/sd/"):
+            return self.manifest_sd.get(p), p
+        return self.manifest_local.get(p), p
 
     def _write_manifest(self, mfile, d):
         try:
@@ -407,7 +420,8 @@ class FileSystemManager:
                     "bak": bak,
                     "old_sha": old_sha,
                     "old_size": old_size,
-                    "new_sha": got_sha
+                    "new_sha": got_sha,
+                    "boots": 0
                 }
 
             # 4. 清 partial + (若有) 寫 pending, 一次落盤於 rename 之前
@@ -439,10 +453,86 @@ class FileSystemManager:
 
     # ==================== Commit / Undo / Partial / Move ====================
 
-    def confirm_commit(self, path):
-        """FILE_CONFIRM (0x2008): 確認覆蓋 → 刪 .bak + 清 pending。回 True/False。"""
+    def _find_pending(self, path):
+        """找 pending 記錄：FILE_PROMOTE 用「真實根路徑」當 key（如 /_app_test.py），
+        FILE 覆寫用 resolve 後的 /sd key（如 /sd/_night.bin）。回 (key, rec)；
+        找不到回 (None, None)。"""
+        if not path:
+            return None, None
+        raw = "/" + str(path).lstrip("/")
+        rec = self.delta.get("pending", {}).get(raw)
+        if rec is not None:
+            return raw, rec
         _, full, _ = self._manifest_target(path)
         rec = self.delta.get("pending", {}).get(full)
+        if rec is not None:
+            return full, rec
+        return None, None
+
+    def _pending_manifest_target(self, key):
+        """依 pending key 決定 manifest 落點：根目錄檔 → local，/sd → SD manifest。"""
+        if key == "/sd" or key.startswith("/sd/"):
+            return self.manifest_sd, key, MANIFEST_FILE_SD
+        return self.manifest_local, key, MANIFEST_FILE
+
+    def _restore_pending(self, key, rec):
+        """把 pending 記錄還原：刪新檔 + .bak 改回 key，並回填 manifest。回 True/False。"""
+        bak = rec.get("bak")
+        try:
+            os.stat(key)
+            os.remove(key)
+        except Exception:
+            pass
+        try:
+            if bak:
+                os.stat(bak)
+                os.rename(bak, key)
+        except Exception as e:
+            print("❌ [FS] Boot recovery restore failed {}: {}".format(key, e))
+            return False
+        old_sha = rec.get("old_sha")
+        old_size = rec.get("old_size", 0)
+        md, mkey, mfile = self._pending_manifest_target(key)
+        if old_sha:
+            md[mkey] = {"s": old_size, "h": old_sha}
+        else:
+            md.pop(mkey, None)
+        self._write_manifest(mfile, md)
+        print("🛡️ [FS] Boot recovery: restored {} from {}".format(key, bak or "(delete)"))
+        return True
+
+    def _boot_recovery_check(self):
+        """開機最高優先檢查：pending 備份記錄 boots+1；滿 3 次仍未確認 → 自動還原。
+
+        對應「上傳→備份→確認」的保護帶：新檔 promote 後若一直沒 confirm
+        （例如新固件起唔到、無法上線確認），連續 3 次開機就自動回滾舊檔，
+        避免壞固件令板子卡死。每次開機都 _save_delta() 落盤更新 boots 計數。
+        """
+        pending = self.delta.get("pending")
+        if not pending:
+            return
+        restored = []
+        for key in list(pending.keys()):
+            rec = pending.get(key)
+            if not isinstance(rec, dict):
+                continue
+            boots = int(rec.get("boots", 0) or 0) + 1
+            rec["boots"] = boots
+            if boots >= 3:
+                if self._restore_pending(key, rec):
+                    restored.append(key)
+        for key in restored:
+            pending.pop(key, None)
+        self._save_delta()
+        remain = len(pending)
+        if restored:
+            print("🛡️ [FS] Boot recovery: auto-restored {} file(s)".format(len(restored)))
+        if remain:
+            print("🛡️ [FS] Boot recovery: {} pending backup(s) awaiting confirm".format(remain))
+
+    def confirm_commit(self, path):
+        """FILE_CONFIRM (0x2008): 確認覆蓋 → 刪 .bak + 清 pending。回 True/False。"""
+        key, rec = self._find_pending(path)
         if not rec:
             return False
         bak = rec.get("bak")
@@ -452,41 +542,42 @@ class FileSystemManager:
                 os.remove(bak)
         except Exception:
             pass
-        self.delta["pending"].pop(full, None)
+        self.delta["pending"].pop(key, None)
         self._save_delta()
-        print(f"✅ [FS] Confirmed: {full} (backup removed)")
+        print(f"✅ [FS] Confirmed: {key} (backup removed)")
         return True
 
     def undo_commit(self, path):
         """FILE_UNDO (0x200A): 復原 → 刪新檔 + .bak 改回 path + 清 pending。回 True/False。"""
-        _, full, _ = self._manifest_target(path)
-        rec = self.delta.get("pending", {}).get(full)
+        key, rec = self._find_pending(path)
         if not rec:
             return False
         bak = rec.get("bak")
         try:
-            os.stat(full)
-            os.remove(full)
+            os.stat(key)
+            os.remove(key)
         except Exception:
             pass
         try:
             if bak:
                 os.stat(bak)
-                os.rename(bak, full)
+                os.rename(bak, key)
         except Exception as e:
             print(f"❌ [FS] Undo rename-back failed: {e}")
             return False
-        self.delta["pending"].pop(full, None)
+        self.delta["pending"].pop(key, None)
         self._save_delta()
 
         # 復原後 manifest 回填舊檔資訊 (若有)
         old_sha = rec.get("old_sha")
         old_size = rec.get("old_size", 0)
+        md, mkey, mfile = self._pending_manifest_target(key)
         if old_sha:
-            self.update_manifest_entry(full, old_size, old_sha)
+            md[mkey] = {"s": old_size, "h": old_sha}
         else:
-            self.remove_manifest_entry(full)
-        print(f"♻️ [FS] Undone: {full} (old restored)")
+            md.pop(mkey, None)
+        self._write_manifest(mfile, md)
+        print(f"♻️ [FS] Undone: {key} (old restored)")
         return True
 
     def partial_query(self, path):
@@ -535,6 +626,145 @@ class FileSystemManager:
             self._write_manifest(mfile, d)
         print(f"📦 [FS] Moved: {s_full} -> {d_full}")
         return True
+
+    def promote_file(self, src, dst):
+        """FILE_PROMOTE (0x2011): 把 src 的內容「交換」到 dst（跨卷，SD→根目錄）。
+
+        流程（讀+寫三步法，對真 SD 卡這類「獨立檔案系統」也安全，不靠 rename）：
+          1. 把 dst 的舊內容備份成 dst.bak（若舊 bak 存在先刪）
+          2. 把 src 串流複製到 dst.tmp
+          3. dst.tmp rename 成 dst（正式上線）
+          4. 刪 src（清除暫存）
+        任一步失敗會嘗試還原 bak；回 True/False。
+        """
+        try:
+            # 正規化 dst 為「根目錄絕對路徑」（/xxx），src 保持 /sd/xxx
+            d = str(dst)
+            if not d.startswith("/"):
+                d = "/" + d
+            d = d.rstrip("/")
+            if not d:
+                return False
+            s = str(src)
+            if not s.startswith("/"):
+                s = "/" + s
+
+            # 安全檢查：dst 不允許指到 /sd 底下（那是「假 SD」資料區，非根固件）
+            if d == "/sd" or d.startswith("/sd/"):
+                print("❌ [FS] promote dst must be root path, not /sd: {}".format(d))
+                return False
+
+            # 0. 確認 src 存在
+            if not self.exists(src):
+                print("❌ [FS] promote src not found: {}".format(s))
+                return False
+
+            d_tmp = d + ".tmp"
+            d_bak = d + ".bak"
+
+            # 1. 串流複製 src -> d.tmp
+            total = self.begin_read(src)
+            if total <= 0:
+                print("❌ [FS] promote read src failed")
+                return False
+            buf = bytearray(4096)
+            try:
+                with open(d_tmp, "wb") as out:
+                    while True:
+                        n = self.read_into(buf)
+                        if n <= 0:
+                            break
+                        out.write(buf[:n])
+            except Exception as e:
+                print("❌ [FS] promote write tmp failed: {}".format(e))
+                self._end_read()
+                try:
+                    os.remove(d_tmp)
+                except Exception:
+                    pass
+                return False
+            self._end_read()
+
+            # 2. 舊 dst → d.bak（若舊 bak 先刪）
+            had_old = False
+            try:
+                if self._os_exists(d):
+                    had_old = True
+                    try:
+                        os.remove(d_bak)
+                    except Exception:
+                        pass
+                    os.rename(d, d_bak)
+            except Exception as e:
+                print("❌ [FS] promote backup failed: {}".format(e))
+                try:
+                    os.remove(d_tmp)
+                except Exception:
+                    pass
+                return False
+
+            # 3. d.tmp → d（正式上線）
+            try:
+                os.rename(d_tmp, d)
+            except Exception as e:
+                print("❌ [FS] promote rename tmp->dst failed: {}".format(e))
+                # 失敗：還原 bak
+                if had_old:
+                    try:
+                        os.rename(d_bak, d)
+                    except Exception:
+                        pass
+                try:
+                    os.remove(d_tmp)
+                except Exception:
+                    pass
+                return False
+
+            # 3.5 記錄 pending（備份恢復用）+ 更新根目錄 manifest。
+            #     FILE_PROMOTE 直接落根目錄（非 /sd），key 用真實根路徑 d，讓
+            #     FILE_CONFIRM / FILE_UNDO 能透過 _find_pending 找到並還原。
+            new_sha = self.calc_sha256(d) or ""
+            try:
+                new_size = os.stat(d)[6]
+            except Exception:
+                new_size = 0
+            old_sha = ""
+            old_size = 0
+            if had_old:
+                old_sha = self.calc_sha256(d_bak) or ""
+                try:
+                    old_size = os.stat(d_bak)[6]
+                except Exception:
+                    old_size = 0
+            self.delta["pending"][d] = {
+                "bak": d_bak if had_old else "",
+                "old_sha": old_sha,
+                "old_size": old_size,
+                "new_sha": new_sha,
+                "boots": 0
+            }
+            self._save_delta()
+            self.manifest_local[d] = {"s": new_size, "h": new_sha}
+            self._write_manifest(MANIFEST_FILE, self.manifest_local)
+
+            # 4. 刪 src（SD 暫存清除）
+            try:
+                self.delete_file(src)
+            except Exception as e:
+                print("⚠️ [FS] promote delete src failed: {}".format(e))
+
+            print("✅ [FS] promoted: {} -> {} (bak={})".format(s, d, "yes" if had_old else "no"))
+            return True
+        except Exception as e:
+            print("❌ [FS] promote exception: {}".format(e))
+            return False
+
+    def _os_exists(self, path):
+        try:
+            os.stat(path)
+            return True
+        except Exception:
+            return False
 
     # ==================== Unified Data Layer ====================
     # 路徑前綴決定目的地：

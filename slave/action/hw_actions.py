@@ -83,17 +83,24 @@ def on_hw_query(ctx, args):
 # ── 臨時提速 (bus_speed) ──
 
 def on_speed_set(ctx, args):
-    """0x1403: 記 old/target/timeout, 回 ACK(舊速), 立即切速。"""
+    """0x1403: 記 old/target/timeout（不切速），先回 ACK(舊速)，再 apply 切速。
+
+    同步點 = SPEED_ACK：slave 用舊速發出 ACK，master 收到後兩邊一起切速。
+    因此 ACK 必須「先送出」，送出後才 uart.init(target)。"""
     bus_type = int(args.get("bus_type", 0) or 0)
     bus_id   = int(args.get("bus_id", 0) or 0)
     speed    = int(args.get("speed", 0) or 0)
     timeout_ms = int(args.get("timeout_ms", 0) or 0)
 
     ok, cur, target = bus_speed.bus_speed_set(bus_type, bus_id, speed, timeout_ms)
+    # 先回 ACK（此時仍在舊速，master 能收到）
     _reply(ctx, 0x1404, {
         "ok": ok, "bus_type": bus_type, "bus_id": bus_id,
         "cur_speed": cur, "target_speed": target,
     })
+    # ACK 發出後才真正切速（等 FIFO 排空 + 末 byte 離開發射器）
+    if ok:
+        bus_speed.bus_speed_apply()
 
 
 def on_speed_commit(ctx, args):

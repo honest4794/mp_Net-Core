@@ -1,0 +1,176 @@
+📂 [FS] FAT mode (alloc.json not found)
+⚠️ [FS] Local manifest missing or corrupt, starting scan...
+📦 [FS] SD manifest loaded: 0 files
+🧾 [FS] Delta loaded: 0 partial, 0 pending
+⚡ [Schema] dispatch=776B field=436B cmds=97
+✅ [Action] Status & Health actions integrated
+✅ [Action] Sys actions registered
+[HB] Heartbeat actions registered
+✅ [Action] bench actions registered
+[NOW] ESP-NOW actions registered
+[HW] Hardware actions registered
+[Action] waiting_to_trash actions registered
+✅ [Action] Net actions registered
+
+== T1: 256KB 大檔上傳 + 分片下載 + sha ==
+  data: 262144 bytes sha=5bcff483999a6ca6
+🔹 [LOOP] FILE_BEGIN (0x2001)
+📂 [File] Start -> /sd/_night_big.bin (Atomic)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_END (0x2003)
+✅ [FS] Written: /sd/_night_big.bin (Size: 262144)
+----------------------------------------
+🏁 [File] End Success: /sd/_night_big.bin
+🔒 [SHA256] 5bcff483999a6ca62fc73788e48c1e7def673e63680760a98325a43c011360f0
+----------------------------------------
+  ✅ T1.大檔上傳 sha/size 正確
+🔹 [LOOP] FILE_READ (0x2007)
+📤 [File] Read Chunk: /sd/_night_big.bin Off:0 Len:4096
+🔹 [LOOP] FILE_READ (0x2007)
+📤 [File] Read Chunk: /sd/_night_big.bin Off:100000 Len:4096
+🔹 [LOOP] FILE_READ (0x2007)
+📤 [File] Read Chunk: /sd/_night_big.bin Off:258048 Len:4096
+  ✅ T1.分片下載內容正確
+  ✅ T1.清理完成
+
+== T2: 錯誤路徑 ==
+🔹 [LOOP] FILE_CHUNK (0x2002)
+⚠️ [File] Chunk Failed: Off=0 Err=NO_ACTIVE_SESSION
+  ✅ T2.無 session CHUNK → err_not_active
+🔹 [LOOP] FILE_BEGIN (0x2001)
+📂 [File] Start -> /sd/_night_err.bin (Atomic)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+⚠️ [File] Chunk Failed: Off=0 Err=ID_MISMATCH 2!=1
+  ✅ T2.file_id 不符 → err_id_mismatch
+🔹 [LOOP] FILE_END (0x2003)
+❌ [FS] SHA Mismatch! Got: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855, Exp: fee10016d21342fcac3c4e3fd41e9e267de3bc28352fcc51a18fba0bf07c2828
+❌ [File] End Failed: FINALIZE_ERR: SHA_MISMATCH
+🔹 [LOOP] FILE_BEGIN (0x2001)
+📂 [File] Start -> /sd/_night_move_src.bin (Atomic)
+🔹 [LOOP] FILE_CHUNK (0x2002)
+🔹 [LOOP] FILE_END (0x2003)
+✅ [FS] Written: /sd/_night_move_src.bin (Size: 2000)
+----------------------------------------
+🏁 [File] End Success: /sd/_night_move_src.bin
+🔒 [SHA256] 0ecdf25ec26f8496db03088d0beaf57b9229c54334329f10e7ff309e26906256
+----------------------------------------
+  ✅ T2.move src 上傳完成
+🔹 [LOOP] FILE_MOVE (0x200D)
+❌ [FS] MOVE cross-volume not supported
+  ✅ T2.MOVE 跨卷 → err_write_fail
+🔹 [LOOP] FILE_READ (0x2007)
+❌ [File] Read Failed: /sd/_nonexist.bin - not found: /sd/_nonexist.bin
+  ✅ T2.下載不存在檔案 → 空 data
+🔹 [LOOP] FILE_DELETE (0x2009)
+⚠️ [FS] Delete failed: [Errno 2] ENOENT
+🔍 [Query] /sd/_nonexist.bin not found.
+  ✅ T2.DELETE 不存在 → exists=0
+
+== T3: SPEED 提速狀態機 ==
+🔹 [LOOP] SPEED_QUERY (0x1407)
+  ✅ T3.QUERY 初始 state=0
+🔹 [LOOP] SPEED_SET (0x1403)
+🔀 [BusSpeed] UART0 0 → 921600 (SYNCING, timeout 3000ms)
+  ✅ T3.SET → ACK ok=1
+  ✅ T3.ACK target_speed=921600
+  ✅ T3.狀態=SYNCING
+🔹 [LOOP] SPEED_QUERY (0x1407)
+  ✅ T3.QUERY state=1 (SYNCING)
+  ✅ T3.remain_ms 計時中
+🔹 [LOOP] SPEED_COMMIT (0x1405)
+🔒 [BusSpeed] UART0 COMMITTED @ 921600
+[HW] SPEED_COMMIT ok
+🔹 [LOOP] SPEED_QUERY (0x1407)
+  ✅ T3.COMMIT 後 state=2 (COMMITTED)
+🔹 [LOOP] SPEED_REVERT (0x1406)
+↩️  [BusSpeed] revert UART0 → 0 (IDLE)
+🔹 [LOOP] SPEED_QUERY (0x1407)
+  ✅ T3.REVERT 後 state=0 (IDLE)
+🔹 [LOOP] SPEED_SET (0x1403)
+  ✅ T3.SET SPI → ok=0 (not supported)
+🔹 [LOOP] SPEED_SET (0x1403)
+  ✅ T3.SET bus_id=9 → ok=0
+
+== T4: 額外下載邊界 ==
+🔹 [LOOP] FILE_READ (0x2007)
+❌ [File] Read Failed: /sd/_night_big.bin - not found: /sd/_night_big.bin
+  ✅ T4.READ length=0 → 空 data
+
+== T5: SPEED 不 COMMIT → timeout 自動回滾 ==
+🔹 [LOOP] SPEED_QUERY (0x1407)
+🔹 [LOOP] SPEED_SET (0x1403)
+🔀 [BusSpeed] UART0 0 → 921600 (SYNCING, timeout 1500ms)
+  ✅ T5.SET ok=1
+🔹 [LOOP] SPEED_QUERY (0x1407)
+  ✅ T5.立即查 state=1 (SYNCING)
+↩️  [BusSpeed] revert UART0 → 0 (IDLE)
+🔹 [LOOP] SPEED_QUERY (0x1407)
+  ✅ T5.timeout 後 poll 觸發自動回滾 state=0 (IDLE)
+  ✅ T5.內部狀態 IDLE
+
+========================================
+night_loopback 結果: 24 通過, 0 失敗
+🎉 全部通過

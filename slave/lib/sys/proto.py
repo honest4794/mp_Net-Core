@@ -33,11 +33,13 @@ ADDR_BROADCAST = 0xFFFF
 MAX_PAYLOAD = 8192
 
 # ── 傳輸層 buffer 約定 (與 MAX_PAYLOAD 正交, 唯一真相源) ──
-# RX_BUF_SIZE: 接收端每次 recv/readinto 收多少 (net_bus + circuit_bus 共用)。
-#  4K 是工程選擇, 不是「幀多大」的上限 — 8K 幀分多次到達, StreamParser 靠黏包重組。
+# RX_BUF_SIZE: 接收端每個 slot 的大小 (net_bus + circuit_bus 共用)。
+#   ⚠️ 一幀必須能完整塞進一個 slot，不能拆幀。FILE_CHUNK(4KB data) 幀 =
+#     HDR(9) + file_id(2) + offset(4) + data(4096) + CRC(4) = 4115。
+#   取 4115（剛好一幀）——不是越大越好；扛消費延遲靠「多插槽」(u8_rx_slots)，不靠單槽變大。
 # SEND_CAP: socket 每次 send 的分段上限 (lwIP TCP_SND_BUF ≈ 4~5.7KB, 見性能文檔)。
 #  單次 send 超過會阻塞等 ACK 造成 8KB 懸崖, 4KB 是發送端甜蜜點。
-RX_BUF_SIZE = 4096
+RX_BUF_SIZE = 4115
 SEND_CAP = 4096
 
 HDR_LEN = 9

@@ -19,9 +19,9 @@ class CircuitBus:
         self._drop_buf = bytearray(min(2048, buf_size))
         self._hub_off = 2
         if self.rx_hub is None:
-            slots = int(buf_cfg.get("u8_rx_slots", 2) or 0)
+            slots = int(buf_cfg.get("u8_rx_slots", 8) or 0)
             if slots > 0:
-                slots = min(slots, 4)
+                slots = min(slots, 16)
                 self.rx_hub = AtomicStreamHub(buf_size + self._hub_off, num_buffers=slots)
         self.cache_hub = None  # 消費端緩存(rx_hub 鏡像),首次 read_into() 時惰性建立一次,永久重用
         self._drop_on_full = int(buf_cfg.get("drop_on_full", 0) or 0)
