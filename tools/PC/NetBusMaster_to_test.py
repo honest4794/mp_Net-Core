@@ -107,16 +107,16 @@ print(f"[Audio Mode] {AUDIO_MODE}")
 
 # ==================== 路徑初始化 ====================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 os.chdir(SCRIPT_DIR)
 
 # ==================== 協議層導入 ====================
 try:
-    from slave.lib.proto import Proto, StreamParser
-    from slave.lib.schema_loader import SchemaStore
-    from slave.lib.schema_codec import SchemaCodec
+    from slave.lib.sys.proto import Proto, StreamParser
+    from slave.lib.sys.schema_loader import SchemaStore
+    from slave.lib.sys.schema_codec import SchemaCodec
     from tools.PC.PXLDv3Splitter import PXLDv3Decoder
 except ImportError as e:
     print(f"❌ 導入錯誤: {e}")
@@ -535,7 +535,10 @@ class DeviceManager:
 
 # ==================== NetBusMaster 主類 ====================
 class NetBusMaster:
-    def __init__(self, config_file="slave_map.json"):
+    def __init__(self, config_file=None):
+        if config_file is None:
+            # 配置檔固定在 tools/ 目錄下 (相對腳本所在位置向上層)
+            config_file = os.path.join(SCRIPT_DIR, "..", "slave_map.json")
         self.store = SchemaStore(dir_path=f"{PROJECT_ROOT}/slave/schema")
         self.panel = MonitorPanel()
         self.device_manager = DeviceManager(self.panel)

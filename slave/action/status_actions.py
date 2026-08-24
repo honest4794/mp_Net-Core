@@ -64,4 +64,13 @@ def register(app):
             return {}
 
     bus.register_provider("ips", _ips_provider)
+
+    # 🔧 目前渲染幀率 provider (主動同步/Profile 用; PC 端 0x1101 可取回)
+    def _local_fps_provider():
+        try:
+            return bus.shared.get("System", {}).get("local_fps", 0)
+        except Exception:
+            return 0
+
+    bus.register_provider("local_fps", _local_fps_provider)
     print("✅ [Action] Status & Health actions integrated")

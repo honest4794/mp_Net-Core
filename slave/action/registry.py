@@ -12,6 +12,7 @@ from action import now_actions
 from action import hw_actions
 from action import waiting_to_trash_actions
 from action import net_actions
+from action import pixel_actions
 
 def register_all(app):
     file_actions.register(app)
@@ -25,3 +26,4 @@ def register_all(app):
     hw_actions.register(app)
     waiting_to_trash_actions.register(app)
     net_actions.register(app)
+    pixel_actions.register(app)

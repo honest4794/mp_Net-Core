@@ -122,6 +122,11 @@ class SchemaCodec:
         if not names:
             return out
 
+        # 🔧 CPython 相容: viper/ptr8 只在 MicroPython 上可用,
+        # PC 端 (NetBusMaster 等) 走純 Python 解碼, 語意與 _viper_decode 一致。
+        if not IS_MICROPYTHON:
+            return SchemaCodec._decode_py(store, cmd_id, names, payload, out)
+
         out_buf = bytearray(len(names) * 8 + 2)
         _viper_decode(store.dispatch_buf, store.field_buf, cmd_id, payload, len(payload), out_buf)
         fc = out_buf[-2] | (out_buf[-1] << 8)
@@ -145,6 +150,68 @@ class SchemaCodec:
             elif tc == 5:
                 out[name] = memoryview(payload)[val:]
 
+        return out
+
+    @staticmethod
+    def _decode_py(store, cmd_id, names, payload, out):
+        """CPython 純 Python 解碼 (與 _viper_decode 相同欄位語意)。
+
+        dispatch_buf: 每筆 8B = cmd_id(u16) + field_start(u16) + count(u8) + pad(3)
+        field_buf   : 每欄 2B = type_code(u8) + extra(u8)
+        type: 0=u8 1=u16 2=u32 3=str_u16len 4=bytes_fixed 5=bytes_rest
+        """
+        dispatch = store.dispatch_buf
+        fields = store.field_buf
+        plen = len(payload)
+        fs = 0
+        fc = 0
+        nd = len(dispatch) // 8
+        for di in range(nd):
+            doff = di * 8
+            cid = dispatch[doff] | (dispatch[doff + 1] << 8)
+            if cid == cmd_id:
+                fs = dispatch[doff + 2] | (dispatch[doff + 3] << 8)
+                fc = dispatch[doff + 4]
+                break
+
+        pos = 0
+        for i in range(fc):
+            fi = (fs + i) * 2
+            tc = fields[fi]
+            extra = fields[fi + 1]
+            name = names[i]
+            if pos >= plen and tc != 5:
+                break
+            if tc == 0:
+                out[name] = payload[pos] if pos < plen else 0
+                pos += 1
+            elif tc == 1:
+                if pos + 1 < plen:
+                    out[name] = payload[pos] | (payload[pos + 1] << 8)
+                else:
+                    out[name] = 0
+                pos += 2
+            elif tc == 2:
+                if pos + 3 < plen:
+                    out[name] = (payload[pos] | (payload[pos + 1] << 8) |
+                                 (payload[pos + 2] << 16) | (payload[pos + 3] << 24))
+                else:
+                    out[name] = 0
+                pos += 4
+            elif tc == 3:
+                if pos + 1 < plen:
+                    slen = payload[pos] | (payload[pos + 1] << 8)
+                    pos += 2
+                    out[name] = bytes(payload[pos:pos + slen]).decode("utf-8")
+                    pos += slen
+                else:
+                    out[name] = ""
+            elif tc == 4:
+                out[name] = bytes(payload[pos:pos + extra])
+                pos += extra
+            elif tc == 5:
+                out[name] = memoryview(payload)[pos:]
+                pos = plen
         return out
 
     @staticmethod

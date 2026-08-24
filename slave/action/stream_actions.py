@@ -9,6 +9,7 @@ def on_stream_state_set(ctx, args):
         "active_file": fs.resolve(args["file_name"])[1],
         "cur_block": args["block_id"],
         "play_mode": args["play_mode"],
+        "stream_active": True,   # 串流供給鏈專用旗標 (本地燈效 MODE_SET 會關掉它)
         "is_seeking": True,
         "is_ready": False,
         "is_streaming": False # 先設為 False 以免 Ready 途中亂跳
@@ -32,7 +33,7 @@ def on_stream_play(ctx, args):
     else:
         print(f"▶️ PLAY from start")
         
-    bus.shared.update({"is_streaming": True})
+    bus.shared.update({"stream_active": True, "is_streaming": True})
 
 def handle_supply_chain(hub, s, ctx):
     """由 Core 0 定時調用，負責加載與 READY 回報"""
@@ -70,8 +71,8 @@ def handle_supply_chain(hub, s, ctx):
             print(f"❌ Load Error: {e}")
             bus.shared["is_seeking"] = False
 
-    # 播放規律預讀
-    if bus.shared.get("is_streaming") and not bus.shared.get("is_paused"):
+    # 播放規律預讀 (僅在串流啟用時供給, 本地燈效播放時 stream_active=False 不會搶 hub)
+    if bus.shared.get("stream_active") and bus.shared.get("is_streaming") and not bus.shared.get("is_paused"):
         # 利用 Hub 自帶 dirty 位檢查供給
         if not hub.dirty and s.get("f_local"):
             view = hub.get_write_view()
@@ -82,11 +83,26 @@ def handle_supply_chain(hub, s, ctx):
                 else:
                     hub.commit()
 
+def on_stream_info(ctx, args):
+    """0x3001 STREAM_INFO: 主動同步幀率 (Active Sync)。
+
+    主控 (NetBusMaster) 定時廣播此指令, 本機據此覆寫渲染幀率
+    (bus.shared["System"]["local_fps"] + fps_override), RenderTask 偵測到
+    fps_override 變化即時更新節拍, 不需重開機。
+    """
+    fps = args.get("fps", 0) or 0
+    if fps > 0:
+        sys_cfg = bus.shared.setdefault("System", {})
+        sys_cfg["local_fps"] = fps
+        bus.shared["fps_override"] = fps
+        print("📡 [Stream] FPS override -> {} (active sync)".format(fps))
+
 def register(app):
     # 播放控制
+    app.disp.on(0x3001, on_stream_info)   # INFO: 主控主動同步幀率
     app.disp.on(0x3009, on_stream_state_set) # SET
     app.disp.on(0x300A, on_stream_play) # PLAY
     app.disp.on(0x3005, lambda c,a: bus.shared.update({"is_paused": bool(a["pause"])})) # PAUSE
-    app.disp.on(0x3002, lambda c,a: bus.shared.update({"is_streaming": False, "is_ready": False})) # STOP
+    app.disp.on(0x3002, lambda c,a: bus.shared.update({"stream_active": False, "is_streaming": False, "is_ready": False})) # STOP
     # 0x3003 Direct Mode
     app.disp.on(0x3003, lambda c,a: bus.get_service("pixel_stream").write_from(a["pixel_data"]))

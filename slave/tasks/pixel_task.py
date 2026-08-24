@@ -59,6 +59,7 @@ class PixelTask(Task):
         self._modes = {}
         self._show = {"auto_play": False, "list": []}
         self._show_list = []
+        self._orig_show_list = None   # 遠端單模式播放前的原始 show list (結束後還原)
         self._playing = False
         self._paused = False
         self._pass = 1       # 目前 show 的輪次（第 1 輪起）
@@ -329,6 +330,28 @@ class PixelTask(Task):
         if bus.shared.pop("pixel_pause", None) is not None:
             self._paused = not self._paused
             get_log().info("[Pixel] ⏸ paused={}".format(self._paused))
+        # 遠端指定播放單一本地模式 (0x3105 MODE_SET → pixel_actions 寫入)
+        rid = bus.shared.pop("pixel_remote_set", None)
+        if rid is not None:
+            try:
+                mode = self._modes.get(int(rid))
+            except (TypeError, ValueError):
+                mode = None
+            if mode:
+                if self._orig_show_list is None:
+                    self._orig_show_list = self._show_list
+                self._show_list = [mode]
+                self._start()
+                get_log().info("[Pixel] ▶ remote play mode {}".format(rid))
+            else:
+                get_log().warn("[Pixel] remote mode {} 不存在".format(rid))
+        # 遠端停止本地模式 (0x3106 MODE_STOP) → 熄燈並還原 show list
+        if bus.shared.pop("pixel_remote_stop", None) is not None:
+            if self._orig_show_list is not None:
+                self._show_list = self._orig_show_list
+                self._orig_show_list = None
+            self._stop()
+            get_log().info("[Pixel] ■ remote stop (show list restored)")
 
     def _should_play(self, mode):
         """這一輪（pass）這個 mode 是否要播。"""
@@ -425,5 +448,6 @@ class PixelTask(Task):
     def on_stop(self):
         super().on_stop()
         self._playing = False
+        self._orig_show_list = None
         self._release_player(self._cur)
         self._cur = None

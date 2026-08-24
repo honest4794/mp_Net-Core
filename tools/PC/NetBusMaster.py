@@ -6,6 +6,7 @@ import hashlib
 import struct
 import json
 import copy
+import csv
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -25,7 +26,14 @@ DEFAULT_CONFIG = {
     "upload_ack_timeout": 5.0,
     "upload_begin_timeout": 5.0,
     "upload_validation_timeout": 30.0,
-    "download_read_timeout": 5.0
+    "download_read_timeout": 5.0,
+    # 🔧 新增: 延遲量測 / 中途加入 / 循環播放
+    "latency_samples": 5,                 # 每次量測的 ping 次數
+    "latency_log_file": "latency_log.csv", # 延遲測試紀錄檔
+    "loop_play": 0,                       # 1 = 循環播放 (slave play_mode=1, 播完自動重頭)
+    # 🔧 主動同步幀率 (0x3001 STREAM_INFO, 現有指令): 播放期間定時廣播設定 fps
+    "active_sync_fps": 0,                 # 0 = 關閉 (被動同步); >0 = 定時廣播此 fps 給所有目標
+    "active_sync_interval_s": 10.0        # 廣播間隔 (秒)
 }
 
 # ==================== 跨平台輸入處理 ====================
@@ -114,16 +122,16 @@ print(f"[Audio Mode] {AUDIO_MODE}")
 
 # ==================== 路徑初始化 ====================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 os.chdir(SCRIPT_DIR)
 
 # ==================== 協議層導入 ====================
 try:
-    from slave.lib.proto import Proto, StreamParser
-    from slave.lib.schema_loader import SchemaStore
-    from slave.lib.schema_codec import SchemaCodec
+    from slave.lib.sys.proto import Proto, StreamParser
+    from slave.lib.sys.schema_loader import SchemaStore
+    from slave.lib.sys.schema_codec import SchemaCodec
     from tools.PC.PXLDv3Splitter import PXLDv3Decoder
 except ImportError as e:
     print(f"❌ 導入錯誤: {e}")
@@ -381,7 +389,9 @@ class MonitorPanel:
             "播放中": "\033[92m",
             "暫停": "\033[95m",
             "錯誤": "\033[91m",
-            "無響應": "\033[31m" # 暗紅/紅色
+            "無響應": "\033[31m", # 暗紅/紅色
+            "中途加入": "\033[92m", # 🔧 中途加入 (同步播放)
+            "配對中": "\033[94m"    # 🔧 配對模式
         }
         status_color = status_colors.get(monitor.status, "\033[0m")
         if monitor.transfer_label:
@@ -428,6 +438,15 @@ class MonitorPanel:
         elif monitor.status == "無響應":
             lost_time = int(time.time() - monitor.last_update)
             info = f"\033[31m無響應 {lost_time}s\033[0m"
+        
+        elif monitor.status == "中途加入":
+            # 🔧 中途加入: 顯示正在對齊的幀
+            frame_str = f"{monitor.current_frame}/{monitor.total_frames}"
+            info = f"對齊中 │ Frame: {frame_str}"
+        
+        elif monitor.status == "配對中":
+            # 🔧 配對模式: 播放本地燈效中
+            info = "播放本地燈效,等待確認..."
         
         else:
             idle_time = int(time.time() - monitor.last_update)
@@ -476,6 +495,21 @@ class DeviceManager:
                 "ack_event": threading.Event(),
                 "query_event": threading.Event(),
                 "read_event": threading.Event(),
+                "ready_event": threading.Event(),   # 🔧 0x3008 STREAM_READY_ACK (中途加入等待)
+                "ping_event": threading.Event(),    # 🔧 0x100B TIME_SYNC_RSP (延遲量測)
+                "ping_t0": 0.0,
+                "ping_rtt": None,                   # 🔧 最近一次 RTT (ms)
+                "ping_offset": None,                # 🔧 最近一次時鐘偏移 (slave-master, ms)
+                "latency_ms": None,                 # 🔧 單向延遲估計 (min-RTT/2, ms)
+                "clock_offset_ms": None,            # 🔧 min-RTT 樣本的時鐘偏移 (ms)
+                "min_rtt_ms": None,                 # 🔧 本次量測最小 RTT (ms)
+                "avg_rtt_ms": None,                 # 🔧 本次量測平均 RTT (ms)
+                "mode_event": threading.Event(),    # 🔧 0x3102 MODE_LIST_RSP (配對模式)
+                "mode_list": None,
+                "mode_detail_event": threading.Event(),  # 🔧 0x3108 MODE_DETAIL_RSP
+                "mode_detail": None,
+                "status_event": threading.Event(),  # 🔧 0x1102 STATUS_RSP (Profile/狀態查詢)
+                "status_data": None,
                 "remote_exists": 0,
                 "remote_sha": None,
                 "remote_size": 0,
@@ -555,8 +589,14 @@ class DeviceManager:
 
 # ==================== NetBusMaster 主類 ====================
 class NetBusMaster:
-    def __init__(self, config_file="slave_map.json"):
+    def __init__(self, config_file=None):
+        if config_file is None:
+            # 配置檔固定在 tools/ 目錄下 (相對腳本所在位置向上層)
+            config_file = os.path.join(SCRIPT_DIR, "..", "slave_map.json")
         self.store = SchemaStore(dir_path=f"{PROJECT_ROOT}/slave/schema")
+        # 🔧 修復: 建立 dispatch/field 緩衝, 否則 decode 只會回 _name/_cmd
+        # (0x1102 心跳、0x2002/0x2006 檔案傳輸、0x3102/0x3108 配對… 全部解不出欄位)
+        self.store.finalize()
         self.panel = MonitorPanel()
         self.device_manager = DeviceManager(self.panel)
         self.slaves = self.device_manager.slaves  # 兼容舊代碼，指向 Manager 的字典
@@ -569,6 +609,9 @@ class NetBusMaster:
         self.play_lock = threading.Lock()
         self.playback_start_time = 0
         self.current_fps = 40
+        self.current_play_mode = 0   # 🔧 目前播放的 play_mode (0=一次, 1=循環), 中途加入沿用
+        self._active_sync_stop = threading.Event()   # 🔧 主動同步幀率廣播執行緒
+        self._active_sync_thread = None
         
         self.config_file = config_file
         self.config = copy.deepcopy(DEFAULT_CONFIG)
@@ -703,49 +746,66 @@ class NetBusMaster:
                 cid, conn, addr, StreamParser()
             )
             
-            # --- NEW: Mid-Stream Join Logic ---
+            # --- Mid-Stream Join Logic (🔧 延遲補償 + READY 等待, 推算最準確幀號) ---
             if self.is_playing:
                 try:
-                    now = time.time()
-                    elapsed = now - self.playback_start_time
-                    if elapsed < 0: elapsed = 0
-                    
-                    target_frame = int(elapsed * self.current_fps)
-                    
-                    # 處理循環播放的幀數計算
-                    play_id = self.config["mapping"].get(cid, {}).get("play_id")
-                    if play_id is not None:
-                        meta = self.pxld_metadata.get(play_id)
-                        if meta and meta.get("total_frames", 0) > 0:
-                            target_frame = target_frame % meta["total_frames"]
-                    
-                    print(f"🔄 [Mid-Join] {cid} joining at frame {target_frame} ({elapsed:.2f}s)")
-                    
                     # 異步執行加入流程，避免阻塞主循環
-                    def _join_task(target_cid, frame):
+                    def _join_task(target_cid):
                         try:
-                            # 1. 發送準備指令 (與 step_4 保持一致)
+                            node = self.device_manager.get_slave(target_cid)
+                            if node is None:
+                                return
+
+                            # 0. 量測此設備的單向延遲 (RTT/2), 供幀號補償
+                            lat_s = 0.0
+                            lat = self.measure_latency(target_cid, samples=3)
+                            if lat is not None:
+                                lat_s = lat / 1000.0
+                                self._log_latency([(target_cid, lat)], note="mid-join")
+                                print(f"   📡 {target_cid} latency {lat:.1f}ms → 補償 {lat_s*1000:.0f}ms")
+
+                            # 1. 發送準備指令 (與 step_4 保持一致; play_mode 沿用目前播放模式)
                             self.send_pkt([target_cid], 0x3009, {
                                 "file_name": "data.bin",
                                 "block_id": 0,
-                                "play_mode": 0
+                                "play_mode": self.current_play_mode
                             })
-                            
-                            # 2. 等待從機就緒 (簡單延遲)
-                            time.sleep(0.2)
-                            
-                            # 3. 發送帶幀號的播放指令
-                            self.send_pkt([target_cid], 0x300A, {"start_frame": frame})
-                            
+
+                            # 2. 等待從機 READY (0x3008) — 代表已 seek 並預填第一幀
+                            node["ready_event"].clear()
+                            if not node["ready_event"].wait(timeout=5.0):
+                                print(f"❌ {target_cid} READY timeout, skip play")
+                                self.panel.update_device(target_cid, status="錯誤", error_msg="READY timeout")
+                                return
+
+                            # 3. 就緒瞬間重新計算幀號:
+                            #    其他設備已播放 elapsed 秒; PLAY 指令到達 slave 時又過了
+                            #    latency 秒 → 目標幀 = (elapsed + latency) * fps
+                            now = time.time()
+                            elapsed = now - self.playback_start_time
+                            if elapsed < 0: elapsed = 0
+                            target_frame = int((elapsed + lat_s) * self.current_fps)
+
+                            # 處理循環播放的幀數計算
+                            play_id = self.config["mapping"].get(target_cid, {}).get("play_id")
+                            if play_id is not None:
+                                meta = self.pxld_metadata.get(play_id)
+                                if meta and meta.get("total_frames", 0) > 0:
+                                    target_frame = target_frame % meta["total_frames"]
+
+                            print(f"🔄 [Mid-Join] {target_cid} → frame {target_frame} (elapsed {elapsed:.2f}s + lat {lat_s*1000:.0f}ms)")
+
+                            # 4. 發送帶幀號的播放指令
+                            self.send_pkt([target_cid], 0x300A, {"start_frame": target_frame})
                             self.panel.update_device(target_cid, status="中途加入")
                         except Exception as e:
                             print(f"❌ Join task failed for {target_cid}: {e}")
 
-                    threading.Thread(target=_join_task, args=(cid, target_frame), daemon=True).start()
-                    
+                    threading.Thread(target=_join_task, args=(cid,), daemon=True).start()
+
                 except Exception as e:
                     print(f"❌ Mid-Join logic error: {e}")
-            # --- END NEW LOGIC ---
+            # --- END Mid-Join Logic ---
             
             parser = self.slaves[cid]["parser"]
             while self.running:
@@ -786,7 +846,8 @@ class NetBusMaster:
     
     def dispatch_logic(self, cid, cmd, payload):
         c_def = self.store.get(cmd)
-        args = SchemaCodec.decode(c_def, payload)
+        # 🔧 修復: 帶 store 解碼 (CPython 走純 Python 路徑), 否則欄位全空
+        args = SchemaCodec.decode(c_def, payload, store=self.store)
         
         # ========== 0x1102: 状态心跳 ==========
         if cmd == 0x1102:
@@ -805,8 +866,20 @@ class NetBusMaster:
                     mem_free=mem_free
                 )
                 
+                # 🔧 快取狀態供 Profile/狀態查詢使用 (query_status)
+                if cid in self.slaves:
+                    node = self.slaves[cid]
+                    node["status_data"] = status_data
+                    node["status_event"].set()
+                
                 # 设备 ID 转移
                 if real_id and real_id != cid:
+                    # 🔧 防止 real_id 已被另一條連接佔用時靜默覆寫 (舊 socket 洩漏)
+                    if real_id in self.slaves and self.slaves[real_id]["conn"] != self.slaves[cid]["conn"]:
+                        try:
+                            self.slaves[real_id]["conn"].close()
+                        except:
+                            pass
                     if cid in self.panel.monitors:
                         self.panel.monitors[real_id] = self.panel.monitors.pop(cid)
                         self.panel.monitors[real_id].device_id = real_id
@@ -815,6 +888,40 @@ class NetBusMaster:
             
             except Exception as e:
                 pass
+        
+        elif cmd == 0x3008:
+            # 🔧 STREAM_READY_ACK: slave 已完成準備/跳轉, 供中途加入計算最準確幀號
+            if cid in self.slaves:
+                self.slaves[cid]["ready_event"].set()
+        
+        elif cmd == 0x100B:
+            # 🔧 TIME_SYNC_RSP: 延遲量測回應
+            #    t0 = 本機送出時刻, t1 = slave 收到時刻 (received_at_ms, slave 時鐘),
+            #    t2 = 本機收到時刻 → RTT = t2-t0; 時鐘偏移 = t1 - (t0+t2)/2
+            if cid in self.slaves:
+                node = self.slaves[cid]
+                t2 = time.time()
+                t0 = node.get("ping_t0", t2)
+                t1 = args.get("received_at_ms", 0) / 1000.0
+                rtt = t2 - t0
+                if rtt >= 0:
+                    node["ping_rtt"] = rtt * 1000.0
+                    node["ping_offset"] = (t1 - (t0 + t2) / 2.0) * 1000.0
+                    node["ping_event"].set()
+        
+        elif cmd == 0x3102:
+            # 🔧 MODE_LIST_RSP: 配對模式 — 本地燈效模式清單
+            if cid in self.slaves:
+                node = self.slaves[cid]
+                node["mode_list"] = args
+                node["mode_event"].set()
+        
+        elif cmd == 0x3108:
+            # 🔧 MODE_DETAIL_RSP: 配對模式 — 單一模式細節 (名稱)
+            if cid in self.slaves:
+                node = self.slaves[cid]
+                node["mode_detail"] = args
+                node["mode_detail_event"].set()
         
         elif cmd == 0x3012:
             block_id = args.get("block_id", 0)
@@ -880,6 +987,239 @@ class NetBusMaster:
                     pass
             # 如果 tid 根本不在 slaves (socket 已 close/清除)，則無法發送，忽略
     
+    # ==================== 延遲量測 / 紀錄 (0x100A/0x100B TIME_SYNC) ====================
+    def measure_latency(self, cid, samples=None):
+        """量測單一設備的單向延遲 (ms)。回傳平均值或 None (無回應)。
+
+        利用 0x100A TIME_SYNC (master_time_ms) → slave 回 0x100B TIME_SYNC_RSP
+        (received_at_ms = slave 本地收到時刻)。每個樣本取:
+          RTT    = t2 - t0            (本機送出→收到)
+          偏移   = t1 - (t0+t2)/2     (slave 時鐘 − master 時鐘)
+        NTP 式取「最小 RTT」樣本 (佇列不對稱最小、最可信):
+          單向延遲 ≈ min_RTT / 2      (單一路徑下最精確的估計)
+        另把時鐘偏移一併存下, 供顯示/對時參考。
+        """
+        node = self.slaves.get(cid)
+        if not node:
+            return None
+        samples = int(samples if samples is not None else self._cfg_int("latency_samples", 5))
+        samples = max(1, samples)
+        samples_data = []  # (rtt_ms, offset_ms)
+        for _ in range(samples):
+            node["ping_event"].clear()
+            node["ping_rtt"] = None
+            node["ping_offset"] = None
+            node["ping_t0"] = time.time()
+            self.send_pkt([cid], 0x100A, {"master_time_ms": int(time.time() * 1000) & 0xFFFFFFFF})
+            if node["ping_event"].wait(timeout=1.0):
+                rtt = node.get("ping_rtt")
+                if rtt is not None:
+                    samples_data.append((rtt, node.get("ping_offset", 0.0)))
+        if not samples_data:
+            return None
+        # NTP 式: 最小 RTT 樣本最可信 (佇列不對稱最小)
+        best = min(samples_data, key=lambda x: x[0])
+        node["min_rtt_ms"] = best[0]
+        node["avg_rtt_ms"] = sum(r for r, _ in samples_data) / len(samples_data)
+        node["latency_ms"] = best[0] / 2.0
+        node["clock_offset_ms"] = best[1]
+        return node["latency_ms"]
+
+    def _log_latency(self, rows, note=""):
+        """把 (device_id, latency_ms) 列表寫入 CSV 紀錄檔 (手動測試紀錄用)。
+
+        rows: [(cid, latency_ms), ...]; note: 附加備註欄 (例如 mid-join)。
+        """
+        try:
+            path = self.config.get("latency_log_file", "latency_log.csv")
+            is_new = not os.path.exists(path)
+            with open(path, "a", encoding="utf-8", newline="") as f:
+                w = csv.writer(f)
+                if is_new:
+                    w.writerow(["timestamp", "device_id", "play_id", "latency_ms", "note"])
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                for cid, lat in rows:
+                    pid = self.config["mapping"].get(cid, {}).get("play_id", "")
+                    w.writerow([ts, cid, pid, f"{lat:.2f}", note])
+        except Exception as e:
+            print(f"⚠️ 延遲紀錄寫入失敗: {e}")
+
+    def _latency_test_and_log(self, targets=None, note="", ask_note=False):
+        """對目標設備逐一量測延遲, 顯示結果並寫入紀錄檔。
+
+        ask_note=True 時會先問使用者備註再寫入 (手動測試紀錄用)。
+        """
+        targets = targets if targets is not None else self.selected_targets
+        if not targets:
+            print("⚠️ 無目標設備")
+            return
+        print("\n📡 [延遲測試] 正在量測 ({} samples/device, min-RTT 法)...".format(
+            self._cfg_int("latency_samples", 5)))
+        rows = []
+        for tid in targets:
+            lat = self.measure_latency(tid)
+            if lat is None:
+                print(f"  ❌ {tid}: 無回應")
+            else:
+                node = self.slaves.get(tid, {})
+                min_rtt = node.get("min_rtt_ms")
+                avg_rtt = node.get("avg_rtt_ms")
+                off = node.get("clock_offset_ms")
+                extra = ""
+                if min_rtt is not None:
+                    extra = f"  (minRTT {min_rtt:5.1f}ms / avgRTT {avg_rtt:5.1f}ms / offset {off:+7.2f}ms)"
+                print(f"  ✅ {tid}: 單向 {lat:6.1f} ms{extra}")
+                rows.append((tid, lat))
+        if rows:
+            if ask_note:
+                note = input("  📝 備註 (Enter=無): ").strip()
+            self._log_latency(rows, note=note)
+            print(f"💾 已紀錄 {len(rows)} 筆 → {self.config.get('latency_log_file', 'latency_log.csv')}")
+
+    def _get_mode_name(self, cid, mode_id):
+        """查詢單一本地燈效模式的名稱 (0x3107→0x3108), 失敗回 '?'。"""
+        node = self.slaves.get(cid)
+        if not node:
+            return "?"
+        node["mode_detail_event"].clear()
+        node["mode_detail"] = None
+        self.send_pkt([cid], 0x3107, {"mode_type": 0, "mode_id": mode_id})
+        if node["mode_detail_event"].wait(timeout=1.5):
+            d = node.get("mode_detail") or {}
+            name = d.get("name")
+            if name:
+                return name
+        return "?"
+
+    # ==================== 設備狀態 / 模式查詢 ====================
+    def query_status(self, cid, timeout=2.0):
+        """主動查詢設備狀態 (0x1101 STATUS_GET → 0x1102 STATUS_RSP)。
+
+        回傳 status_json 解析後的 dict (含 render_fps 幀號、mem_free、ips、
+        local_fps、slave_id), 失敗回 None。
+        """
+        node = self.slaves.get(cid)
+        if not node:
+            return None
+        node["status_event"].clear()
+        node["status_data"] = None
+        self.send_pkt([cid], 0x1101, {"query_type": 0})
+        if node["status_event"].wait(timeout=timeout):
+            return node.get("status_data")
+        return None
+
+    def _query_modes(self, cid, timeout=2.0):
+        """查詢設備本地燈效清單 (0x3101 + 0x3108 名稱)。
+
+        回傳 [(mode_id, name), ...]; 逾時/無模式回 []。
+        """
+        node = self.slaves.get(cid)
+        if not node:
+            return []
+        node["mode_event"].clear()
+        node["mode_list"] = None
+        self.send_pkt([cid], 0x3101, {"mode_type": 0})
+        if not node["mode_event"].wait(timeout=timeout):
+            return []
+        ml = node.get("mode_list") or {}
+        entries = ml.get("entries")
+        if entries is None:
+            return []
+        try:
+            ids = list(bytes(entries))
+        except Exception:
+            return []
+        result = []
+        for mid in ids:
+            name = self._get_mode_name(cid, mid)
+            result.append((mid, name))
+        return result
+
+    # ==================== 每 id 一個 Profile (profiles/<id>.json) ====================
+    def _profile_path(self, cid):
+        profiles_dir = os.path.join(os.getcwd(), "profiles")
+        os.makedirs(profiles_dir, exist_ok=True)
+        safe = cid.replace(":", "_")
+        return os.path.join(profiles_dir, f"{safe}.json")
+
+    def _save_profile(self, cid, manifest=None):
+        """建立/更新單一設備的 Profile: 本地燈效清單 + 狀態 + 檔案清單。
+
+        資料來源: 0x3101/0x3108 (模式)、0x1101 (狀態/fps/ips)、manifest.json
+        (檔案清單, 可傳入已下載的 dict)、0x100A (延遲)。離線時仍會用既有
+        mapping 資訊寫出, 供之後離線查閱「對方有什麼模式可播放」。
+        """
+        node = self.slaves.get(cid)
+        profile = {
+            "device_id": cid,
+            "play_id": self.config["mapping"].get(cid, {}).get("play_id"),
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "online": node is not None,
+        }
+        if node:
+            # 狀態 (fps / ips / 記憶體)
+            status = self.query_status(cid, timeout=2.0)
+            if status:
+                profile["status"] = {
+                    k: status.get(k) for k in
+                    ("render_fps", "mem_free", "uptime_ms", "fs_free_kb", "ips", "local_fps", "slave_id")
+                    if k in status
+                }
+            # 本地燈效模式
+            modes = self._query_modes(cid, timeout=2.0)
+            profile["modes"] = [{"id": mid, "name": name} for mid, name in modes]
+            # 延遲 (min-RTT 單向)
+            lat = self.measure_latency(cid, samples=3)
+            if lat is not None:
+                profile["latency_ms"] = round(lat, 2)
+                profile["clock_offset_ms"] = round(node.get("clock_offset_ms") or 0.0, 2)
+        # 檔案清單
+        if manifest is not None:
+            profile["files"] = sorted(manifest.keys())
+            profile["file_count"] = len(manifest)
+        try:
+            with open(self._profile_path(cid), "w", encoding="utf-8") as f:
+                json.dump(profile, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"⚠️ Profile 寫入失敗 {cid}: {e}")
+            return False
+
+    def _load_profile(self, cid):
+        """讀取快取的 Profile dict, 沒有回 None。"""
+        try:
+            with open(self._profile_path(cid), "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _print_profile(self, cid, profile):
+        """顯示 Profile 內容 (模式清單等)。"""
+        if not profile:
+            print(f"   📄 無 {cid} 的 profile 快取")
+            return
+        print(f"   📄 Profile ({profile.get('updated_at', '?')})")
+        print(f"      PlayID: {profile.get('play_id')}  │  在線: {'是' if profile.get('online') else '否'}")
+        st = profile.get("status") or {}
+        if st:
+            print(f"      local_fps: {st.get('local_fps', '?')}  │  mem_free: {st.get('mem_free', '?')}  │  ips: {st.get('ips', '?')}")
+        if "latency_ms" in profile:
+            print(f"      單向延遲: {profile['latency_ms']} ms  │  offset: {profile.get('clock_offset_ms')} ms")
+        modes = profile.get("modes") or []
+        if modes:
+            print(f"      可播放模式 {len(modes)} 個:")
+            for m in modes:
+                print(f"        - mode {m['id']} ({m['name']})")
+        else:
+            print("      可播放模式: (無/未查詢)")
+        files = profile.get("files") or []
+        if files:
+            print(f"      檔案 {len(files)} 個 (存於 download/{cid}/):")
+            for p in files[:20]:
+                print(f"        - {p}")
+            if len(files) > 20:
+                print(f"        ... 共 {len(files)} 個")
+
     # ==================== Step 0: 固件更新 ====================
     def step_0_update_firmware(self):
         self.load_config()
@@ -1296,6 +1636,7 @@ class NetBusMaster:
             print("\n📂 [文件管理器]")
             print("  1. 上傳文件 (Upload)")
             print("  2. 下載文件 (Download)")
+            print("  3. 批次備份全部設備 (Bulk Backup + Profile)")
             print("  q. 返回")
             
             choice = input("\n👉 請選擇: ").strip().lower()
@@ -1303,6 +1644,8 @@ class NetBusMaster:
                 self._fe_upload()
             elif choice == '2':
                 self._fe_download()
+            elif choice == '3':
+                self._bulk_download_all()
             elif choice == 'q':
                 return
 
@@ -1475,8 +1818,107 @@ class NetBusMaster:
             self._transfer_end()
             self.panel.stop()
             ConsoleUI.show_cursor()
+        # 🔧 下載完成後建立 Profile (模式/狀態/延遲 + 檔案清單)
+        self._save_profile(target, manifest)
         print("\n✅ 所有下載完成")
         input("按 Enter 返回...")
+
+    def _bulk_download_all(self):
+        """一次過下載所有 MCU 的檔案, 依 id 分類存放 + 每 id 一個 Profile。"""
+        if self.panel.running:
+            self.panel.stop()
+        ConsoleUI.show_cursor()
+
+        targets = list(self.slaves.keys())
+        if not targets:
+            print("❌ 無在線設備")
+            input("\n按 Enter 返回...")
+            self.panel.start()
+            return
+
+        print(f"\n📦 [批次備份] 將下載 {len(targets)} 個設備的全部檔案 → download/<device_id>/")
+        confirm = input("👉 確認? (y/n): ").lower()
+        if confirm != 'y':
+            self.panel.start()
+            return
+
+        ok_count = 0
+        fail_count = 0
+        for target in targets:
+            print(f"\n{'='*56}\n📥 設備: {target}")
+            node = self.slaves.get(target)
+            if not node:
+                print("  ❌ 離線, 跳過")
+                fail_count += 1
+                continue
+
+            # 1. Manifest
+            self._transfer_begin()
+            try:
+                config_data = self._download_bytes(target, "/manifest.json", expected_size=None, status="Manifest")
+            finally:
+                self._transfer_end()
+            if not config_data:
+                if self.transfer_cancel.is_set():
+                    print("ℹ️ 已停止")
+                    break
+                print("  ❌ Manifest 下載失敗")
+                fail_count += 1
+                continue
+            try:
+                manifest = json.loads(config_data.decode('utf-8'))
+            except Exception:
+                print("  ❌ Manifest 解析失敗")
+                fail_count += 1
+                continue
+
+            paths = sorted(manifest.keys())
+            save_dir = os.path.join(os.getcwd(), "download", target.replace(":", "_"))
+            os.makedirs(save_dir, exist_ok=True)
+            print(f"  📄 {len(paths)} 個檔案 → {save_dir}")
+
+            # 2. 下載全部
+            self._transfer_begin()
+            try:
+                total = len(paths)
+                done = 0
+                for r_path in paths:
+                    if self.transfer_cancel.is_set():
+                        break
+                    l_path = os.path.join(save_dir, r_path.lstrip("/"))
+                    f_size = manifest[r_path]['s']
+                    try:
+                        ok = self._download_file(
+                            target, r_path, l_path,
+                            expected_size=f_size,
+                            status=f"下載 {done+1}/{total}"
+                        )
+                    except Exception as e:
+                        if str(e) == "已停止" or self.transfer_cancel.is_set():
+                            break
+                        print(f"  ⚠️ {r_path}: {e}")
+                        continue
+                    if ok:
+                        done += 1
+            finally:
+                self._transfer_end()
+
+            if self.transfer_cancel.is_set():
+                print("ℹ️ 已停止")
+                break
+
+            # 3. Profile (模式/狀態/延遲 + 檔案清單)
+            if self._save_profile(target, manifest):
+                print(f"  💾 Profile 已存: profiles/{target.replace(':', '_')}.json")
+                ok_count += 1
+            else:
+                fail_count += 1
+            self.panel.update_device(target, status="完成", transfer_label="", upload_progress=100)
+
+        print(f"\n✅ 批次備份完成: 成功 {ok_count} / 失敗 {fail_count}")
+        print("   🔎 想查設備可播放什麼模式? Step 8 Profiles 或 Step 7 配對會顯示快取")
+        input("\n按 Enter 返回...")
+        self.panel.start()
 
     def _update_firmware_files(self):
         slave_dir = os.path.join(PROJECT_ROOT, "slave")
@@ -2340,16 +2782,21 @@ class NetBusMaster:
             if tid in self.panel.monitors:
                 self.panel.monitors[tid].reset_play_stats()
         
+        # 🔧 play_mode: 0=播放一次, 1=循環 (播完自動重頭)
+        self.current_play_mode = 1 if self.config.get("loop_play", 0) else 0
         self.send_pkt(self.selected_targets, 0x3009, {
             "file_name": "data.bin",
             "block_id": 0,
-            "play_mode": 0
+            "play_mode": self.current_play_mode
         })
         while True:
+            loop_str = "開啟" if self.config.get("loop_play", 0) else "關閉"
+            act_fps = self._cfg_int("active_sync_fps", 0)
+            act_str = f"fps={act_fps}" if act_fps > 0 else "關閉"
             print("\n" + "!" * 50)
             print("     系統就緒,等待擊發")
-            print(f"     延遲設定: {self.config.get('sync_delay_ms', 0)} ms")
-            print("     輸入 'go' 開始 | 't' 微調延遲 | 'q' 取消")
+            print(f"     延遲設定: {self.config.get('sync_delay_ms', 0)} ms  │  循環播放: {loop_str}  │  主動同步: {act_str}")
+            print("     輸入 'go' 開始 | 't' 微調延遲 | 'l' 延遲測試並紀錄 | 'p' 切換循環 | 'a' 切換主動同步 | 'q' 取消")
             print("!" * 50)
             
             trigger = input("\n🚀 指令: ").lower().strip()
@@ -2371,6 +2818,37 @@ class NetBusMaster:
                         print(f"✅ 延遲已更新為: {self.config['sync_delay_ms']} ms")
                 except ValueError:
                     print("❌ 輸入無效")
+            elif trigger == 'l':
+                # 🔧 延遲測試 + 手動紀錄 (CSV, 可加備註)
+                self._latency_test_and_log(ask_note=True)
+            elif trigger == 'a':
+                # 🔧 切換主動同步幀率 (0 = 被動, 否則定時廣播 0x3001)
+                cur = self._cfg_int("active_sync_fps", 0)
+                if cur > 0:
+                    self.config["active_sync_fps"] = 0
+                    print("✅ 主動同步已關閉 (回到被動同步)")
+                else:
+                    try:
+                        new_fps = int(input("👉 輸入要廣播的 fps (e.g. 40): ").strip())
+                        if new_fps > 0:
+                            self.config["active_sync_fps"] = new_fps
+                            print(f"✅ 主動同步已開啟: 播放時每 {self.config.get('active_sync_interval_s', 10)}s 廣播 fps={new_fps}")
+                        else:
+                            print("❌ 無效 fps")
+                    except ValueError:
+                        print("❌ 輸入無效")
+                self.save_config()
+            elif trigger == 'p':
+                # 🔧 切換循環播放 (重新發送 0x3009 讓 slave 更新 play_mode)
+                self.config["loop_play"] = 1 - int(self.config.get("loop_play", 0))
+                self.save_config()
+                self.current_play_mode = 1 if self.config["loop_play"] else 0
+                self.send_pkt(self.selected_targets, 0x3009, {
+                    "file_name": "data.bin",
+                    "block_id": 0,
+                    "play_mode": self.current_play_mode
+                })
+                print(f"✅ 循環播放已{'開啟' if self.config['loop_play'] else '關閉'}")
             else:
                 print("❌ 指令無效")
 
@@ -2391,6 +2869,15 @@ class NetBusMaster:
                 self.current_fps = self.pxld_metadata[pid]["fps"]
                 if self.current_fps == 0: self.current_fps = 40
         
+        # 🔧 播放模式: 0=一次, 1=循環 (中途加入沿用此值)
+        self.current_play_mode = 1 if self.config.get("loop_play", 0) else 0
+        
+        # 🔧 提前啟動 is_playing, 避免音訊執行緒啟動前的空窗期 (中途加入會漏掉)
+        self.is_playing = True
+        
+        # 🔧 主動同步幀率: 若 config active_sync_fps > 0, 開始定時廣播 0x3001
+        self._start_active_sync()
+        
         if selected_mp3:
             if delay_ms >= 0:
                 self._start_audio_stream(selected_mp3)
@@ -2403,7 +2890,6 @@ class NetBusMaster:
                 self._start_audio_stream(selected_mp3)
         else:
             # Silent mode: just trigger
-            self.is_playing = True # Enable loop
             self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
         
         # print("\n[控制提示] SPACE=暫停/繼續 | S=停止 | Q=退出") # 移除此行，因為 MonitorPanel 已經顯示了控制提示，且此行會導致 UI 錯亂
@@ -2446,6 +2932,10 @@ class NetBusMaster:
                             self.stop_all()
                             break
                         
+                        elif key == 'l':
+                            # 🔧 播放中量測延遲並紀錄 (觀察中途加入的延遲)
+                            self._latency_test_and_log(note="during-play")
+                        
                         elif key == '\x03': # Ctrl+C
                              self.stop_all()
                              break
@@ -2457,12 +2947,56 @@ class NetBusMaster:
         finally:
             # 確保退出播放循環時恢復原始模式
             input_handler.exit_raw_mode()
+            # 🔧 停止主動同步廣播
+            self._stop_active_sync()
         
         for tid in self.selected_targets:
             self.panel.update_device(tid, status="待機")
         
         time.sleep(1)
-    
+
+    # ==================== 主動同步幀率 (0x3001 STREAM_INFO 廣播) ====================
+    def _start_active_sync(self):
+        """啟動主動同步幀率廣播執行緒 (config: active_sync_fps / active_sync_interval_s)。
+
+        定時廣播現有指令 0x3001 STREAM_INFO {fps}, slave 端即時更新渲染幀率,
+        取代被動等待各設備用自己的 local_fps 播放。
+        """
+        self._stop_active_sync()
+        fps = self._cfg_int("active_sync_fps", 0)
+        if fps <= 0:
+            return
+        interval = self._cfg_float("active_sync_interval_s", 10.0)
+        interval = max(1.0, interval)
+        self._active_sync_stop.clear()
+
+        def _loop():
+            while not self._active_sync_stop.is_set() and self.is_playing:
+                # 每次廣播重新讀取目標, 中途加入的設備也會被同步到
+                targets = list(self.selected_targets)
+                if targets:
+                    self.send_pkt(targets, 0x3001, {
+                        "total_blocks": 0,
+                        "frames_per_block": 0,
+                        "fps": fps
+                    })
+                self._active_sync_stop.wait(interval)
+
+        self._active_sync_thread = threading.Thread(target=_loop, daemon=True)
+        self._active_sync_thread.start()
+        print(f"🔁 [ActiveSync] 定時廣播 0x3001 fps={fps} (每 {interval:.0f}s)")
+
+    def _stop_active_sync(self):
+        """停止主動同步廣播執行緒。"""
+        self._active_sync_stop.set()
+        t = self._active_sync_thread
+        if t:
+            try:
+                t.join(timeout=0.5)
+            except Exception:
+                pass
+        self._active_sync_thread = None
+
     def _start_audio_stream(self, file_path):
         """啟動音訊流 (修復版)"""
         global mixer
@@ -2516,6 +3050,8 @@ class NetBusMaster:
         global mixer
         self.is_playing = False
         self.is_paused = False
+        # 🔧 停止主動同步幀率廣播
+        self._stop_active_sync()
         
         if self.selected_targets:
             self.send_pkt(self.selected_targets, 0x3002, {})
@@ -2529,7 +3065,145 @@ class NetBusMaster:
                     mixer.music.stop()
             except:
                 pass
-    
+
+    # ==================== Step 7: 配對模式 ====================
+    def step_7_pairing(self):
+        """配對模式: 讓 slave 逐一播放本地燈效 (0x3105 MODE_SET), 並更新 PlayID。
+
+        流程 (每個設備):
+          1. 停止串流 (0x3002) 與本地模式 (0x3106)
+          2. 查詢本地燈效清單 (0x3101) → 顯示 mode id/名稱
+          3. 逐一播放每個本地燈效 (0x3105), 使用者確認後播下一個
+          4. 輸入此設備的新 PlayID → 更新 config mapping (存檔)
+        """
+        self.load_config()
+        self.panel.stop()
+        ConsoleUI.clear_screen()
+        ConsoleUI.show_cursor()
+
+        targets = self.selected_targets or list(self.slaves.keys())
+        if not targets:
+            print("⚠️ 無在線設備, 請先 Scan/Select")
+            input("\n按 Enter 返回...")
+            self.panel.start()
+            return
+
+        print("\n🔗 [Step 7] 配對模式 — 逐一播放本地燈效並更新 PlayID")
+        print(f"   處理設備數: {len(targets)}")
+        print("   (slave 需支援 0x31xx pixel 指令, 且已上傳 pixel/modes 本地燈效)")
+
+        try:
+            for cid in targets:
+                node = self.slaves.get(cid)
+                if not node:
+                    print(f"\n❌ {cid}: 離線, 跳過")
+                    continue
+
+                old_pid = self.config["mapping"].get(cid, {}).get("play_id", "?")
+                print(f"\n{'='*60}\n🎯 設備: {cid}  (目前 PlayID: {old_pid})")
+                self.panel.update_device(cid, status="配對中")
+
+                # 1. 停止串流 / 本地模式
+                self.send_pkt([cid], 0x3002, {})
+                self.send_pkt([cid], 0x3106, {"action": 1})
+
+                # 2. 查詢本地燈效清單 (0x3101 + 0x3108 名稱)
+                modes = self._query_modes(cid, timeout=2.0)
+                mode_ids = [mid for mid, _ in modes]
+                if not mode_ids:
+                    print("   ⚠️ 即時查詢無模式 (slave 未實作 0x3101? 或 pixel/modes 為空)")
+                    # 🔧 離線快取 fallback: 顯示 profile 已知模式, 不盲點
+                    prof = self._load_profile(cid)
+                    if prof and prof.get("modes"):
+                        print("   📄 使用 profile 快取模式:")
+                        for m in prof["modes"]:
+                            print(f"     - mode {m['id']} ({m['name']})")
+                else:
+                    # 顯示模式名稱
+                    print(f"   本地燈效 {len(mode_ids)} 個:")
+                    for i, (mid, name) in enumerate(modes):
+                        print(f"     {i+1:2d}. mode {mid:<3d} ({name})")
+
+                    # 3. 逐一播放本地燈效, 讓使用者肉眼確認
+                    for i, mid in enumerate(mode_ids):
+                        print(f"\n   ▶ [{i+1}/{len(mode_ids)}] 播放 mode {mid} ...")
+                        self.send_pkt([cid], 0x3105, {
+                            "mode_type": 0,
+                            "mode_id": mid,
+                            "start_delay_ms": 0,
+                            "brightness": 255
+                        })
+                        ch = input("      [Enter] 播下一個  [s] 停止此模式  [q] 結束配對: ").strip().lower()
+                        if ch == 'q':
+                            self.send_pkt([cid], 0x3106, {"action": 1})
+                            print("\n🛑 配對結束")
+                            input("\n按 Enter 返回...")
+                            self.panel.start()
+                            return
+                        if ch == 's':
+                            self.send_pkt([cid], 0x3106, {"action": 1})
+
+                # 4. 更新 PlayID
+                self.send_pkt([cid], 0x3106, {"action": 1})
+                new_pid = input(f"\n   ✏️ 輸入 {cid} 的新 PlayID (Enter=不變): ").strip()
+                if new_pid:
+                    try:
+                        new_pid = int(new_pid)
+                        if cid not in self.config["mapping"]:
+                            self.config["mapping"][cid] = {"play_id": 0, "last_sha": ""}
+                        self.config["mapping"][cid]["play_id"] = new_pid
+                        self.save_config()
+                        total_frames = self.pxld_metadata.get(new_pid, {}).get("total_frames", 0)
+                        self.panel.register_device(cid, new_pid, total_frames)
+                        print(f"   ✅ {cid} PlayID → {new_pid}")
+                    except ValueError:
+                        print("   ❌ 輸入無效, 保持不變")
+
+                # 🔧 更新此設備 Profile (模式/狀態/延遲), 供日後離線查閱
+                if self._save_profile(cid):
+                    print(f"   💾 Profile 已更新: profiles/{cid.replace(':', '_')}.json")
+        except KeyboardInterrupt:
+            print("\n🛑 配對中斷")
+        finally:
+            # 確保所有設備熄燈
+            for cid in targets:
+                self.send_pkt([cid], 0x3106, {"action": 1})
+
+        print("\n✅ 配對完成")
+        input("\n按 Enter 返回...")
+        self.panel.start()
+
+    # ==================== Step 8: Profiles (每 id 一個 profile) ====================
+    def step_8_profiles(self):
+        """檢視每個設備的 Profile (可播放模式/狀態/檔案), 或批次備份全部設備。"""
+        self.load_config()
+        self.panel.stop()
+        ConsoleUI.clear_screen()
+        ConsoleUI.show_cursor()
+
+        print("\n📚 [Step 8] Profiles — 每 id 一個 profile (對方有什麼模式可播放, 不用盲點)")
+        print("  1. 顯示所有已快取 Profile (離線可看)")
+        print("  2. 批次備份全部設備 (下載全部檔案 + 更新 Profile)")
+        print("  q. 返回")
+
+        choice = input("\n👉 請選擇: ").strip().lower()
+        if choice == '1':
+            profiles_dir = os.path.join(os.getcwd(), "profiles")
+            if not os.path.isdir(profiles_dir):
+                print("\n  (尚無 profile 快取 — 先執行批次備份或 Step 7 配對)")
+            else:
+                fns = sorted(f for f in os.listdir(profiles_dir) if f.endswith(".json"))
+                if not fns:
+                    print("\n  (尚無 profile 快取)")
+                for fn in fns:
+                    cid = fn[:-5]
+                    print(f"\n{'─'*56}")
+                    self._print_profile(cid, self._load_profile(cid))
+            input("\n按 Enter 返回...")
+        elif choice == '2':
+            self._bulk_download_all()
+        self.panel.start()
+
     def _print_menu(self):
         self.panel.stop()
         ConsoleUI.clear_screen()
@@ -2546,7 +3220,9 @@ class NetBusMaster:
         print(" ----------------------------------------")
         print(" 4. Slice Animation    | 切分動畫數據")
         print(" 5. Deploy Data        | 部署到設備 (帶監控)")
-        print(" 6. Sync Play          | 同步播放 (支持暫停)")
+        print(" 6. Sync Play          | 同步播放 (支持暫停/中途加入)")
+        print(" 7. Pairing Mode       | 配對: 播放本地燈效並更新 PlayID")
+        print(" 8. Profiles           | 每 id Profile (模式/狀態/批次備份)")
         print(" s. STOP ALL           | 緊急停止")
         print(" q. Exit               | 退出程序")
         print("=" * 60)
@@ -2594,6 +3270,12 @@ class NetBusMaster:
                 self._print_menu()
             elif ch == '6':
                 self.step_4_sync_play()
+                self._print_menu()
+            elif ch == '7':
+                self.step_7_pairing()
+                self._print_menu()
+            elif ch == '8':
+                self.step_8_profiles()
                 self._print_menu()
             elif ch == 's':
                 self.stop_all()

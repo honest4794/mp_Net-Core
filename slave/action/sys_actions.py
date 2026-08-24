@@ -183,6 +183,23 @@ def on_sys_task_set(ctx, args):
     if not tm: return
     tm.set_affinity(task_name, (c0, c1))
 
+def on_time_sync(ctx, args):
+    """0x100A TIME_SYNC: 回報本地收到主機時間戳的時刻 (延遲量測用)。
+
+    PC 端以 0x100A 送出 master_time_ms, 本機收到後立刻回 0x100B
+    TIME_SYNC_RSP {received_at_ms: 本地 ticks_ms()}; PC 用自己發送前後
+    的時間差計算 RTT (單向延遲 ≈ RTT/2), 供中途加入時推算最準確的幀號。
+    """
+    app = ctx["app"]
+    try:
+        received_at = time.ticks_ms()
+        cmd_def = app.store.get(0x100B)
+        payload = SchemaCodec.encode(cmd_def, {"received_at_ms": received_at})
+        if "send" in ctx:
+            ctx["send"](Proto.pack(0x100B, payload))
+    except Exception as e:
+        print(f"❌ [TimeSync] Error: {e}")
+
 def register(app):
     """註冊系統指令到分發器"""
     app.disp.on(CMD_DISCOVER, on_discover)
@@ -192,4 +209,5 @@ def register(app):
     app.disp.on(CMD_WEB_CTRL, on_web_ctrl)
     app.disp.on(CMD_SYS_TASK_QUERY, on_sys_task_query)
     app.disp.on(CMD_SYS_TASK_SET, on_sys_task_set)
+    app.disp.on(0x100A, on_time_sync)  # TIME_SYNC → 0x100B 延遲回報
     print("✅ [Action] Sys actions registered")

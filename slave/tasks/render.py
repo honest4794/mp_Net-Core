@@ -34,6 +34,13 @@ class RenderTask(Task):
     def loop(self):
         if not self.running: return
 
+        # 🔧 主動同步幀率: 偵測 0x3001 STREAM_INFO 的 fps_override, 即時更新節拍
+        fps_ov = bus.shared.get("fps_override")
+        if fps_ov and fps_ov != self.fps:
+            self.fps = int(fps_ov)
+            self.interval_us = (1000 // self.fps) * 1000
+            get_log().info("🔥 [RenderTask] FPS override -> {}".format(self.fps))
+
         is_streaming = self.fcache_get("is_streaming")
         if not is_streaming:
             is_ready = self.fcache_get("is_ready")
