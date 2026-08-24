@@ -58,6 +58,49 @@ def _get_pin(gpio_num):
     return _PIN_CACHE[gpio_num]
 
 
+def get_pin_configured(label):
+    """從統一資源取得已配置的 Pin（安全版）。
+
+    依序查 pin_by_label / pin_list / _PIN_CACHE，三處皆無就回 None，
+    絕不自行 new Pin()。task 要讀按鈕/腳位一律走這裡，避免自行初始化
+    踩到其他外設（如 WiFi SDMMC）佔用的 GPIO。
+    """
+    cfg = bus.shared.get("PIN") or {}
+    lst = cfg.get("list") or []
+
+    # 1. pin_by_label（boot 有 enable PIN 時註冊）
+    pin_by_label = bus.get_service("pin_by_label")
+    if isinstance(pin_by_label, dict) and label in pin_by_label:
+        return pin_by_label[label]
+
+    # 2. pin_list（boot 有 enable PIN 時註冊，與 list 同序）
+    pin_list = bus.get_service("pin_list")
+    if isinstance(pin_list, list):
+        for i, item in enumerate(lst):
+            if isinstance(item, dict) and item.get("label") == label and i < len(pin_list):
+                return pin_list[i]
+
+    # 3. _PIN_CACHE（boot 已初始化過的腳位）
+    for item in lst:
+        if isinstance(item, dict) and item.get("label") == label:
+            gpio = int(item.get("GPIO", -1))
+            if gpio in _PIN_CACHE:
+                return _PIN_CACHE[gpio]
+            return None
+    return None
+
+
+def get_pin_configured_gpio(label):
+    """回傳 config 中 label 對應的 GPIO 編號（純查詢，不初始化），找不到回 None。"""
+    cfg = bus.shared.get("PIN") or {}
+    lst = cfg.get("list") or []
+    for item in lst:
+        if isinstance(item, dict) and item.get("label") == label:
+            gpio = item.get("GPIO")
+            return int(gpio) if gpio is not None else None
+    return None
+
+
 def resolve_pin(gpio_num):
     """相容舊介面：回傳指定 GPIO 的 Pin 物件。"""
     return _get_pin(gpio_num)

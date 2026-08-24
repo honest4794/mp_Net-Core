@@ -33,7 +33,7 @@ UART Display 協定 (與 DisplayController 相容):
 import time
 from lib.sys.task import Task
 from lib.sys.sys_bus import bus
-from lib.sys.hw_manager import HW, _PIN_CACHE
+from lib.sys.hw_manager import HW, _PIN_CACHE, get_pin_configured
 from lib.sys.log_service import get_log
 from lib.hw.mp3_tf_16p import MP3TF16P
 from lib.sys.proto import Proto
@@ -60,40 +60,17 @@ _ENC_DELTA_KEY = "_enc_delta"
 # ═══ 腳位解析 ═══
 
 def _resolve_pin(gpio_or_label):
-    from machine import Pin
-    if isinstance(gpio_or_label, str):
-        pin_by_label = bus.get_service("pin_by_label")
-        if isinstance(pin_by_label, dict):
-            pin = pin_by_label.get(gpio_or_label)
-            if pin is not None:
-                print("[PIN] label='{}' → pin_by_label → GPIO{}".format(gpio_or_label, pin))
-                return pin
+    """從統一資源取得 Pin（pin_by_label / pin_list / _PIN_CACHE）。
 
-        cfg = bus.shared.get("PIN") or {}
-        lst = cfg.get("list") or []
-        pin_list = bus.get_service("pin_list") or []
-        for idx, item in enumerate(lst):
-            if isinstance(item, dict) and item.get("label") == gpio_or_label:
-                if idx < len(pin_list):
-                    p = pin_list[idx]
-                    print("[PIN] label='{}' → pin_list[{}] GPIO{}".format(gpio_or_label, idx, item.get("GPIO")))
-                    return p
-                gpio_num = int(item.get("GPIO", 0))
-                if gpio_num in _PIN_CACHE:
-                    print("[PIN] label='{}' → _PIN_CACHE[{}]".format(gpio_or_label, gpio_num))
-                    return _PIN_CACHE[gpio_num]
-                print("[PIN] label='{}' → new Pin({}, OUT)".format(gpio_or_label, gpio_num))
-                return Pin(gpio_num, Pin.OUT)
-        print("[PIN] label='{}' → NOT FOUND".format(gpio_or_label))
-        return None
+    一律不自行 new Pin()：找不到已配置的腳位就回 None，由呼叫端安全跳過，
+    避免自行初始化踩到其他外設（如 WiFi SDMMC GPIO 39-48）佔用的腳位。
+    """
+    if isinstance(gpio_or_label, str):
+        return get_pin_configured(gpio_or_label)
     gpio = int(gpio_or_label)
     if gpio in _PIN_CACHE:
-        print("[PIN] gpio={} → _PIN_CACHE".format(gpio))
         return _PIN_CACHE[gpio]
-    p = Pin(gpio, Pin.OUT)
-    _PIN_CACHE[gpio] = p
-    print("[PIN] gpio={} → new Pin(OUT) fallback".format(gpio))
-    return p
+    return None
 
 
 def _find_pin_cfg(labels):

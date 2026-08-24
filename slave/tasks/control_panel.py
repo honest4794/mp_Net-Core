@@ -16,7 +16,7 @@ import time, struct
 from machine import Encoder
 from lib.sys.task import Task
 from lib.sys.sys_bus import bus
-from lib.sys.hw_manager import HW, _PIN_CACHE
+from lib.sys.hw_manager import HW, get_pin_configured
 from lib.sys.proto import Proto
 from lib.sys.log_service import get_log
 
@@ -39,25 +39,15 @@ _VBTN_SYNC = [
 
 
 def _find_pin_obj(label, fallback=0):
-    plist = bus.get_service("pin_list")
-    if plist:
-        cfg = bus.shared.get("PIN") or {}
-        lst = cfg.get("list") or []
-        for i, item in enumerate(lst):
-            if isinstance(item, dict) and item.get("label") == label:
-                if i < len(plist):
-                    return plist[i]
-    gpio = fallback
-    cfg = bus.shared.get("PIN") or {}
-    lst = cfg.get("list") or []
-    for item in lst:
-        if isinstance(item, dict) and item.get("label") == label:
-            gpio = int(item.get("GPIO", fallback))
-            break
-    if gpio in _PIN_CACHE:
-        return _PIN_CACHE[gpio]
-    from machine import Pin
-    return Pin(gpio, Pin.IN, Pin.PULL_UP)
+    """從統一資源取得 Pin（pin_by_label / pin_list / _PIN_CACHE）。
+
+    一律不自行 new Pin()：找不到已配置的腳位就回 None，由呼叫端安全跳過，
+    避免自行初始化踩到其他外設（如 WiFi SDMMC GPIO 39-48）佔用的腳位。
+    """
+    pin = get_pin_configured(label)
+    if pin is not None:
+        return pin
+    return None
 
 
 def _label_gpio(label):
@@ -86,15 +76,19 @@ class ControlPanelTask(Task):
     def on_start(self):
         super().on_start()
 
+        # 從統一資源取得腳位; 未配置 (None) 就安全跳過, 不自行初始化
         btn1 = _find_pin_obj("btn", 40)
         btn2 = _find_pin_obj("encC", 17)
-        self._btns.append([btn1, btn1.value(), "btn", 0])
-        self._btns.append([btn2, btn2.value(), "encC", 0])
+        if btn1 is not None:
+            self._btns.append([btn1, btn1.value(), "btn", 0])
+        if btn2 is not None:
+            self._btns.append([btn2, btn2.value(), "encC", 0])
 
         pin_a = _find_pin_obj("encA", 18)
         pin_b = _find_pin_obj("encB", 8)
-        self._enc = Encoder(0, pin_a, pin_b)
-        self._enc_last = self._enc.value()
+        if pin_a is not None and pin_b is not None:
+            self._enc = Encoder(0, pin_a, pin_b)
+            self._enc_last = self._enc.value()
 
         self._now_bus = bus.get_service("NowBus")
         for _, vbtn_id in _VBTN_SYNC:
