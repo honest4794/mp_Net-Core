@@ -675,11 +675,11 @@ class NetworkManager:
                 
                 if is_connected:
                     current_connected.add(name)
-                    # 連上時確保省電已關 (boot 路徑可能漏掉; 省電會讓 PC 要 ping 才連得上)
-                    if name == 'wifi':
-                        self._disable_pm(iface)
-                    # 如果之前沒連接，現在連接了
+                    # 如果之前沒連接，現在連接了 (只在首次連上時關省電, 避免每輪重設刷屏)
                     if name not in self._state['connected_interfaces']:
+                        if name == 'wifi':
+                            # 連上時確保省電已關 (boot 路徑可能漏掉; 省電會讓 PC 要 ping 才連得上)
+                            self._disable_pm(iface)
                         self._on_interface_up(name, iface)
                 else:
                     # 自動重連邏輯 (僅對 MODE_ALWAYS_ON)

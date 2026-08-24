@@ -7,6 +7,7 @@ import struct
 import json
 import copy
 import csv
+import errno
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -498,6 +499,7 @@ class DeviceManager:
                 "ready_event": threading.Event(),   # 🔧 0x3008 STREAM_READY_ACK (中途加入等待)
                 "ping_event": threading.Event(),    # 🔧 0x100B TIME_SYNC_RSP (延遲量測)
                 "ping_t0": 0.0,
+                "ping_lock": threading.Lock(),      # 🔧 串行化 ping (健康探測 vs 延遲量測併發)
                 "ping_rtt": None,                   # 🔧 最近一次 RTT (ms)
                 "ping_offset": None,                # 🔧 最近一次時鐘偏移 (slave-master, ms)
                 "latency_ms": None,                 # 🔧 單向延遲估計 (min-RTT/2, ms)
@@ -532,8 +534,9 @@ class DeviceManager:
         """更新心跳時間"""
         if cid in self.slaves:
             self.slaves[cid]["last_seen"] = time.time()
-            # 同時更新 Monitor 的 last_update (雖然 MonitorPanel 也有 update_device)
-            # 這裡主要確保 DeviceManager 內部的 last_seen 也更新
+            # 🔧 修復: 同步刷新 Monitor 的 last_update。
+            # 之前只更新 slaves last_seen, monitor 沒更新 → 有流量卻被標「無響應」。
+            self.panel.update_device(cid)
 
     def get_slave(self, cid):
         return self.slaves.get(cid)
@@ -541,36 +544,71 @@ class DeviceManager:
     def get_all_slaves(self):
         return self.slaves
 
+    def _probe_device(self, cid):
+        """主動探測設備存活: 0x100A TIME_SYNC → 0x100B 有回應 = 在線。
+
+        Wi-Fi 不穩時設備可能只是暫時沒推資料, 不代表斷線;
+        ping 有回應就刷新監控時間並把「無響應」恢復為「待機」。
+        """
+        master = getattr(self, "master", None)
+        node = self.slaves.get(cid)
+        if master is None or node is None:
+            return
+        try:
+            with node["ping_lock"]:  # 🔧 與 measure_latency 串行, 避免併發覆蓋 ping_t0
+                node["ping_event"].clear()
+                node["ping_t0"] = time.time()
+                master.send_pkt([cid], 0x100A, {"master_time_ms": int(time.time() * 1000) & 0xFFFFFFFF})
+                alive = node["ping_event"].wait(timeout=2.0)
+            if alive:
+                with self.panel.lock:
+                    mon = self.panel.monitors.get(cid)
+                    if mon:
+                        mon.last_update = time.time()
+                        if mon.status == "無響應":
+                            mon.status = "待機"
+                            print(f"💓 [Health] {cid} ping OK → 恢復待機")
+        except Exception:
+            pass
+
     def _health_check_loop(self):
-        """每 5 秒檢查一次設備健康狀態"""
+        """每 5 秒檢查一次設備健康狀態 (主動探測版)。
+
+        規則:
+          - 傳輸中/下載中/準備中 → 強制餵狗
+          - 超過 15s 沒收到流量 → 主動 ping 探測 (0x100A)
+          - 超過 30s 沒流量且探測也失敗 → 標「無響應」, 之後持續探測,
+            ping 恢復回應自動回到「待機」
+        """
         while self.running:
             time.sleep(5)
             now = time.time()
-            timeout = 30.0  # 30秒超時
-            
+            timeout = 30.0   # 無流量上限
+            probe_at = 15.0  # 超過此秒數沒流量 → 主動探測
+
             # 複製 keys 避免遍歷時修改
             with self.lock:
                 current_cids = list(self.slaves.keys())
-            
+
             for cid in current_cids:
                 monitor = self.panel.monitors.get(cid)
-                if monitor:
-                    # 如果設備正在傳輸文件或固件更新，跳過離線檢查
-                    # 或者心跳超時時間到了
-                    if monitor.status in ["傳輸中", "下載中", "準備中"] or "Up " in monitor.status:
-                        monitor.last_update = now # 強制餵狗
-                        continue
-                        
-                    if now - monitor.last_update > timeout:
-                        # 只有當我們無法通過 socket 驗證連接時，才標記為離線
-                        # 但這裡簡單起見，如果 socket 仍然在 slaves 列表中，說明 socket 對象還在
-                        # 我們將其標記為 "無響應" 而不是 "離線"
-                        if monitor.status != "離線" and monitor.status != "無響應":
-                            # 檢查 socket 是否真的斷了? 
-                            # 其實很難檢測，除非發送失敗。
-                            # 所以這裡我們只標記為 無響應，表示很久沒收到心跳了
-                            monitor.status = "無響應"
-                            
+                if not monitor:
+                    continue
+                # 傳輸中/下載中/準備中 → 強制餵狗
+                if monitor.status in ["傳輸中", "下載中", "準備中"] or "Up " in monitor.status:
+                    monitor.last_update = now
+                    continue
+
+                idle = now - monitor.last_update
+                if idle >= timeout:
+                    if monitor.status != "離線" and monitor.status != "無響應":
+                        monitor.status = "無響應"
+                    # 已標無響應仍持續探測, 恢復連線時自動回到待機
+                    self._probe_device(cid)
+                    continue
+                if idle >= probe_at:
+                    # 🔧 主動探測: 有回應就保持活著 (避免 Wi-Fi 不穩的假警報)
+                    self._probe_device(cid)
     def get_counts(self):
         """返回 (在線總數, 離線總數)"""
         online = 0
@@ -599,6 +637,7 @@ class NetBusMaster:
         self.store.finalize()
         self.panel = MonitorPanel()
         self.device_manager = DeviceManager(self.panel)
+        self.device_manager.master = self  # 🔧 讓健康檢查能主動 ping 探測 (0x100A)
         self.slaves = self.device_manager.slaves  # 兼容舊代碼，指向 Manager 的字典
         
         self.running = True
@@ -677,14 +716,35 @@ class NetBusMaster:
             json.dump(ordered_config, f, indent=4, ensure_ascii=False)
     
     def get_local_ip(self):
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        """偵測本機 IP (給 slave 連回用的 ws_url)。
+
+        公司內網常沒有網際網路, 8.8.8.8 連不到會回 127.0.0.1 → slave 會連錯;
+        依序嘗試:
+          1. UDP connect 8.8.8.8 (需能路由到網際網路)
+          2. gethostbyname_ex(主機名) 取第一個非 127. 的 IP (內網可用)
+          3. 回退 127.0.0.1
+        """
         try:
-            s.connect(('8.8.8.8', 80))
-            return s.getsockname()[0]
-        except:
-            return '127.0.0.1'
-        finally:
-            s.close()
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(('8.8.8.8', 80))
+                ip = s.getsockname()[0]
+                if ip and not ip.startswith('127.'):
+                    return ip
+            except Exception:
+                pass
+            finally:
+                s.close()
+        except Exception:
+            pass
+        try:
+            hostname = socket.gethostname()
+            for ip in socket.gethostbyname_ex(hostname)[2]:
+                if ip and not ip.startswith('127.'):
+                    return ip
+        except Exception:
+            pass
+        return '127.0.0.1'
     
     def start_ws_server(self):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -735,6 +795,8 @@ class NetBusMaster:
                 new_pid = max(pids) + 1 if pids else 0
                 self.config["mapping"][cid] = {"play_id": new_pid, "last_sha": ""}
                 self.save_config()
+                # 🔧 新設備自動建記錄的提示 (對方連接後自動更新到 slave_map.json)
+                print(f"📝 [Mapping] 新設備 {cid} → play_id {new_pid} (已存入 {os.path.basename(self.config_file)})")
             
             play_id = self.config["mapping"][cid]["play_id"]
             total_frames = self.pxld_metadata.get(play_id, {}).get("total_frames", 0)
@@ -745,6 +807,16 @@ class NetBusMaster:
             self.device_manager.register_connection(
                 cid, conn, addr, StreamParser()
             )
+            
+            # 🔧 紀錄 slave 的 IP (DHCP 會變; 啟動時 master 要依此 IP 敲門握手)
+            client_ip = addr[0] if addr and len(addr) > 0 else ""
+            if client_ip and self.config["mapping"].get(cid, {}).get("ip") != client_ip:
+                self.config["mapping"][cid]["ip"] = client_ip
+                self.save_config()
+                print(f"📝 [Mapping] {cid} IP 紀錄更新 → {client_ip}")
+            
+            # 🔧 上線打招呼: 敲門/掃描/主動重連連上都會顯示
+            print(f"👋 [Connect] {cid} 已上線 (PlayID {play_id})")
             
             # --- Mid-Stream Join Logic (🔧 延遲補償 + READY 等待, 推算最準確幀號) ---
             if self.is_playing:
@@ -830,7 +902,21 @@ class NetBusMaster:
                     cid = self.dispatch_logic(cid, cmd, payload)
         
         except Exception as e:
-            self.panel.update_device(cid, status="錯誤", error_msg=str(e))
+            current_node = self.device_manager.get_slave(cid)
+            if current_node and current_node["conn"] == conn:
+                # 🔧 連線層中斷 (10053/10054/104/EPIPE) = 正常斷線, 交給 finally 標離線;
+                #    只有真正的非連線例外才標「錯誤」。
+                if isinstance(e, OSError) and (
+                    isinstance(e, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError))
+                    or getattr(e, "errno", None) in (errno.ECONNABORTED, errno.ECONNRESET, errno.EPIPE, errno.ENOTCONN)
+                ):
+                    print(f"ℹ️ 連線中斷 {addr} ({e})")
+                else:
+                    self.panel.update_device(cid, status="錯誤", error_msg=str(e))
+            else:
+                # 🔧 重連時 register_connection 已關閉舊 socket → 舊執行緒的 recv 拋
+                #    [WinError 10053]; 新連線已接管, 不要再覆寫面板狀態。
+                print(f"ℹ️ 舊連線 {addr} 結束 ({e}) — 已有新連線接管, 忽略")
         
         finally:
             # 智能清理: 只有當前連接是自己的時候才移除
@@ -1005,16 +1091,17 @@ class NetBusMaster:
         samples = int(samples if samples is not None else self._cfg_int("latency_samples", 5))
         samples = max(1, samples)
         samples_data = []  # (rtt_ms, offset_ms)
-        for _ in range(samples):
-            node["ping_event"].clear()
-            node["ping_rtt"] = None
-            node["ping_offset"] = None
-            node["ping_t0"] = time.time()
-            self.send_pkt([cid], 0x100A, {"master_time_ms": int(time.time() * 1000) & 0xFFFFFFFF})
-            if node["ping_event"].wait(timeout=1.0):
-                rtt = node.get("ping_rtt")
-                if rtt is not None:
-                    samples_data.append((rtt, node.get("ping_offset", 0.0)))
+        with node["ping_lock"]:  # 🔧 避免與健康檢查探測併發互相覆蓋 ping_t0
+            for _ in range(samples):
+                node["ping_event"].clear()
+                node["ping_rtt"] = None
+                node["ping_offset"] = None
+                node["ping_t0"] = time.time()
+                self.send_pkt([cid], 0x100A, {"master_time_ms": int(time.time() * 1000) & 0xFFFFFFFF})
+                if node["ping_event"].wait(timeout=1.0):
+                    rtt = node.get("ping_rtt")
+                    if rtt is not None:
+                        samples_data.append((rtt, node.get("ping_offset", 0.0)))
         if not samples_data:
             return None
         # NTP 式: 最小 RTT 樣本最可信 (佇列不對稱最小)
@@ -1729,18 +1816,23 @@ class NetBusMaster:
             print("❌ 設備離線")
             return
 
-        # 1. 獲取 Manifest
+        # 1. 獲取 Manifest (🔧 包例外: 設備無響應不再炸掉整個程式)
         print("  正在獲取文件列表 (manifest.json)...")
+        man_err = ""
         self._transfer_begin()
         try:
             config_data = self._download_bytes(target, "/manifest.json", expected_size=None, status="Manifest")
+        except Exception as e:
+            config_data = None
+            man_err = str(e)
         finally:
             self._transfer_end()
         if not config_data:
             if self.transfer_cancel.is_set():
                 print("ℹ️ 已停止")
                 return
-            print("❌ Manifest 下載失敗")
+            print(f"❌ Manifest 下載失敗: {man_err or '無資料'}")
+            input("\n按 Enter 返回...")
             return
         if self.panel.running:
             self.panel.stop()
@@ -1851,18 +1943,28 @@ class NetBusMaster:
                 print("  ❌ 離線, 跳過")
                 fail_count += 1
                 continue
+            # 🔧 跳過健康檢查標記為離線/無響應的設備, 避免每個都等查詢逾時
+            mon = self.panel.monitors.get(target)
+            if mon and mon.status in ("離線", "無響應"):
+                print(f"  ⚠️ {target}: {mon.status}, 跳過 (先 Scan 或確認設備在線)")
+                fail_count += 1
+                continue
 
-            # 1. Manifest
+            # 1. Manifest (🔧 包例外: 設備無響應不再炸掉整個程式)
+            man_err = ""
             self._transfer_begin()
             try:
                 config_data = self._download_bytes(target, "/manifest.json", expected_size=None, status="Manifest")
+            except Exception as e:
+                config_data = None
+                man_err = str(e)
             finally:
                 self._transfer_end()
             if not config_data:
                 if self.transfer_cancel.is_set():
                     print("ℹ️ 已停止")
                     break
-                print("  ❌ Manifest 下載失敗")
+                print(f"  ❌ Manifest 下載失敗: {man_err or '無資料'}")
                 fail_count += 1
                 continue
             try:
@@ -2035,14 +2137,19 @@ class NetBusMaster:
             print("⚠️ 查詢超時, 無法獲取文件大小")
             return
             
+        err_msg = ""
         self._transfer_begin()
         try:
             config_data = self._download_bytes(target, "/config.json", expected_size=size, status="Config")
+        except Exception as e:
+            config_data = None
+            err_msg = str(e)
         finally:
             self._transfer_end()
 
         if not config_data:
             self.panel.update_device(target, status="錯誤", transfer_label="")
+            print(f"❌ Config 下載失敗{': ' + err_msg if err_msg else ''}")
             return
 
         self.panel.update_device(target, status="完成", transfer_label="", upload_progress=100)
@@ -2167,13 +2274,17 @@ class NetBusMaster:
             print("⚠️ 文件為空")
             return
 
+        err_msg = ""
         self._transfer_begin()
         try:
             config_data = self._download_bytes(target, "/manifest.json", expected_size=size, status="Manifest")
+        except Exception as e:
+            config_data = None
+            err_msg = str(e)
         finally:
             self._transfer_end()
         if not config_data:
-            print("❌ 下載失敗")
+            print(f"❌ 下載失敗{': ' + err_msg if err_msg else ''}")
             return
 
         print("\n✅ 下載完成")
@@ -2195,64 +2306,190 @@ class NetBusMaster:
             
         input("\n按 Enter 返回...")
 
-    # ==================== New Step 1: 掃描與選擇 ====================
+    # ==================== Step 1: 掃描與選擇 ====================
     def scan_devices(self):
-        """僅掃描 (發送廣播包)"""
-        # print("\nDEBUG: scan_devices ENTERED") # Debug print
+        """掃描設備: 1. 廣播 / 2. 定向 (輸入 IP) / 3. 依記錄敲門。"""
         self.load_config()  # Reload config
         self.panel.stop()
         ConsoleUI.clear_screen()
         ConsoleUI.show_cursor()
-        
+
+        print("\n[Scan] 掃描方式:")
+        print("  1. 廣播掃描 (全網段, 公司網路可能被防火牆擋)")
+        print("  2. 定向掃描 (點對點, 輸入設備 IP, 不發廣播)")
+        print("  3. 依紀錄批量敲門 (用 slave_map.json 記下的 IP 一次叫全部設備上線)")
+        mode = input("\n👉 請選擇 (1/2/3) [Enter=廣播]: ").strip().lower()
+
+        if mode == '2':
+            self._direct_scan()
+        elif mode == '3':
+            self._knock_recorded_devices(wait=10)
+        else:
+            self._broadcast_scan()
+
+        time.sleep(1)
+        input("\n按 Enter 返回主菜單...")
+        self.panel.start()
+
+    def _build_discover_packet(self, ws_port=None):
+        """建立 0x1001 DISCOVER 封包 (server_ip + ws_url)。"""
+        if ws_port is None:
+            ws_port = self.config.get("ws_port", 8000)
+        p_data = SchemaCodec.encode(
+            self.store.get(0x1001),
+            {"server_ip": self.local_ip, "ws_url": f"ws://{self.local_ip}:{ws_port}"}
+        )
+        return Proto.pack(0x1001, p_data)
+
+    def _send_unicast_discover(self, ips, label=""):
+        """對指定 IP 清單逐一 unicast DISCOVER (0x1001), 每個重發 3 次。"""
+        self.local_ip = self.get_local_ip()
+        udp_port = self.config.get("upt_port", 9000)
+        pkt = self._build_discover_packet()
+        print(f"📡 {label} → {len(ips)} 個 IP (UDP {udp_port}, Server IP: {self.local_ip})")
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            for attempt in range(3):
+                for ip in ips:
+                    try:
+                        s.sendto(pkt, (ip, udp_port))
+                        print(f"    → {ip}:{udp_port} (attempt {attempt+1}/3)")
+                    except Exception as e:
+                        print(f"    ⚠️ {ip} 發送失敗: {e}")
+                time.sleep(0.3)
+            s.close()
+        except Exception as e:
+            print(f"❌ 發送失敗: {e}")
+            return 0
+        return len(ips)
+
+    def _wait_connections(self, before, timeout=10.0, label="握手"):
+        """等待新設備連回, 回傳新連上的 cid 清單。"""
+        print(f"\n⏳ 等待設備連回 (最多 {int(timeout)} 秒)...")
+        deadline = time.time() + timeout
+        joined = []
+        while time.time() < deadline:
+            time.sleep(0.5)
+            new = set(self.slaves.keys()) - before
+            if new:
+                joined = sorted(new)
+                break
+        if joined:
+            for cid in joined:
+                print(f"  ✅ {label}成功: {cid} 已連線")
+        else:
+            print(f"  ⚠️ {int(timeout)} 秒內沒有新設備連回")
+            print("    - 確認 IP 正確、設備在線")
+            print("    - 確認 UDP port 9000 與 TCP port 8000 沒被防火牆擋")
+            print("    - 確認本機 IP 正確 (slave 要連回 ws://{}:{})".format(
+                self.local_ip, self.config.get("ws_port", 8000)))
+        return joined
+
+    def _knock_recorded_devices(self, wait=10):
+        """依 slave_map.json 的 IP 紀錄批量敲門 (unicast DISCOVER), 不發廣播。
+
+        slave 的 IP 會因 DHCP 改變, 每次連上時 handle_client 已自動更新紀錄;
+        啟動 master 或設備沒回來時, 用這招點對點把它們全部叫回來。
+        敲門後逐台回報: 誰連回、誰沒回來 (IP 可能已變, 需重新掃描更新紀錄)。
+        """
+        self.load_config()
+        # 收集有 IP 紀錄的設備
+        recorded = []
+        for cid, info in self.config["mapping"].items():
+            ip = (info or {}).get("ip", "")
+            if ip:
+                recorded.append((cid, ip))
+        if not recorded:
+            print("🔔 [Knock] slave_map.json 沒有記到任何 IP — 先掃描/定向連一次讓紀錄建立")
+            return 0
+        # IP 去重 (同 IP 多台 → 敲一次)
+        ips = []
+        for _, ip in recorded:
+            if ip not in ips:
+                ips.append(ip)
+
+        before = set(self.slaves.keys())
+        print(f"🔔 [Knock] 依記錄批量敲門 — 紀錄 {len(recorded)} 台 / 去重 {len(ips)} 個 IP:")
+        for cid, ip in recorded:
+            mark = "●在線" if cid in before else "○離線"
+            pid = self.config["mapping"].get(cid, {}).get("play_id", "?")
+            print(f"    {cid}  ip={ip:<15} PlayID={pid:<3} [{mark}]")
+
+        self._send_unicast_discover(ips, label="[Knock] 批量 DISCOVER")
+        if wait > 0:
+            self._wait_connections(before, timeout=wait, label="敲門")
+
+        # 批量結果: 逐台回報
+        after = set(self.slaves.keys())
+        missing = [(cid, ip) for cid, ip in recorded if cid not in after]
+        print(f"\n📊 [Knock] 結果: 在線 {len(recorded) - len(missing)} / {len(recorded)}")
+        if missing:
+            print("   ✗ 未連回 (IP 可能已變, 用掃描 1=廣播 或 2=定向 更新紀錄):")
+            for cid, ip in missing:
+                print(f"      - {cid}  (舊紀錄 ip={ip})")
+        else:
+            print("   ✅ 全部設備已上線")
+        return len(ips)
+
+    def _broadcast_scan(self):
+        """廣播 DISCOVER (0x1001) 到全域 + 子網廣播位址。"""
         print("\n[Scan] 正在廣播發現包...")
-        
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            
+
             # Refresh local IP
             self.local_ip = self.get_local_ip()
-            
-            # Remove bind as it might cause issues on some systems
-            # try:
-            #     s.bind((self.local_ip, 0))
-            # except Exception as e:
-            #     print(f"⚠️ Bind warning: {e}")
 
             port = self.config.get("ws_port", 8000)
             udp_port = self.config.get("upt_port", 9000)
-            
-            p_data = SchemaCodec.encode(
-                self.store.get(0x1001),
-                {"server_ip": self.local_ip, "ws_url": f"ws://{self.local_ip}:{port}"}
-            )
-            
+            pkt = self._build_discover_packet(port)
+
             print(f"📡 Broadcasting DISCOVER to port {udp_port} (Server IP: {self.local_ip})")
 
             # 1. Send to Global Broadcast
             try:
-                s.sendto(Proto.pack(0x1001, p_data), ('255.255.255.255', udp_port))
+                s.sendto(pkt, ('255.255.255.255', udp_port))
             except Exception as e:
                 print(f"⚠️ Global broadcast failed: {e}")
-                
+
             # 2. Send to Subnet Broadcast (Assuming /24)
             try:
                 parts = self.local_ip.split('.')
                 parts[-1] = '255'
                 subnet_broadcast = '.'.join(parts)
-                s.sendto(Proto.pack(0x1001, p_data), (subnet_broadcast, udp_port))
+                s.sendto(pkt, (subnet_broadcast, udp_port))
                 print(f"📡 Subnet broadcast sent to {subnet_broadcast}:{udp_port}")
             except Exception as e:
                 print(f"⚠️ Subnet broadcast failed: {e}")
-                
+
             s.close()
             print("✅ 廣播已發送，請等待設備連線...")
         except Exception as e:
             print(f"❌ 廣播失敗: {e}")
-            
-        time.sleep(1)
-        input("\n按 Enter 返回主菜單...")
-        self.panel.start()
+
+    def _direct_scan(self):
+        """定向掃描: 對指定 IP 逐一 unicast DISCOVER (0x1001), 不發廣播。
+
+        公司網路擋廣播時, 用已知設備 IP 直接點對點握手:
+        設備 UDP 收到 0x1001 後會依 ws_url 主動連回 master 的 WS 伺服器。
+        """
+        ips_input = input("\n👉 輸入設備 IP (逗號分隔, 例: 10.1.2.3,10.1.2.4): ").strip()
+        if not ips_input:
+            print("⚠️ 未輸入 IP")
+            return
+        ips = []
+        for part in ips_input.replace('，', ',').split(','):
+            ip = part.strip()
+            if ip and not ip.startswith('255.'):
+                ips.append(ip)
+        if not ips:
+            print("⚠️ 無有效 IP")
+            return
+
+        before = set(self.slaves.keys())
+        self._send_unicast_discover(ips, label="[定向掃描] 點對點 DISCOVER")
+        self._wait_connections(before, timeout=10, label="握手")
 
     def select_devices(self):
         """選擇設備"""
@@ -3214,7 +3451,7 @@ class NetBusMaster:
         print("=" * 60)
         online, offline = self.device_manager.get_counts()
         print(" 0. Update Firmware    | 固件更新/配置修改")
-        print(" 1. Scan Devices       | 掃描設備 (廣播)")
+        print(" 1. Scan Devices       | 掃描設備 (1=廣播 / 2=定向IP)")
         print(" 2. Select Devices     | 選擇目標設備 (已選/總數: {}/{})".format(len(self.selected_targets), online))
         print(" 3. Clear List         | 清除設備列表 (離線: {})".format(offline))
         print(" ----------------------------------------")
@@ -3238,6 +3475,15 @@ class NetBusMaster:
         return input(prompt)
 
     def main_loop(self):
+        # 🔧 啟動時依 slave_map.json 的 IP 紀錄自動敲門握手 (點對點, 不廣播)
+        # 設備收到 0x1001 會主動連回; 連上時 handle_client 會順便更新 IP 紀錄
+        self.load_config()
+        if self.config["mapping"]:
+            print("🔔 [Startup] 依紀錄敲門, 叫設備上線...")
+            self._knock_recorded_devices(wait=5)
+        else:
+            print("ℹ️ 尚無設備紀錄 (slave_map.json 為空) — 請用 Step 1 掃描/定向連線")
+
         self._print_menu()
         
         while self.running:

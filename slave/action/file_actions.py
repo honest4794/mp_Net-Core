@@ -231,7 +231,13 @@ def on_file_read(ctx, args):
     full_path = path
 
     if path:
-        full_path = fs.resolve(path)[1]
+        # 🔧 與 on_file_query 一致: 根目錄真檔 (FILE_PROMOTE 落地/本地 manifest)
+        # 用絕對路徑讀, 不 resolve → /sd (否則 /manifest.json 查得到卻讀不到)
+        raw = "/" + str(path).lstrip("/")
+        if _root_file_exists(raw):
+            full_path = raw
+        else:
+            full_path = fs.resolve(path)[1]
 
     try:
         f = fs.open_read(full_path)

@@ -11,6 +11,11 @@
     "upload_begin_timeout": 5.0,
     "upload_validation_timeout": 30.0,
     "download_read_timeout": 5.0,
+    "latency_samples": 5,
+    "latency_log_file": "latency_log.csv",
+    "loop_play": 0,
+    "active_sync_fps": 0,
+    "active_sync_interval_s": 10.0,
     "mapping": {
         "80F1B2D1F7DE": {
             "play_id": 0,
@@ -202,6 +207,10 @@
         },
         "58E6C569D5D8": {
             "play_id": 45,
+            "last_sha": ""
+        },
+        "80F1B2D0ADA8": {
+            "play_id": 46,
             "last_sha": ""
         }
     }
