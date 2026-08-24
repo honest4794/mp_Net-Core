@@ -11,6 +11,7 @@
     "upload_begin_timeout": 5.0,
     "upload_validation_timeout": 30.0,
     "download_read_timeout": 5.0,
+    "transfer_retry_count": 3,
     "latency_samples": 5,
     "latency_log_file": "latency_log.csv",
     "loop_play": 0,
@@ -213,6 +214,11 @@
             "play_id": 46,
             "last_sha": "",
             "ip": "10.161.184.32"
+        },
+        "30EDA0296EDC": {
+            "play_id": 47,
+            "last_sha": "",
+            "ip": "10.161.184.92"
         }
     }
 }

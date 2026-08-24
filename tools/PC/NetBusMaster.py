@@ -574,6 +574,7 @@ class DeviceManager:
                 "addr": addr,
                 "parser": parser,
                 "ack_event": threading.Event(),
+                "ack_offset": -1,               # 🔧 最近一次 ACK 的 offset (錯位 ACK 防重複寫入)
                 "query_event": threading.Event(),
                 "read_event": threading.Event(),
                 "ready_event": threading.Event(),   # 🔧 0x3008 STREAM_READY_ACK (中途加入等待)
@@ -1101,6 +1102,8 @@ class NetBusMaster:
         
         elif cmd == 0x2004:
             if cid in self.slaves:
+                # 🔧 記下 ACK 的 offset, 供上傳重試時辨識錯位 ACK (防重複寫入)
+                self.slaves[cid]["ack_offset"] = args.get("offset", -1)
                 self.slaves[cid]["ack_event"].set()
         
         elif cmd == 0x2006:
@@ -1109,6 +1112,13 @@ class NetBusMaster:
                 self.slaves[cid]["remote_sha"] = args["sha256"]
                 self.slaves[cid]["remote_size"] = args["size"]
                 self.slaves[cid]["query_event"].set()
+
+        elif cmd == 0x2010:
+            # 🔧 FILE_ERROR_RSP: 檔案操作失敗 (promote/upload 錯誤)
+            if cid in self.slaves:
+                node = self.slaves[cid]
+                node["last_error"] = args
+                node["query_event"].set()
 
         # 复用 0x2002 FILE_CHUNK 作为下载数据的返回
         elif cmd == 0x2002:
@@ -1493,6 +1503,83 @@ class NetBusMaster:
                 return True, None
         return False, "timeout"
 
+    # ==================== FILE_PROMOTE / CONFIRM / UNDO (root 部署 + 備份確認) ====================
+    def _promote_file(self, tid, remote_path, wait=3.0):
+        """0x2011 FILE_PROMOTE: /sd 暫存 → root 目標 (自動 .bak 備份 + pending 記錄)。
+
+        remote_path 為 root 路徑 (如 /boot.py); src 自動補 /sd 前綴 (上傳暫存處)。
+        """
+        node = self.slaves.get(tid)
+        if not node:
+            return False
+        src = remote_path if remote_path.startswith("/sd") else "/sd" + remote_path
+        node["query_event"].clear()
+        node["last_error"] = None
+        self.send_pkt([tid], 0x2011, {"src": src, "dst": remote_path})
+        ok = node["query_event"].wait(timeout=wait)
+        if not ok:
+            print(f"  ⚠️ [{tid}] promote {remote_path}: 逾時")
+            return False
+        if node.get("last_error"):
+            err = node["last_error"]
+            print(f"  ⚠️ [{tid}] promote {remote_path}: 失敗 (error={err})")
+            return False
+        return True
+
+    def _confirm_file(self, tid, remote_path, wait=3.0):
+        """0x2008 FILE_CONFIRM: 確認覆蓋 → 刪 .bak + 清 pending (正式生效)。"""
+        node = self.slaves.get(tid)
+        if not node:
+            return False
+        node["query_event"].clear()
+        self.send_pkt([tid], 0x2008, {"path": remote_path})
+        return node["query_event"].wait(timeout=wait)
+
+    def _undo_file(self, tid, remote_path, wait=3.0):
+        """0x200A FILE_UNDO: 復原 → 刪新檔 + .bak 改回 + 清 pending (立即回滾)。"""
+        node = self.slaves.get(tid)
+        if not node:
+            return False
+        node["query_event"].clear()
+        self.send_pkt([tid], 0x200A, {"path": remote_path})
+        return node["query_event"].wait(timeout=wait)
+
+    def _prompt_confirm_promoted(self, promoted):
+        """批次 promote 後的手動確認: c=確認全部 / u=復原全部 / Enter=暫不確認。
+
+        未確認的檔案保留 pending, MCU 會在 3 次重啟後自動復原 (回滾舊版)。
+        """
+        total = sum(len(v) for v in promoted.values())
+        print(f"\n📢 [Promote] {total} 個檔案已搬到 root (舊檔已備份 .bak), 等待確認:")
+        print("   ⚠️ 未確認的話, MCU 會在 3 次重啟後自動復原 (回滾舊版)")
+        print("   [c] 確認全部 (正式生效, 刪除 .bak 備份)")
+        print("   [u] 復原全部 (立即回滾, 用 .bak 還原)")
+        print("   [Enter] 暫不確認 (保留 pending, 由 MCU 3 次重啟自動判斷)")
+        ch = input("👉 請選擇: ").strip().lower()
+        if ch == 'c':
+            ok_n = fail_n = 0
+            for tid, paths in promoted.items():
+                for p in paths:
+                    if self._confirm_file(tid, p):
+                        ok_n += 1
+                    else:
+                        fail_n += 1
+                        print(f"  ⚠️ [{tid}] 確認失敗: {p}")
+            print(f"✅ 已確認 {ok_n} 個檔案 (正式生效); 失敗 {fail_n}")
+        elif ch == 'u':
+            ok_n = fail_n = 0
+            for tid, paths in promoted.items():
+                for p in paths:
+                    if self._undo_file(tid, p):
+                        ok_n += 1
+                    else:
+                        fail_n += 1
+                        print(f"  ⚠️ [{tid}] 復原失敗: {p}")
+            print(f"♻️ 已復原 {ok_n} 個檔案; 失敗 {fail_n}")
+        else:
+            print("ℹ️ 暫不確認 — MCU 將在 3 次重啟後自動復原未確認的檔案")
+            print("   (之後可再用 Step 0 檔案管理 或本工具的確認/復原指令處理)")
+
     def _upload_bytes(self, tid, data, remote_path, file_idx=1, total_files=1, file_id=None):
         node = self.slaves.get(tid)
         if not node:
@@ -1559,6 +1646,7 @@ class NetBusMaster:
             retry_left = retry_count
             while True:
                 node["ack_event"].clear()
+                node["ack_offset"] = -1
                 t_send0 = time.perf_counter()
                 self.send_pkt([tid], 0x2002, {
                     "file_id": file_id,
@@ -1571,12 +1659,17 @@ class NetBusMaster:
                 ok, why = self._wait_evt(node["ack_event"], ack_timeout)
                 t_ack1 = time.perf_counter()
                 if ok:
-                    break
+                    # 🔧 只接受與目前 chunk offset 相符的 ACK; 延遲的舊 ACK 忽略
+                    if node.get("ack_offset") == off:
+                        break
+                    print(f"⚠️ 忽略錯位 ACK off={node.get('ack_offset')} expect={off}, 重發")
+                    ok = False
+                    why = "mismatch"
                 if why == "cancel":
                     raise Exception("已停止")
                 if retry_left > 0:
                     retry_left -= 1
-                    print(f"⚠️ 上傳 ACK 逾時 offset {off} (chunk={chunk_size}), 重發 ({retry_count - retry_left}/{retry_count})...")
+                    print(f"⚠️ 上傳 ACK 逾時/錯位 offset {off} (chunk={chunk_size}), 重發 ({retry_count - retry_left}/{retry_count})...")
                     continue
                 raise Exception(f"Timeout at offset {off} (chunk={chunk_size})")
             send_total += (t_send1 - t_send0)
@@ -1690,12 +1783,18 @@ class NetBusMaster:
                 })
                 ok, why = self._wait_evt(node["read_event"], read_timeout)
                 if ok:
-                    break
+                    # 🔧 只接受與目前請求 offset 相符的回應;
+                    #    延遲的舊 chunk 回應 (重試後才到) 會造成重複寫入 → 忽略
+                    if node.get("read_offset") == offset:
+                        break
+                    print(f"⚠️ 忽略錯位回應 off={node.get('read_offset')} expect={offset}")
+                    ok = False
+                    why = "mismatch"
                 if why == "cancel":
                     raise Exception("已停止")
                 if retry_left > 0:
                     retry_left -= 1
-                    print(f"⚠️ 下載讀取逾時 off={offset} (chunk={req_len}), 重試 ({retry_count - retry_left}/{retry_count})...")
+                    print(f"⚠️ 下載讀取逾時/錯位 off={offset} (chunk={req_len}), 重試 ({retry_count - retry_left}/{retry_count})...")
                     continue
                 if chunk_size > chunk_min:
                     next_req = chunk_size // 2
@@ -1772,8 +1871,11 @@ class NetBusMaster:
             self.panel.update_device(tid, status="準備中", transfer_label="", upload_progress=0)
 
         max_workers = self.config.get("max_workers", 10)
+        promoted = {}   # tid -> [root_paths]
+        promoted_lock = threading.Lock()
 
         def _task(tid):
+            local_promoted = []
             try:
                 for i, (l_path, r_path) in enumerate(files_to_upload):
                     if self.transfer_cancel.is_set():
@@ -1793,18 +1895,30 @@ class NetBusMaster:
                                 raise e
                             self.panel.update_device(tid, status=f"Retry {retry_count} {r_path[:10]}...")
                             time.sleep(1)
+                    # 🔧 root 目標: 上傳到 /sd 暫存後, 搬到 root (自動 .bak 備份 + pending)
+                    #    /sd/... 開頭的路徑表示本來就在 /sd, 不搬運 (例如 data.bin 走 deploy 不在此)
+                    if not self.transfer_cancel.is_set() and not r_path.startswith("/sd"):
+                        if self._promote_file(tid, r_path):
+                            local_promoted.append(r_path)
                 self.panel.update_device(tid, status="完成", transfer_label="", upload_progress=100)
             except Exception as e:
                 if str(e) == "已停止" or self.transfer_cancel.is_set():
                     self.panel.update_device(tid, status="已停止", transfer_label="", error_msg="")
                 else:
                     self.panel.update_device(tid, status="錯誤", transfer_label="", error_msg=str(e))
+            with promoted_lock:
+                if local_promoted:
+                    promoted[tid] = local_promoted
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_task, tid): tid for tid in targets}
             for f in futures:
                 f.result()
         self._transfer_end()
+
+        # 🔧 手動確認: promote 後等使用者確認; 未確認的 MCU 會在 3 次重啟後自動復原
+        if promoted:
+            self._prompt_confirm_promoted(promoted)
 
     def _upload_generic_file(self, tid, local_path, remote_path, file_idx=1, total_files=1):
         try:

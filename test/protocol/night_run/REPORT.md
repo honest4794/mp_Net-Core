@@ -1,7 +1,7 @@
 # 一晚測試報告 — 2026-08-22 夜
 
 > 測試板：1201（master/被測）、1401（第二板，中段 USB 卡死）
-> 接線：GPIO9=TX、GPIO8=RX 交叉直連（與昨晚 uart_cross 相同）
+> 接線：GPIO9=TX、GPIO8=RX 交叉直連（與先前 UART 交叉測試相同）
 
 ## 一、環境準備（已完成）
 
@@ -48,7 +48,7 @@
 1. **實體重插 1401 的 USB**（或按 RESET），讓它脫離卡死。
 2. 1401 恢復後，重跑雙板測試（agent 已備妥）：
    ```
-   python -B test/protocol/night_run/uart_cross_host.py --bauds 115200,921600
+   python -B test/protocol/rs485_probe_host.py peer --port <COMx> --baud 115200 --stage 2
    ```
    （或直接用 master_agent 的 t_speed + t_file_upload 系列）
 3. 無線測試需另排：WiFi 需 AP + PC 當 master；ESP-NOW 需兩板 config 開 enable；Web UI 需板有 IP。
@@ -63,7 +63,7 @@
 | `test/protocol/night_run/config.1401.test.json` | 1401 測試用 config（9/8 + CircuitDecode on + ENC off） |
 | `test/protocol/night_run/config.1401.backup.json` | 1401 原 config 備份（測完還原用） |
 | `test/protocol/night_run/results/` | 測試結果存檔 |
-| `test/protocol/uart_cross_bench.py` + `uart_cross_host.py` | 昨晚 UART 交叉測試（全 baud 通過） |
+| `test/protocol/rs485_probe.py` + `rs485_probe_host.py` | UART/RS485 連結層測試（取代已移除的 uart_cross_bench/host） |
 
 ## 七、總結
 

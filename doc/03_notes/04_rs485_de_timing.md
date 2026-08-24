@@ -3,7 +3,7 @@
 > **用途**：記錄 RS485 半雙工來回回覆（ping-pong）時「需要等 20ms 才能收到回覆」的調查結論、根因，以及後續處理結果（20ms → 1ms + `rs485_hd` C 模組）。
 > **分類**：筆記（03_notes）
 > **最後更新**：2026-08-21（合併原 `rs485_de_timing.md` 調查與 `HANDOFF_rs485_hd.md` 交接）
-> **相關**：`slave/driver/uart_drv.py`、`ext_mod/mp_rs485_hd/`、`test/protocol/rs485_de_scan.py`
+> **相關**：`slave/driver/uart_drv.py`、`ext_mod/mp_rs485_hd/`、`test/protocol/rs485_probe.py`（舊測試腳本 rs485_de_scan 等已移除，由本檔取代）
 
 ---
 
@@ -112,6 +112,8 @@ def write(self, data):
 兩句註解互相打架：driver 說「10ms 會丟回覆開頭」，bench_tx 說「8ms 以上全通、10ms 安全」。
 同一個東西，一個說 20、一個說 8。這代表 20ms 是當時某次實驗沒收斂、後來被保守釘死的值，不是硬體真正的下限。
 
+> （上表各腳本已全部移除，統一由 `test/protocol/rs485_probe.py` + `rs485_probe_host.py` 取代）
+
 ## 7. 真正的根因：硬體使能時間
 
 一個裸的 MAX485 / SP485，DE 使能時間約 **100ns～2μs**，根本不需要 ms 級。
@@ -142,29 +144,17 @@ def write(self, data):
 
 ## 9. 測試腳本使用說明
 
-`test/protocol/rs485_de_scan.py` — 兩塊板「一掃一反射」，量出最小穩定 DE settle。
+舊的 DE settle 掃描腳本（`rs485_de_scan.py`）已移除，由漸進式測試套件取代：
 
-**接線**（每塊板各接一顆 RS485 收發器，A-A / B-B / GND 共地）：
+- `test/protocol/rs485_probe.py`（板端 agent）— 三階段漸進、每階段人工確認：
+  1. `run(1)` GPIO 確認（UART 建立 / EN 跳動 / TX 方波 / RX 總線安靜檢查）
+  2. `run(2)` 通訊確認（ping/echo 對 PC 或另一塊板）
+  3. `run(3)` 系統路徑確認（config.json + `driver.uart_drv._Rs485Uart` + 真實 5-byte 顯示幀）
+- `test/protocol/rs485_probe_host.py`（PC 端）— USB-RS485 轉接器當對端：
+  `python -B rs485_probe_host.py peer --port COMx --baud 9600 --stage 2|3`
 
-```
-GPIO8 = TX → 收發器 DI     (MCU 送出)
-GPIO9 = RX ← 收發器 RO     (MCU 收到)
-GPIO7 = EN → 收發器 DE+RE  (active-high：1=發送, 0=接收)
-```
-
-**部署**：兩塊板都上傳同一支檔案，把最上面的 `MODE` 寫死不同值：
-
-- `MODE = "SCAN"` — 掃描端：對 `SWEEP_MS` 的每個 settle 值做 `ROUNDS` 次 ping-pong，統計回覆成功率，最後印出「最小 100% 穩定值」。
-- `MODE = "REFLECT"` — 反射端：收到一幀就原樣回傳（settle 固定 `FIXED_SETTLE_MS`）。**反射端務必已知穩定**，這樣掃到的失敗才歸因於掃描端自己的 settle。
-
-改名 `main.py` 丟根目錄開機自動跑，或 REPL `exec(open("rs485_de_scan.py").read())`。
-
-**判讀**：
-
-- 某個 settle 值 `ok == ROUNDS`（100%）→ 該值可穩定送出。
-- 最小的 100% 值即為「最小穩定 DE settle」，實務上加 1ms 餘量。
-- 從 0ms 就 100% → 收發器不需要額外 settle（純 MAX485/SP485 通常如此）。
-- 一路到 20ms 都 < 100% → 問題不在 settle，是接線／極性／終端電阻／總線偏壓。
+若日後仍要掃 DE settle：用 `run(2, mode='ping')` 改變對端/本端 `settle_ms`（或 `--settle_ms`）
+逐值掃，成功率 100% 的最小值 +1ms 即為安全線（歷史結論：0ms 不穩、1ms 100% 穩定）。
 
 ## 10. 已實作結果（2026-08-21）
 
@@ -242,8 +232,7 @@ GPIO7 = EN → 收發器 DE+RE  (active-high：1=發送, 0=接收)
 
 - `slave/driver/uart_drv.py` — `_Rs485Uart` 方向控制（settle_ms 取代寫死的 20ms）
 - `ext_mod/mp_rs485_hd/` — RS485 硬體半雙工 C 模組
-- `test/protocol/rs485_de_scan.py` — DE settle 掃描腳本（本文檔第 9 節）
-- `test/protocol/bench_tx.py`、`circuit_bus_host.py`、`circuit_bus_recv.py`、`circuit_bus_link.py` — 各版本使能延遲
+- `test/protocol/rs485_probe.py` + `rs485_probe_host.py` — 漸進式測試套件（取代 rs485_de_scan / bench_tx / circuit_bus_* / rs485_hd_bench / uart_cross_*，均已移除）
 - `lib/micropython/ports/esp32/machine_uart.c` — UART 的 MicroPython 綁定
 - `lib/esp-idf/components/esp_driver_uart/src/uart.c` — ESP-IDF UART driver（FIFO/中斷、RS485 模式）
 - `lib/esp-idf/components/esp_driver_uart/include/driver/uart.h` — `uart_set_mode` / `uart_set_rts`
