@@ -629,7 +629,10 @@ class NetworkManager:
             mode = self.active_modes.get(name, MODE_OFF)
             
             # 處理 MODE_BOOT_ONLY 的超時關閉
-            if mode == MODE_BOOT_ONLY:
+            # 🔧 'wifi' (STA) 豁免: 自動上線設計需要 STA 常開 — master 敲門 (UDP)
+            #    與 WS 重連都必須設備在網路上; 若讓逾時關閉 wifi, 就會跟重連邏輯
+            #    打架 (關了又開, 無限迴圈)。LAN 維持原逾時省電行為。
+            if mode == MODE_BOOT_ONLY and name != 'wifi':
                 # 獲取配置的超時時間，預設 300 秒 (5 分鐘)
                 timeout = getattr(self, 'wifi_timeout', 300)
                 if now - self.boot_time > timeout: 
