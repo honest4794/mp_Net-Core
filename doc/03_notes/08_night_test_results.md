@@ -576,3 +576,54 @@
 - 用 `repl_upload.py`（normal REPL + base64，Ctrl-B 模式）部署檔案，不 soft reset，避免堆 thread。
 - 卡死時：Ctrl-B 退出 raw REPL + Ctrl-C 打斷，或硬 reset（拔 USB/EN 掣）清 thread。
 
+
+---
+
+## 27. RS485 完整更新鏈路實測（2026-08-24）——三塊板 0115/0117/01F7
+
+### 27.1 硬件環境
+- 三塊板：`0115` 監控（9C139EF12530）、`0117` master、`01F7` slave（B8F862D8120C）
+- RS485 半雙工（SP3485 收發器），總線 A-A/B-B 並聯，已共地，DE/RE 並聯接 GPIO16
+- UART id1 = **tx14/rx15/en16 @115200**（TX/RX 交叉接線，MCU TX→DI、RO→MCU RX）
+- UART id2 = tx17/rx18 @9600（純 UART，未測）
+
+### 27.2 本輪修復的 bug（全部已寫入 code）
+| Bug | 位置 | 修復 |
+|---|---|---|
+| `CircuitDecode.enable=0` → slave 不 decode UART | config | enable 開 1 |
+| `scan.py` `_identify()` 用 `uart.write()` 沒拉 DE | test/protocol/night_run/scan.py | 加 EN 控（RS485 發送必需） |
+| `free_bytes` 用 `st[3]`（f_bavail 負數）→ NO_SPACE 誤判 | slave/lib/sys/fs_manager.py | 改 `st[2]`（f_bfree） |
+| `write_chunk` 空間檢查負數誤判 NO_SPACE | slave/lib/sys/fs_manager.py | 加 `_free > 0` 保護 |
+
+### 27.3 完整更新流程實測（全部通過）
+1. 掃描 0x0100~0x01FF → 找到 0115 + 01F7
+2. stage 上傳 → 2048 bytes sha OK
+3. verify 下載驗證 → 2048 bytes sha OK
+4. promote 正式上線 → exists=1 size=2048
+5. REBOOT 重啟 → 指令已發，slave 成功重啟
+6. 重啟後確認 → exists=1 size=2048（持久化）
+7. confirm 確認 → pending 1→0
+8. 覆蓋留 .bak → .bak exists=1 pending=1
+9. undo 復原 → 下載內容 = v1 舊版（還原成功）
+
+### 27.4 四個核心指令確認（用戶問）
+- ✅ 上傳 stage：`staged 2048 bytes sha OK`
+- ✅ 下載 verify：`verify 2048 bytes sha OK` + 下載內容 sha 比對正確
+- ✅ 確認 confirm：`pending 1→0`
+- ✅ 復原 undo：下載內容 = 舊版 v1（還原成功）
+
+### 27.5 測試技巧（重要，避免反覆卡死）
+- **mpremote exec 每次連線會 soft-reset，MicroPython soft-reset 不殺 thread**；反覆連線堆爆 thread → 板卡死（`could not enter raw repl` / `Device not configured`）。
+- **穩定做法**：用 `pyserial` + `Ctrl-B`（出 raw REPL）+ `Ctrl-C`（打斷 main）+ `Ctrl-E` paste mode（執行多行）+ `Ctrl-D`（執行）。完全避開 mpremote，不 soft-reset。
+- **需 reload 新 code 時**：硬 reset（拔插 USB / 按 reset 掣），不要 soft reset。
+- **RS485 半雙工發送**：必須拉高 EN(DE) 才發得出（`scan.py` 舊版沒做，導致 IDENTIFY 不通但 STATUS_GET 通）。
+- **firmware 載入慢**：開機要等 10~15 秒才 boot 完，探測時要耐心，不要誤判卡死。
+- **undo 回應掉幀**：RS485 半雙工下 undo 動作成功但回應幀偶發丟失（master 報 `no UNDO rsp`），靠重試遮蓋，不影響功能。
+
+### 27.6 三塊板角色與 cID
+| 板 | USB port | 角色 | cID |
+|---|---|---|---|
+| 1137101 | 監控 | 0x0115 |
+| 1137201 | master | 0x0117 |
+| 1137401 | slave | 0x01F7 |
+

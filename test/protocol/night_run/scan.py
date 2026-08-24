@@ -65,8 +65,16 @@ def _identify(addr):
     d = ma._store.get(0x100D)
     payload = ma._cc.encode(d, {"reply_addr": 0xFFFF})
     frame = ma.Proto.pack(0x100D, payload, addr=addr)
-    L.uart.write(frame)
-    L._wait_sent()
+    # RS485 半雙工：必須拉高 EN(DE) 才發得出（走 Link.send 的 en 控制邏輯）
+    if getattr(L, 'en', None) is not None:
+        L.en.value(1)
+        time.sleep_ms(2)
+    try:
+        L.uart.write(frame)
+        L._wait_sent()
+    finally:
+        if getattr(L, 'en', None) is not None:
+            L.en.value(0)
     # 收
     t0 = time.ticks_ms()
     mv = bytearray(512)
@@ -120,6 +128,58 @@ def scan_range(start, end):
     found = []
     for a in range(start, end + 1):
         r = _identify(a)
+        if r is not None:
+            found.append(r)
+            print("    ✅ 0x%04X -> cid=0x%04X slave_id=%s" % (a, r['cid'], r['slave_id']))
+    if not found:
+        print("  ❌ 範圍內無 slave")
+    return found
+
+
+def _identify_fast(addr, wait_ms=80):
+    """快速版 _identify：每個位址只等 wait_ms（slave 在線會即回）。"""
+    L = _L()
+    d = ma._store.get(0x100D)
+    payload = ma._cc.encode(d, {"reply_addr": 0xFFFF})
+    frame = ma.Proto.pack(0x100D, payload, addr=addr)
+    # RS485 半雙工：必須拉高 EN(DE) 才發得出
+    if getattr(L, 'en', None) is not None:
+        L.en.value(1)
+        time.sleep_ms(2)
+    try:
+        L.uart.write(frame)
+        L._wait_sent()
+    finally:
+        if getattr(L, 'en', None) is not None:
+            L.en.value(0)
+    t0 = time.ticks_ms()
+    mv = bytearray(512)
+    while time.ticks_diff(time.ticks_ms(), t0) < wait_ms:
+        try:
+            if L.uart.any():
+                n = L.uart.readinto(mv)
+                if n and n > 0:
+                    L.parser.feed(mv[:n])
+                    r = L.parser.pop_frame()
+                    while r is not None:
+                        _v, a, cmd, payload_mv = r
+                        if cmd == 0x100E:
+                            return _decode_identify(bytes(payload_mv))
+                        r = L.parser.pop_frame()
+        except Exception:
+            pass
+        time.sleep_ms(1)
+    return None
+
+
+def scan_range_fast(start, end, wait_ms=80):
+    """快速掃描：每個位址只等 wait_ms，適合大範圍（256+ 位址）。"""
+    start = int(start) & 0xFFFF
+    end = int(end) & 0xFFFF
+    print("  [快速掃描] 0x%04X ~ 0x%04X (%d 位址, 每址 %dms) ..." % (start, end, end - start + 1, wait_ms))
+    found = []
+    for a in range(start, end + 1):
+        r = _identify_fast(a, wait_ms)
         if r is not None:
             found.append(r)
             print("    ✅ 0x%04X -> cid=0x%04X slave_id=%s" % (a, r['cid'], r['slave_id']))

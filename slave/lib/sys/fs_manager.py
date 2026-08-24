@@ -314,7 +314,10 @@ class FileSystemManager:
             data = bytes(data)
 
         # 中途容量安全網 (前置 QUERY.free 才是主力)
-        if self.free_bytes(self.session["path"]) < len(data) + 4096:
+        # ⚠️ statvfs 在 FAT/flash 模式可能返回負數(overflow)，那時 free_bytes 不可靠，
+        # 不能當作「沒空間」；只有拿到「明確的正數且不足」才擋。
+        _free = self.free_bytes(self.session["path"])
+        if _free > 0 and _free < len(data) + 4096:
             self.session["last_error"] = "NO_SPACE"
             return False
 
@@ -1079,7 +1082,10 @@ class FileSystemManager:
                 st = os.statvfs("/sd")
             else:
                 st = os.statvfs("/")
-            return st[0] * st[3]  # block_size * free_blocks
+            # ⚠️ 用 st[2] (f_bfree) 而非 st[3] (f_bavail)：MicroPython FAT/flash 的
+            # f_bavail 會回負數(root quota overflow)，導致空間誤判成 0/負數。
+            # f_bfree 才是真實可用 block 數。
+            return st[0] * st[2]  # block_size * free_blocks
         except Exception:
             return 0
 

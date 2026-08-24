@@ -26,7 +26,8 @@ from lib.sys.proto import Proto, StreamParser, ADDR_BROADCAST
 from lib.sys.schema_loader import SchemaStore
 from lib.sys.schema_codec import SchemaCodec
 
-TX, RX = 9, 8
+TX, RX = 14, 15
+EN = 16                 # RS485 DE/RE 方向腳（SP3485 active-high：1=發送 0=接收）
 UART_ID = 1
 DEF_BAUD = 115200
 SPEED_BAUD = 460800
@@ -40,6 +41,7 @@ class Link:
     def __init__(self, baud=DEF_BAUD):
         self.baud = baud
         self.uart = UART(UART_ID, baud, tx=TX, rx=RX, rxbuf=16384, txbuf=16384)
+        self.en = Pin(EN, Pin.OUT, value=0) if EN >= 0 else None
         self.parser = StreamParser()
         self._drain()
 
@@ -68,8 +70,15 @@ class Link:
             return
         payload = _cc.encode(d, args)
         frame = Proto.pack(cmd, payload, addr=addr)
-        self.uart.write(frame)
-        self._wait_sent()
+        if self.en is not None:
+            self.en.value(1)          # DE=1 發送
+            time.sleep_ms(2)          # DE settle
+        try:
+            self.uart.write(frame)
+            self._wait_sent()
+        finally:
+            if self.en is not None:
+                self.en.value(0)      # 送完回接收
         return len(frame)
 
     def _wait_sent(self):
