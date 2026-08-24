@@ -34,7 +34,6 @@ class NetworkManager:
             "connected_interfaces": set(), # 當前已連接的接口名稱集合
             "last_check": 0
         }
-        self._last_sta_retry = time.time()  # 🔧 STA 重連節流時間戳 (開機後 5s 才第一次重試)
 
     def init_from_config(self):
         """從 bus.shared 讀取配置並初始化"""
@@ -690,46 +689,7 @@ class NetworkManager:
                             # 連上時確保省電已關 (boot 路徑可能漏掉; 省電會讓 PC 要 ping 才連得上)
                             self._disable_pm(iface)
                         self._on_interface_up(name, iface)
-                else:
-                    # 🔧 自動重連邏輯: STA 只要啟用 (ALWAYS_ON/BOOT_ONLY) 就持續重試,
-                    #    網路恢復時設備自動連回指定 SSID (不再卡死在 AP 模式)。
-                    if name == 'wifi' and mode != MODE_OFF:
-                        # WiFi 斷線時主動重連 (韌體不一定會自動重連)
-                        if name in self._state['connected_interfaces']:
-                            dprint("⚠️ WiFi 斷線, 嘗試重連...")
-                        # 🔧 STA 優先 + AP 備援 (不同時並存): STA 掉線時確保 AP 起來當後備;
-                        #    STA 連上時 _on_interface_up 會自動關掉 AP
-                        if 'wifi_ap' not in self.interfaces:
-                            try:
-                                self._start_ap_mode(self.bus.shared.get("Network", {}).get("wifi") or {})
-                            except Exception:
-                                pass
-                        try:
-                            if not iface.active():
-                                iface.active(True)
-                            cfg = self.bus.shared.get("Network", {}).get("wifi", {}) or {}
-                            ssid = cfg.get("ssid") or ""
-                            pw = (cfg.get("ssid_pw") or "")
-                            if not pw:
-                                try:
-                                    db = self._get_db()
-                                    if db is not None:
-                                        import ujson as json
-                                        rp = db.get(b"Network.wifi.ssid_pw")
-                                        if rp is not None:
-                                            pw = json.loads(rp.decode()) or ""
-                                except Exception:
-                                    pass
-                            if ssid and not iface.isconnected():
-                                # 節流: 至少 5 秒一次, 避免每 1s 掃描/關聯佔用射頻
-                                now_t = time.time()
-                                if now_t - self._last_sta_retry >= 5.0:
-                                    self._last_sta_retry = now_t
-                                    dprint("   reconnect → {}".format(ssid))
-                                    iface.connect(ssid, pw)
-                        except Exception:
-                            pass
-                        
+
             except Exception as e:
                 dprint(f"⚠ 檢查 {name} 狀態錯誤: {e}")
 

@@ -76,7 +76,7 @@ def launcher():
     #     cpanel 兩模式分層:LVGL 在跑(_ui_active)→ 不發 vbtn,改轉發
     #     LVGL 的 _display_cmd 成 0x1501;LVGL 沒跑 → 原按鈕模式發 vbtn。
     #   - 執行裝置(無 LCD):在 temp/motor 的 Core_Manager 啟用 motor。
-    tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
+#     tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
 #     tm.register_task("motor", ActionTask1, default_affinity=(1, 0), layer=0)
 #     tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
     tm.register_task("circuit", CircuitTask, default_affinity=(1, 0), layer=0)
