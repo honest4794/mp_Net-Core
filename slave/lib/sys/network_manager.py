@@ -365,7 +365,7 @@ class NetworkManager:
             ap.active(True)
             
             # 讀取 AP 配置，如果沒有則使用默認值
-            ap_ssid = config.get('ap_ssid', f"NetLight-{slave_id}")
+            ap_ssid = config.get('ap_ssid', f"NetCore-{slave_id}")
             ap_password = config.get('ap_password', '12345678')
             
             ap.config(essid=ap_ssid, password=ap_password, authmode=network.AUTH_WPA_WPA2_PSK)

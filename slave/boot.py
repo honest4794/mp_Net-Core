@@ -28,6 +28,15 @@ except Exception as _we:
     print("[BOOT] WebREPL ensure error: {}".format(_we))
 
 
+# ── 調試等級: 由 config.json 的 System.debug_level 決定 (0/1/2) ──
+#   ConfigManager 已在 import 時載入 config 到 bus.shared, 這裡套用到 dprint。
+try:
+    from lib.sys.dispatch import Dispatcher
+    Dispatcher.configure(bus.shared.get("System", {}).get("debug_level", 1))
+except Exception:
+    pass
+
+
 from driver.spi_drv      import init_spi,      gpios as g_spi
 from driver.pin_drv      import init_pin,      gpios as g_pin
 from driver.i2c_drv      import init_i2c,      gpios as g_i2c

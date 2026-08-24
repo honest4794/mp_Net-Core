@@ -9,6 +9,7 @@
     "hostname": "",
     "cID": "",
     "refresh_rate_ms": 1,
+    "debug_level": 1,
     "master_IP": "",
     "master_port": 0,
     "discovery_port": 9000,

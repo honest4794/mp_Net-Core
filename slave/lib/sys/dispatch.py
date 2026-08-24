@@ -13,7 +13,16 @@ def dprint(msg, level=1):
 
 class Dispatcher:
     # 調試等級：0: 關閉, 1: 僅指令, 2: 完整 Payload
-    debug_level = 1 
+    # 可由 config.json 的 System.debug_level 覆寫（boot 載入 config 後設定）
+    debug_level = 1
+
+    @staticmethod
+    def configure(level):
+        """從 config 設定調試等級（0/1/2）。"""
+        try:
+            Dispatcher.debug_level = int(level)
+        except Exception:
+            pass
 
     @staticmethod
     def log(msg, level=1):
