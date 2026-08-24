@@ -102,8 +102,8 @@ class ConfigManager:
             # 獲取該層級的鍵順序
             ordered_keys = self._layout.get(path, [])
             
-            # 過濾掉所有以 _obj 結尾的鍵
-            current_keys = [k for k in obj.keys() if not k.endswith('_obj')]
+            # 過濾掉所有以 _obj 結尾的鍵，並跳過非字串 key（runtime 全域可能塞非字串）
+            current_keys = [k for k in obj.keys() if isinstance(k, str) and not k.endswith('_obj')]
             
             # 排序：先按原始順序，再放新增的鍵
             sorted_keys = []
@@ -523,19 +523,32 @@ class ConfigManager:
                 dprint(f"[Config] 獲取新值失敗，回退全面保存: {e}")
         
         # 2. 如果無損更新失敗或未指定 key，執行標準保存（會重置縮排但保留順序）
+        #    寫入 tmp 再 rename，避免中途失敗把 config.json 寫壞（只保留 config 段，
+        #    runtime 全域如 _vbtn/_hw_inputs 等非 config key 本來就不該進 config 檔）。
+        tmp_path = self.path + ".tmp"
         try:
-            with open(self.path, 'w') as f:
-                self._update_btree_only(self.bus.shared)
-                self._pretty_dump(self.bus.shared, f)
+            config_only = {k: v for k, v in self.bus.shared.items()
+                           if isinstance(k, str) and not k.startswith("_")}
+            with open(tmp_path, 'w') as f:
+                self._pretty_dump(config_only, f)
+            os.replace(tmp_path, self.path)
+            self._update_btree_only(self.bus.shared)
             self._db.flush()
             dprint(f"[Config] ✓ 配置已同步 (已自動忽略 _obj 對象)")
         except Exception as e:
+            try:
+                if os.stat(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
             dprint(f"[Config] ✗ 保存出錯: {e}")
 
     def _update_btree_only(self, node, prefix=""):
         """單純提取密碼到 BTree，不處理 JSON"""
         if isinstance(node, dict):
             for k, v in node.items():
+                if not isinstance(k, str):
+                    continue  # bus.shared 是開放全域，task 可能塞非字串 key，跳過避免崩潰
                 db_key = f"{prefix}{k}"
                 if k.endswith('_pw'):
                     self._db[db_key.encode()] = json.dumps(v).encode()

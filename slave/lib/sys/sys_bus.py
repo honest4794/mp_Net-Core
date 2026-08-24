@@ -1,3 +1,17 @@
+# gpio_validate 錯誤訊息用: driver key → 顯示名稱
+_DRIVER_LABELS = {
+    "spi": "SPI",
+    "pin": "PIN",
+    "i2c": "I2C",
+    "uart": "UART",
+    "pwm": "PWM",
+    "i2s": "I2S",
+    "sd": "SD 卡",
+    "tft": "TFT",
+    "enc": "編碼器 ENC",
+}
+
+
 class SysBus:
     def __init__(self):
         self._services = {}
@@ -47,10 +61,13 @@ class SysBus:
             if len(drivers) > 1:
                 conflicts[gpio] = claims
         if conflicts:
-            lines = ["GPIO CONFLICT:"]
+            lines = ["GPIO CONFLICT: 同一腳位被多個外設同時使用，請檢查 config.json 的 GPIO 設定:"]
             for gpio, claims in conflicts.items():
-                names = ", ".join(c["driver"] for c in claims)
-                lines.append("  GPIO {} → [{}]".format(gpio, names))
+                descs = ["{} ({})".format(c["label"], _DRIVER_LABELS.get(c["driver"], c["driver"])) for c in claims]
+                if len(descs) == 2:
+                    lines.append("  GPIO {}: {} 與 {} 衝突".format(gpio, descs[0], descs[1]))
+                else:
+                    lines.append("  GPIO {}: {} 互相衝突".format(gpio, "、".join(descs)))
             raise ValueError("\n".join(lines))
         return True
 
