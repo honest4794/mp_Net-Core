@@ -130,7 +130,7 @@ class NetworkTask(Task):
         if network_ok:
             bus_sys = bus.shared["System"]
 
-            # ── 自動連線 (僅一次) ──
+            # ── 自動連線 (僅一次, 開機立即嘗試) ──
             if not self.tried_config_connect and not self.ctrl_bus.connected:
                 self.tried_config_connect = True
                 m_ip = bus_sys.get("master_IP", "")

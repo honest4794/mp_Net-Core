@@ -969,7 +969,19 @@ class FileSystemManager:
     def open_read(self, path):
         """回傳可讀的 file-like 物件供串流讀取；RAM 則回 BytesIO。
         大檔串流建議使用 begin_read / read_into / seek / tell / end_read。
+
+        🔧 根目錄真檔 (如 /manifest.json 本地 manifest、FILE_PROMOTE 落根的固件)
+        直接用絕對路徑開 — resolve() 會把這類路徑映射到 /sd 導致讀不到
+        (與 file_actions 的 _root_file_exists 同一套判斷)。
         """
+        p = str(path)
+        if p.startswith("/") and not p.startswith(("/ram", "/sd")):
+            try:
+                st = os.stat(p)
+                if (st[0] & 0x4000) == 0:  # 是檔案不是目錄
+                    return open(p, "rb")
+            except Exception:
+                pass
         kind, full, raw_name = self.resolve(path)
         if kind == "ram":
             data = self._ram.get(full)

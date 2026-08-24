@@ -28,6 +28,8 @@ DEFAULT_CONFIG = {
     "upload_begin_timeout": 5.0,
     "upload_validation_timeout": 30.0,
     "download_read_timeout": 5.0,
+    # 🔧 傳輸重試: block/chunk 級重試次數 (逾時重發同一個區塊, 之後檔案級重試)
+    "transfer_retry_count": 3,
     # 🔧 新增: 延遲量測 / 中途加入 / 循環播放
     "latency_samples": 5,                 # 每次量測的 ping 次數
     "latency_log_file": "latency_log.csv", # 延遲測試紀錄檔
@@ -137,6 +139,84 @@ try:
 except ImportError as e:
     print(f"❌ 導入錯誤: {e}")
     sys.exit(1)
+
+
+# ==================== WS 二元幀重組器 ====================
+class WSFrameAssembler:
+    """WebSocket 二元幀重組 (master 端接收, 解決 TCP 切分/合併)。
+
+    問題: conn.recv() 不保證每次回一個完整 WS frame — 大封包 (FILE_CHUNK 2048B
+    → frame ~2071B) 在 Wi-Fi 不穩時會被切段; 舊程式假設「每次 recv 都從 0x82
+    開頭」, 切點落在資料中間且下段首 byte 恰為 0x82 時會誤判 header, 吃掉資料
+    開頭 → NC4 CRC 失敗 → 回應遺失 → 下載逾時 (「第二次下載總是卡住」)。
+
+    本類維護跨 recv 的 header/payload 狀態, 組出完整 frame 才 yield 給 NC4 parser。
+    只處理 binary frame (0x82, 未 mask — 與 slave 端一致)。
+    """
+    def __init__(self):
+        self._hdr = bytearray(14)
+        self._hdr_len = 0
+        self._need = 0       # 尚需 payload 位元組數
+        self._pay = bytearray()
+
+    def feed(self, data):
+        """餵入 TCP 資料, yield 完整的 WS binary frame payload (bytes)。"""
+        mv = memoryview(data)
+        n = len(mv)
+        i = 0
+        while i < n:
+            if self._need <= 0:
+                # ── 組 2-byte header ──
+                if self._hdr_len < 2:
+                    take = min(2 - self._hdr_len, n - i)
+                    self._hdr[self._hdr_len:self._hdr_len + take] = mv[i:i + take]
+                    self._hdr_len += take
+                    i += take
+                    if self._hdr_len < 2:
+                        return
+                b0 = self._hdr[0]
+                b1 = self._hdr[1]
+                if b0 != 0x82:
+                    # 非 binary frame → 重同步: 丟棄 1 byte 再試
+                    self._hdr[0] = self._hdr[1]
+                    self._hdr_len = 1
+                    continue
+                plen7 = b1 & 0x7F
+                ext_len = 2 if plen7 == 126 else (8 if plen7 == 127 else 0)
+                need_hdr = 2 + ext_len
+                if self._hdr_len < need_hdr:
+                    take = min(need_hdr - self._hdr_len, n - i)
+                    self._hdr[self._hdr_len:self._hdr_len + take] = mv[i:i + take]
+                    self._hdr_len += take
+                    i += take
+                    if self._hdr_len < need_hdr:
+                        return
+                if plen7 == 126:
+                    pay_len = (self._hdr[2] << 8) | self._hdr[3]
+                elif plen7 == 127:
+                    pay_len = 0
+                    for k in range(8):
+                        pay_len = (pay_len << 8) | self._hdr[4 + k]
+                else:
+                    pay_len = plen7
+                self._hdr_len = 0
+                # 未 mask (b1 & 0x80 == 0); 若被 mask 就多收 4 bytes 並跳過
+                self._need = pay_len + (4 if (b1 & 0x80) else 0)
+                self._pay = bytearray()
+            # ── 收 payload ──
+            take = self._need
+            avail = n - i
+            if take > avail:
+                take = avail
+            if take <= 0:
+                break
+            self._pay.extend(mv[i:i + take])
+            i += take
+            self._need -= take
+            if self._need <= 0:
+                pay = bytes(self._pay)
+                yield pay
+                self._pay = bytearray()
 
 
 # ==================== 增強版設備監控模型 ====================
@@ -880,26 +960,20 @@ class NetBusMaster:
             # --- END Mid-Join Logic ---
             
             parser = self.slaves[cid]["parser"]
+            ws_ass = WSFrameAssembler()  # 🔧 跨 recv 重組 WS frame (TCP 切分安全)
             while self.running:
                 raw = conn.recv(4096)
                 if not raw:
                     break
                 
-                if raw[0] == 0x82:
-                    plen = raw[1] & 0x7F
-                    off = 2
-                    if plen == 126:
-                        off = 4
-                    elif plen == 127:
-                        off = 10
-                    parser.feed(raw[off:])
-                else:
-                    parser.feed(raw)
-                
-                for ver, addr_pkt, cmd, payload in parser.pop():
-                    # 收到任何數據都視為心跳
-                    self.device_manager.update_heartbeat(cid)
-                    cid = self.dispatch_logic(cid, cmd, payload)
+                # 🔧 修復: 不再假設每次 recv 都是完整 WS frame。
+                # 重組後才餵給 NC4 parser, 解決大封包切段誤判 → 下載逾時。
+                for frame in ws_ass.feed(raw):
+                    parser.feed(frame)
+                    for ver, addr_pkt, cmd, payload in parser.pop():
+                        # 收到任何數據都視為心跳
+                        self.device_manager.update_heartbeat(cid)
+                        cid = self.dispatch_logic(cid, cmd, payload)
         
         except Exception as e:
             current_node = self.device_manager.get_slave(cid)
@@ -1475,29 +1549,38 @@ class NetBusMaster:
         ack_ms_ema = 0.0
         send_total = 0.0
         ack_total = 0.0
+        retry_count = self._cfg_int("transfer_retry_count", 3)
 
         for off in range(0, total_len, chunk_size):
             if self.transfer_cancel.is_set():
                 raise Exception("已停止")
             chunk = data[off : off + chunk_size]
-            node["ack_event"].clear()
-            t_send0 = time.perf_counter()
-            self.send_pkt([tid], 0x2002, {
-                "file_id": file_id,
-                "offset": off,
-                "data": chunk
-            })
-            t_send1 = time.perf_counter()
+            # 🔧 block 級重試: ACK 逾時重發同一個 chunk (最多 retry_count 次)
+            retry_left = retry_count
+            while True:
+                node["ack_event"].clear()
+                t_send0 = time.perf_counter()
+                self.send_pkt([tid], 0x2002, {
+                    "file_id": file_id,
+                    "offset": off,
+                    "data": chunk
+                })
+                t_send1 = time.perf_counter()
 
-            t_ack0 = time.perf_counter()
-            ok, why = self._wait_evt(node["ack_event"], ack_timeout)
-            t_ack1 = time.perf_counter()
-            send_total += (t_send1 - t_send0)
-            ack_total += (t_ack1 - t_ack0)
-            if not ok:
+                t_ack0 = time.perf_counter()
+                ok, why = self._wait_evt(node["ack_event"], ack_timeout)
+                t_ack1 = time.perf_counter()
+                if ok:
+                    break
                 if why == "cancel":
                     raise Exception("已停止")
-                raise Exception(f"Timeout at offset {off}")
+                if retry_left > 0:
+                    retry_left -= 1
+                    print(f"⚠️ 上傳 ACK 逾時 offset {off} (chunk={chunk_size}), 重發 ({retry_count - retry_left}/{retry_count})...")
+                    continue
+                raise Exception(f"Timeout at offset {off} (chunk={chunk_size})")
+            send_total += (t_send1 - t_send0)
+            ack_total += (t_ack1 - t_ack0)
 
             done = off + len(chunk)
             now_t = time.perf_counter()
@@ -1584,33 +1667,47 @@ class NetBusMaster:
 
         offset = 0
         start_time = time.time()
+        retry_count = self._cfg_int("transfer_retry_count", 3)
         while offset < expected_size:
             if self.transfer_cancel.is_set():
                 raise Exception("已停止")
-            node["read_event"].clear()
-            node["read_data"] = None
 
             req_len = chunk_size
             remain = expected_size - offset
             if req_len > remain:
                 req_len = remain
 
-            self.send_pkt([target], 0x2007, {
-                "path": remote_path,
-                "offset": offset,
-                "length": req_len
-            })
-
-            ok, why = self._wait_evt(node["read_event"], read_timeout)
-            if not ok:
+            # 🔧 block 級重試: 同一 offset 重試 retry_count 次; 都失敗才縮小 chunk;
+            #    chunk 已到最小值仍失敗 → 檔案級交由呼叫端重試
+            retry_left = retry_count
+            while True:
+                node["read_event"].clear()
+                node["read_data"] = None
+                self.send_pkt([target], 0x2007, {
+                    "path": remote_path,
+                    "offset": offset,
+                    "length": req_len
+                })
+                ok, why = self._wait_evt(node["read_event"], read_timeout)
+                if ok:
+                    break
                 if why == "cancel":
                     raise Exception("已停止")
+                if retry_left > 0:
+                    retry_left -= 1
+                    print(f"⚠️ 下載讀取逾時 off={offset} (chunk={req_len}), 重試 ({retry_count - retry_left}/{retry_count})...")
+                    continue
                 if chunk_size > chunk_min:
                     next_req = chunk_size // 2
                     if next_req < chunk_min:
                         next_req = chunk_min
                     print(f"⚠️ 下載超時，chunk {chunk_size} -> {next_req} (path={remote_path}, off={offset})")
                     chunk_size = next_req
+                    req_len = chunk_size
+                    remain = expected_size - offset
+                    if req_len > remain:
+                        req_len = remain
+                    retry_left = retry_count
                     continue
                 raise Exception(f"下載超時 at offset {offset} (chunk={chunk_size})")
 
@@ -1879,6 +1976,8 @@ class NetBusMaster:
         self._transfer_begin()
         
         # 執行下載
+        fail_count = 0
+        file_retry = self._cfg_int("transfer_retry_count", 3)
         try:
             total_files = len(files_to_download)
             for i, r_path in enumerate(files_to_download):
@@ -1886,25 +1985,37 @@ class NetBusMaster:
                     break
                 l_path = os.path.join(save_dir, r_path.lstrip("/"))
                 f_size = manifest[r_path]['s']
-                try:
-                    ok = self._download_file(
-                        target,
-                        r_path,
-                        l_path,
-                        expected_size=f_size,
-                        status=f"下載 {i+1}/{total_files}"
-                    )
-                    if not ok:
+                # 🔧 檔案級重試: 失敗重試整個檔案 (最多 file_retry 次)
+                ok = False
+                last_err = ""
+                for attempt in range(1, file_retry + 1):
+                    if self.transfer_cancel.is_set():
                         break
-                except Exception as e:
-                    if str(e) == "已停止" or self.transfer_cancel.is_set():
-                        break
-                    raise
+                    try:
+                        ok = self._download_file(
+                            target, r_path, l_path,
+                            expected_size=f_size,
+                            status=f"下載 {i+1}/{total_files}"
+                        )
+                        if ok:
+                            break
+                        last_err = "下載未完成"
+                    except Exception as e:
+                        last_err = str(e)
+                        if str(e) == "已停止" or self.transfer_cancel.is_set():
+                            break
+                        print(f"  ⚠️ {r_path}: {e} (重試 {attempt}/{file_retry})")
+                        time.sleep(1)
+                if not ok:
+                    fail_count += 1
+                    print(f"  ⚠️ {r_path}: 下載失敗, 已重試 {file_retry} 次: {last_err or '未知'} (跳過)")
 
             if self.transfer_cancel.is_set():
                 self.panel.update_device(target, status="已停止", transfer_label="", upload_progress=0)
             else:
                 self.panel.update_device(target, status="完成", transfer_label="", upload_progress=100)
+            if fail_count:
+                print(f"  ℹ️ 完成, {fail_count} 個檔案失敗/跳過")
             time.sleep(1)
         finally:
             self._transfer_end()
@@ -1979,29 +2090,38 @@ class NetBusMaster:
             os.makedirs(save_dir, exist_ok=True)
             print(f"  📄 {len(paths)} 個檔案 → {save_dir}")
 
-            # 2. 下載全部
+            # 2. 下載全部 (🔧 檔案級重試: 每個檔最多 file_retry 次)
             self._transfer_begin()
             try:
                 total = len(paths)
                 done = 0
+                file_retry = self._cfg_int("transfer_retry_count", 3)
                 for r_path in paths:
                     if self.transfer_cancel.is_set():
                         break
                     l_path = os.path.join(save_dir, r_path.lstrip("/"))
                     f_size = manifest[r_path]['s']
-                    try:
-                        ok = self._download_file(
-                            target, r_path, l_path,
-                            expected_size=f_size,
-                            status=f"下載 {done+1}/{total}"
-                        )
-                    except Exception as e:
-                        if str(e) == "已停止" or self.transfer_cancel.is_set():
+                    ok = False
+                    for attempt in range(1, file_retry + 1):
+                        if self.transfer_cancel.is_set():
                             break
-                        print(f"  ⚠️ {r_path}: {e}")
-                        continue
+                        try:
+                            ok = self._download_file(
+                                target, r_path, l_path,
+                                expected_size=f_size,
+                                status=f"下載 {done+1}/{total}"
+                            )
+                            if ok:
+                                break
+                        except Exception as e:
+                            if str(e) == "已停止" or self.transfer_cancel.is_set():
+                                break
+                            print(f"  ⚠️ {r_path}: {e} (重試 {attempt}/{file_retry})")
+                            time.sleep(1)
                     if ok:
                         done += 1
+                    else:
+                        print(f"  ⚠️ {r_path}: 下載失敗, 已重試 {file_retry} 次 (跳過)")
             finally:
                 self._transfer_end()
 

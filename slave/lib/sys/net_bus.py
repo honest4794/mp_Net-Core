@@ -146,11 +146,30 @@ class NetBus:
                             n = len(raw_bytes)
                             if n:
                                 self._buf[:n] = raw_bytes
-                    except OSError:
+                    except OSError as e:
+                        # 🔧 非阻塞 socket 在無資料時拋 EAGAIN(11)/EWOULDBLOCK(35) = 正常;
+                        #    其他錯誤 (RST/對端重啟等) = 真斷線 → 通知 + 關閉 socket,
+                        #    讓 master 也看到斷線 (避免 half-open 靜默掉包導致下載卡住)
+                        code = e.args[0] if e.args else None
+                        if code not in (11, 35):
+                            if self.connected:
+                                print("⚠️ [{}] 連線中斷: {}".format(self.label, e))
+                            self.connected = False
+                            try:
+                                self.sock.close()
+                            except Exception:
+                                pass
                         break
                     if n is None or n <= 0:
                         if n == 0:
+                            # 🔧 對端正常關閉 (FIN) → 通知 + 關閉
+                            if self.connected:
+                                print("⚠️ [{}] 對端關閉連線 (FIN)".format(self.label))
                             self.connected = False
+                            try:
+                                self.sock.close()
+                            except Exception:
+                                pass
                         break
 
                     raw = memoryview(self._buf)[:n]
@@ -432,6 +451,10 @@ class NetBus:
                 code = e.args[0] if e.args else None
                 if code not in (11, 35):
                     self.connected = False
+                    try:
+                        self.sock.close()  # 🔧 讓對端 (master) 也看到斷線
+                    except Exception:
+                        pass
                     return False
             retry += 1
             if retry >= self._send_retry:

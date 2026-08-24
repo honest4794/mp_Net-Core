@@ -26,7 +26,7 @@ class NetworkManager:
     """
     def __init__(self, sys_bus):
         self.bus = sys_bus
-        self.interfaces = {}  # {'lan': obj, 'wifi': obj}
+        self.interfaces = {}  # {'lan': obj, 'wifi': STA obj, 'wifi_ap': AP obj}
         self.active_modes = {} # {'lan': 1, 'wifi': 2}
         self.boot_time = time.time()
         # 狀態追蹤
@@ -34,6 +34,7 @@ class NetworkManager:
             "connected_interfaces": set(), # 當前已連接的接口名稱集合
             "last_check": 0
         }
+        self._last_sta_retry = time.time()  # 🔧 STA 重連節流時間戳 (開機後 5s 才第一次重試)
 
     def init_from_config(self):
         """從 bus.shared 讀取配置並初始化"""
@@ -351,9 +352,11 @@ class NetworkManager:
                 self._disable_pm(wlan)
                 dprint("✓ WiFi STA 接口已就緒")
             else:
-                # STA 失敗，切換到 AP 模式
-                dprint("⚠️ STA 連接失敗，切換到 AP 模式...")
-                wlan.active(False) # 關閉 STA
+                # 🔧 修復: STA 失敗時「保留 STA + 並存開 AP」, 而不是關掉 STA 讓 AP 取代。
+                #    AP 註冊為 'wifi_ap' (不再覆蓋 'wifi' 槽位), check_network 才能持續
+                #    重試 STA — 之前 AP 佔了 'wifi' 後 isconnected() 恆 True, STA 永不重連。
+                self.interfaces['wifi'] = wlan
+                dprint("⚠️ STA 連接失敗, 啟動 AP 並持續重試 STA...")
                 self._start_ap_mode(config)
 
         except Exception as e:
@@ -403,7 +406,7 @@ class NetworkManager:
             dprint(f"📡 AP 模式已啟動: {ap_ssid} / {ap_password}")
             dprint(f"   IP: {ap.ifconfig()[0]}")
             
-            self.interfaces['wifi'] = ap # 將 AP 註冊為 wifi 接口
+            self.interfaces['wifi_ap'] = ap  # 🔧 AP 用獨立槽位, 不覆蓋 'wifi' (STA)
             
             # 僅在 AP 模式下啟動 WebREPL
             if webrepl:
@@ -417,14 +420,16 @@ class NetworkManager:
             dprint(f"✗ AP 模式啟動失敗: {e}")
 
     def disable_wifi(self):
-        wifi_iface = self.interfaces.pop('wifi', None)
-        if wifi_iface:
-            try:
-                wifi_iface.active(False)
-            except Exception as e:
-                dprint(f"⚠️ 關閉 WiFi 時出錯: {e}")
+        for key in ('wifi', 'wifi_ap'):
+            iface = self.interfaces.pop(key, None)
+            if iface:
+                try:
+                    iface.active(False)
+                except Exception as e:
+                    dprint(f"⚠️ 關閉 WiFi 時出錯: {e}")
         self.bus.shared['Network']['wifi']['enable'] = 0
         self._state['connected_interfaces'].discard('wifi')
+        self._state['connected_interfaces'].discard('wifi_ap')
         dprint("📡 WiFi 已關閉")
 
     def enable_wifi(self):
@@ -454,12 +459,10 @@ class NetworkManager:
         return 'lan' in self.interfaces
 
     def enable_ap(self):
-        """[NET_START] 強制啟動 AP 模式 (依 config 的 wifi 參數, 走 _start_ap_mode)。
-
-        注意: _start_ap_mode 會先關閉 STA 再開 AP (取代而非並存)。"""
+        """[NET_START] 強制啟動 AP 模式 (依 config 的 wifi 參數, 走 _start_ap_mode)。"""
         wifi_cfg = self.bus.shared.get('Network', {}).get('wifi') or {}
         self._start_ap_mode(wifi_cfg)
-        return 'wifi' in self.interfaces
+        return 'wifi_ap' in self.interfaces
 
     def get_ips(self):
         """回傳多介面 IP 清單 {"lan":…, "wifi":…, "ap":…}; 無 IP 的介面省略。
@@ -482,7 +485,7 @@ class NetworkManager:
             except Exception:
                 pass
 
-        # AP 模式: _start_ap_mode 把 AP 註冊進 interfaces['wifi']; 優先辨識 AP_IF
+        # AP: 獨立槽位 'wifi_ap' (或直接辨識 AP_IF), 與 STA 並存各自回報 IP
         try:
             if ap is not None and ap.active():
                 ip = ap.ifconfig()[0]
@@ -491,11 +494,12 @@ class NetworkManager:
         except Exception:
             pass
 
+        # STA: 'wifi' 槽位現在永遠是 STA (AP 不再覆蓋)
         wifi = self.interfaces.get('wifi')
         if wifi is not None:
             try:
                 ip = wifi.ifconfig()[0]
-                if ip and ip not in ("0.0.0.0", "") and "ap" not in out:
+                if ip and ip not in ("0.0.0.0", ""):
                     out["wifi"] = ip
             except Exception:
                 pass
@@ -658,7 +662,9 @@ class NetworkManager:
                     # 用戶補充說明: "我是指這種連接,成功建立了一條ws"
                     # 所以必須檢查 app_connected
                     
-                    should_keep = app_connected and (connected_now or ap_mode)
+                    # 🔧 只有「已連上 (STA/AP) 但沒有 WS 在用」才關閉 (省電);
+                    #    從未連上 (正在重試 STA) 不關, 讓它繼續找網路
+                    should_keep = app_connected or not (connected_now or ap_mode)
                     
                     if not should_keep:
                         if iface.active():
@@ -682,11 +688,19 @@ class NetworkManager:
                             self._disable_pm(iface)
                         self._on_interface_up(name, iface)
                 else:
-                    # 自動重連邏輯 (僅對 MODE_ALWAYS_ON)
-                    if mode == MODE_ALWAYS_ON and name == 'wifi':
+                    # 🔧 自動重連邏輯: STA 只要啟用 (ALWAYS_ON/BOOT_ONLY) 就持續重試,
+                    #    網路恢復時設備自動連回指定 SSID (不再卡死在 AP 模式)。
+                    if name == 'wifi' and mode != MODE_OFF:
                         # WiFi 斷線時主動重連 (韌體不一定會自動重連)
                         if name in self._state['connected_interfaces']:
                             dprint("⚠️ WiFi 斷線, 嘗試重連...")
+                        # 🔧 STA 優先 + AP 備援 (不同時並存): STA 掉線時確保 AP 起來當後備;
+                        #    STA 連上時 _on_interface_up 會自動關掉 AP
+                        if 'wifi_ap' not in self.interfaces:
+                            try:
+                                self._start_ap_mode(self.bus.shared.get("Network", {}).get("wifi") or {})
+                            except Exception:
+                                pass
                         try:
                             if not iface.active():
                                 iface.active(True)
@@ -704,8 +718,12 @@ class NetworkManager:
                                 except Exception:
                                     pass
                             if ssid and not iface.isconnected():
-                                dprint("   reconnect → {}".format(ssid))
-                                iface.connect(ssid, pw)
+                                # 節流: 至少 5 秒一次, 避免每 1s 掃描/關聯佔用射頻
+                                now_t = time.time()
+                                if now_t - self._last_sta_retry >= 5.0:
+                                    self._last_sta_retry = now_t
+                                    dprint("   reconnect → {}".format(ssid))
+                                    iface.connect(ssid, pw)
                         except Exception:
                             pass
                         
@@ -724,6 +742,16 @@ class NetworkManager:
             dprint(f"🌐 {name.upper()} 連接成功 | IP: {cfg[0]}")
         except:
             dprint(f"🌐 {name.upper()} 連接成功")
+        # 🔧 STA 優先: STA 連上時關閉 AP (不同時並存; AP 只當 STA 掉線時的備援)
+        if name == 'wifi':
+            ap = self.interfaces.pop('wifi_ap', None)
+            if ap is not None:
+                try:
+                    ap.active(False)
+                    self._state['connected_interfaces'].discard('wifi_ap')
+                    dprint("🔄 STA 已連上, 關閉 AP (STA 優先)")
+                except Exception as e:
+                    dprint(f"⚠️ 關閉 AP 時出錯: {e}")
 
     def get_active_interface(self):
         """獲取當前首選的活躍接口 (根據優先級)"""
