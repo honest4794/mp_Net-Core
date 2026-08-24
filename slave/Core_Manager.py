@@ -14,6 +14,7 @@ from lib.sys.log_service import get_log
 from tasks.network import NetworkTask
 from tasks.circuit import CircuitTask
 from tasks.bus_decode import BusDecodeTask
+from tasks.now_task import NowTask
 from tasks.fs_scan_task import FsScanTask
 from tasks.log_task import LogTask
 from tasks.web_ui import WebUITask
@@ -80,6 +81,7 @@ def launcher():
 #     tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
     tm.register_task("circuit", CircuitTask, default_affinity=(1, 0), layer=0)
     tm.register_task("bus_decode", BusDecodeTask, default_affinity=(1, 0), layer=0)
+    tm.register_task("now", NowTask, default_affinity=(1, 0), layer=0)
     tm.register_task("web_ui",  WebUITask,   default_affinity=(1, 0), layer=0)
     tm.register_task("fs_scan", FsScanTask,  default_affinity=(0, 1), layer=0)
     from tasks.hw_sample_task import HwSampleTask

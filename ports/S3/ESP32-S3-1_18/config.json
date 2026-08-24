@@ -60,7 +60,7 @@
     }
   },
   "CircuitDecode": {
-    "enable": 1,
+    "enable": 0,
     "list": [
       {
         "GPIO": {
@@ -108,17 +108,17 @@
         "id": 1,
         "baudrate": 115200,
         "GPIO": {
-          "tx": 14,
-          "rx": 15,
-          "en": 16
+          "tx": 10,
+          "rx": 11,
+          "en": 9
         }
       },
       {
         "id": 2,
         "baudrate": 9600,
         "GPIO": {
-          "tx": 17,
-          "rx": 18
+          "tx": 12,
+          "rx": 8
         }
       }
     ]
@@ -288,7 +288,15 @@
   "uartMotor": {
     "enable": 1,
     "list": [
-      {"GPIO": {"uart": 1},"address": ["51"],"version": 1}
+      {
+        "GPIO": {
+          "uart": 1
+        },
+        "address": [
+          "51"
+        ],
+        "version": 1
+      }
     ]
   }
 }

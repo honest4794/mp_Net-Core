@@ -271,6 +271,13 @@ def on_file_delete(ctx, args):
     if not path:
         return
 
+    # 根目錄檔用「絕對路徑」刪（resolve 會把 /xxx 誤映射成 /sd/xxx，刪錯 + 更新錯 manifest）
+    raw = "/" + str(path).lstrip("/")
+    if _root_file_exists(raw):
+        fs.remove_abs(raw)
+        on_file_query(ctx, {"path": raw})
+        return
+
     # 統一刪除：依前綴路由，同步更新 alloc / manifest table
     fs.remove(path)
 

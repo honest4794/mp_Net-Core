@@ -220,16 +220,20 @@ class ControlPanelTask(Task):
         if bus.shared.get("_ui_active", False):
             return
 
-        pos = self._enc.value()
-        if pos != self._enc_last:
-            step = 1 if pos > self._enc_last else -1
-            self._enc_last = pos
-            self._lw_ex(0, pos)
-            cur = int(bus.shared.get(_ENC_DELTA_KEY, 0) or 0)
-            bus.shared[_ENC_DELTA_KEY] = cur + step
-            self._send_encoder_delta(step)
-            get_log().immediate("[CP] enc_delta={:+d} pos={}".format(step, pos))
-            self.success += 1
+        if self._enc is None:
+            # 無 encoder 硬體（測試/無 encoder 面板）→ 只處理按鈕，不讀 encoder
+            pass
+        else:
+            pos = self._enc.value()
+            if pos != self._enc_last:
+                step = 1 if pos > self._enc_last else -1
+                self._enc_last = pos
+                self._lw_ex(0, pos)
+                cur = int(bus.shared.get(_ENC_DELTA_KEY, 0) or 0)
+                bus.shared[_ENC_DELTA_KEY] = cur + step
+                self._send_encoder_delta(step)
+                get_log().immediate("[CP] enc_delta={:+d} pos={}".format(step, pos))
+                self.success += 1
 
         for label, raw in self._read_buttons(now):
             # ── 第 1 次 ESP-NOW: 真實按鈕 ──

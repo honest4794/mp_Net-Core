@@ -627,3 +627,60 @@
 | 1137201 | master | 0x0117 |
 | 1137401 | slave | 0x01F7 |
 
+
+---
+
+## 28. manifest 檔案表 + ESP-NOW 無線鏈路確認（2026-08-24）
+
+### 28.1 manifest 檔案表會正確更新（實測）
+- `promote_file()` 落根目錄後，`/manifest.json` 正確新增條目（`{s: size, h: sha256}`）。
+- 實測：promote `/_mt_test.bin` 後，manifest 出現 `{s: 21, h: ba1184e8...}`。
+- `undo_commit()` 對稱移除條目（回填舊檔資訊）。
+
+### 28.2 ESP-NOW 無線鏈路（最小測試通過）
+- 兩塊板 `import espnow` 成功，channel=6。
+- 0117 廣播 `ESP-NOW-HELLO-123` → 01F7 成功收到（`RX-GOT b'ESP-NOW-HELLO-123'`）。
+- 鏈路通，但大檔傳輸未做（ESP-NOW 單包 ≤250B，FILE_CHUNK data ≤231B，大檔很慢，僅驗證可行性）。
+
+### 28.3 測試注意
+- ESP-NOW `espnow.ESPNow().active(True)` 重複開會報 `ESP_ERR_ESPNOW_EXIST`；需先 `active(False)` 清舊實例。
+- 兩塊板都要先 `sta.config(channel=6)` 同 channel 先通。
+
+---
+
+## 29. ESP-NOW 檔案傳輸（未完成端到端，架構缺口已修）（2026-08-24）
+
+### 29.1 用戶核心提醒
+- ESP-NOW 單包 ≤250B，走 FILE 協議時 FILE_CHUNK data 必須 ≤231B（不能照搬 4K）。
+- 已精確計算各 FILE 幀長度（本機 CPython 用 schema 實際 encode）：
+  - FILE_BEGIN=73B、FILE_CHUNK(200B data)=219B、FILE_END=15B、FILE_ACK=19B、FILE_QUERY_RSP=75B，全部 <250B ✅
+- `espnow_file_test.py` 加咗「幀過長即報錯」+「send 失敗即報錯」，不再靜默失敗。
+
+### 29.2 本輪修復的 bug（全部為真實產品 bug）
+| Bug | 位置 | 修復 |
+|---|---|---|
+| NowTask 未在 Core_Manager 註冊 → slave 不會自動起 NowBus/poll | `slave/Core_Manager.py` | 加 `from tasks.now_task import NowTask` + `register_task("now", NowTask, layer=0)` |
+| cpanel 在無 encoder 環境 `self._enc.value()` 崩潰（刷屏拖慢 core0） | `slave/tasks/control_panel.py` | `loop` 加 `if self._enc is None` 保護 |
+
+### 29.3 已驗證正常
+- ESP-NOW 硬件鏈路：raw `espnow.send/recv` 兩板互通（`RX-GOT b'RAW-FRAME-TEST-999'`）。
+- NowBus 起動 + 加入 bus_sources（`NowBus: True connected: True`，`bus_sources 數量: 4, 有 NowBus: True`）。
+- slave 乾淨 boot（cpanel error=0，NowBus active ch=6，Boot complete）。
+
+### 29.4 未完成（下次收尾）
+- master NowBus 發送 FILE_BEGIN → slave NowBus 接收/回 ACK 這一步仍 `chunk fail @0 (no rsp)`。
+- 排查方向（下次）：
+  1. NowBus 兩端 channel/peer 是否一致（master `ESP-TX` vs slave `NOW-Bus`）。
+  2. slave NowTask.loop 的 `now_bus.poll()` 是否真的被 TaskManager 調度執行。
+  3. FILE handler 回應走 `ctx["send"]` 時，NowBus.write 需要 `_last_peer`（對板 MAC），確認收到後有記住 MAC 才回 ACK。
+
+### 29.5 測試腳本
+- `test/protocol/night_run/espnow_file_test.py` — ESP-NOW 走 NC4 FILE 協議發送端（CHUNK=200）。
+- `test/protocol/espnow_raw_frame_test.py` — raw 層並行測試（確認鏈路通）。
+- `test/protocol/espnow_link_test.py` — 最小鏈路測試。
+
+### 29.6 三塊板角色（重複記錄）
+- 0115 監控（9C139EF12530）、0117 master、01F7 slave（B8F862D8120C）
+- master 0117 config `ESP_now.enable=0`（不佔 ESP-NOW，用手動 NowBus 發送）
+- slave 01F7 config `ESP_now.enable=1`（NowTask 自動起 NowBus 接收）
+

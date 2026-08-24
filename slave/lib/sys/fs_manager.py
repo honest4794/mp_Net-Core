@@ -138,6 +138,36 @@ class FileSystemManager:
             return self.manifest_sd.get(p), p
         return self.manifest_local.get(p), p
 
+    def _manifest_target_abs(self, path):
+        """直接用「絕對路徑」判斷 manifest 落點（不 resolve）。
+
+        根目錄檔（/xxx）→ manifest_local（/manifest.json）；
+        /sd 檔（/sd/xxx）→ manifest_sd（/sd/.manifest.json）。
+        與 _manifest_target 的差別：不把 /xxx 映射成 /sd/xxx。"""
+        p = "/" + str(path).lstrip("/")
+        if p == "/sd" or p.startswith("/sd/"):
+            return self.manifest_sd, p, MANIFEST_FILE_SD
+        return self.manifest_local, p, MANIFEST_FILE
+
+    def remove_abs(self, path):
+        """依「絕對路徑」刪除（不 resolve），並更新對應 manifest。
+
+        供 FILE_DELETE 刪除根目錄檔（/xxx）使用：resolve() 會把 /xxx 誤映射成
+        /sd/xxx，導致刪錯檔 + 更新錯 manifest。"""
+        p = "/" + str(path).lstrip("/")
+        ok = False
+        if self._raw_mode and self._raw is not None and not p.startswith("/sd/"):
+            raw_name = p.lstrip("/")
+            try:
+                if self._raw._alloc.find(raw_name) is not None:
+                    self._raw.remove(raw_name)
+                    ok = True
+            except Exception:
+                pass
+        if self.delete_file(p):
+            ok = True
+        return ok
+
     def _write_manifest(self, mfile, d):
         try:
             with open(mfile, "w") as f:
@@ -166,7 +196,7 @@ class FileSystemManager:
         self._write_manifest(MANIFEST_FILE_SD, self.manifest_sd)
 
     def update_manifest_entry(self, path, size, sha_hex):
-        d, full, mfile = self._manifest_target(path)
+        d, full, mfile = self._manifest_target_abs(path)
         d[full] = {
             "s": size,
             "h": sha_hex
@@ -174,7 +204,7 @@ class FileSystemManager:
         self._write_manifest(mfile, d)
 
     def remove_manifest_entry(self, path):
-        d, full, mfile = self._manifest_target(path)
+        d, full, mfile = self._manifest_target_abs(path)
         if full in d:
             del d[full]
             self._write_manifest(mfile, d)
