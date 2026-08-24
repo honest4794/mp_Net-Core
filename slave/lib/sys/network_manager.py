@@ -203,6 +203,17 @@ class NetworkManager:
             or config.get("ssid_pw")
             or ""
         )
+        # 密碼已被 ConfigManager 從 config 清掉時, 從 secrets.db 補 (入庫的 ssid_pw)
+        if not default_pw and default_ssid:
+            try:
+                db = self._get_db()
+                if db is not None:
+                    import ujson as json
+                    raw_pw = db.get(b"Network.wifi.ssid_pw")
+                    if raw_pw is not None:
+                        default_pw = json.loads(raw_pw.decode()) or ""
+            except Exception:
+                pass
 
         try:
             wlan = network.WLAN(network.STA_IF)
@@ -311,9 +322,12 @@ class NetworkManager:
                             self.save_wifi_credential(ssid, pw)
                             break
 
-                # 再試預設 ssid
-                if not connected_success and default_ssid and default_ssid in known_ssids:
-                    dprint("   預設連線: {}".format(default_ssid))
+                # 再試預設 ssid — 不管在不在掃描結果都要連 (hidden 網路掃不到 SSID)
+                if not connected_success and default_ssid:
+                    if default_ssid in known_ssids:
+                        dprint("   預設連線: {}".format(default_ssid))
+                    else:
+                        dprint("   預設連線 (hidden): {}".format(default_ssid))
                     connected_ssid = self._try_connect(wlan, default_ssid, default_pw)
                     if connected_ssid:
                         connected_success = True
@@ -510,17 +524,33 @@ class NetworkManager:
 
     def _load_credentials(self):
         """從 secrets.db (btree) 載入憑證列表"""
+        creds = []
         try:
             db = self._get_db()
             if db is not None:
+                import ujson as json
                 raw = db.get(CRED_BTREE_KEY)
                 if raw is not None:
-                    import ujson as json
                     creds = json.loads(raw.decode())
-                    if isinstance(creds, list):
-                        return creds
+                    if not isinstance(creds, list):
+                        creds = []
         except Exception:
             pass
+        # 補上 config 的 ssid + secrets.db 存的 ssid_pw (hidden 網路也在內)
+        try:
+            db = self._get_db()
+            if db is not None:
+                raw_pw = db.get(b"Network.wifi.ssid_pw")
+                if raw_pw is not None:
+                    import ujson as json
+                    pw = json.loads(raw_pw.decode())
+                    ssid = self.bus.shared.get("Network", {}).get("wifi", {}).get("ssid", "")
+                    if ssid and pw and not any(c.get("ssid") == ssid for c in creds):
+                        creds.append({"ssid": ssid, "pw": pw})
+        except Exception:
+            pass
+        if creds:
+            return creds
         cfg = self.bus.shared.get("Network", {}).get("wifi", {}) or {}
         return cfg.get("credentials", []) or []
 
@@ -562,15 +592,17 @@ class NetworkManager:
         self._save_credentials(creds)
 
     def _try_connect(self, wlan, ssid, password):
-        """嘗試連接到指定 SSID，回傳成功連上的 SSID 或 None"""
+        """嘗試連接到指定 SSID，回傳成功連上的 SSID 或 None
+
+        hidden 網路掃描不到 SSID、關聯較慢，等待時間給足 15s；
+        超時也不主動 disconnect，讓韌體持續嘗試。"""
         try:
             wlan.connect(ssid, password)
-            for _ in range(5):
+            for _ in range(15):
                 if wlan.isconnected():
                     dprint("   ✓ 已連接到 {}".format(ssid))
                     return ssid
                 time.sleep(1)
-            wlan.disconnect()
         except Exception as e:
             dprint("   ✗ {}: {}".format(ssid, e))
         return None
@@ -643,14 +675,39 @@ class NetworkManager:
                 
                 if is_connected:
                     current_connected.add(name)
+                    # 連上時確保省電已關 (boot 路徑可能漏掉; 省電會讓 PC 要 ping 才連得上)
+                    if name == 'wifi':
+                        self._disable_pm(iface)
                     # 如果之前沒連接，現在連接了
                     if name not in self._state['connected_interfaces']:
                         self._on_interface_up(name, iface)
                 else:
                     # 自動重連邏輯 (僅對 MODE_ALWAYS_ON)
                     if mode == MODE_ALWAYS_ON and name == 'wifi':
-                        # WiFi 斷線重連通常由系統自動處理，但這裡可以加入額外邏輯
-                        pass
+                        # WiFi 斷線時主動重連 (韌體不一定會自動重連)
+                        if name in self._state['connected_interfaces']:
+                            dprint("⚠️ WiFi 斷線, 嘗試重連...")
+                        try:
+                            if not iface.active():
+                                iface.active(True)
+                            cfg = self.bus.shared.get("Network", {}).get("wifi", {}) or {}
+                            ssid = cfg.get("ssid") or ""
+                            pw = (cfg.get("ssid_pw") or "")
+                            if not pw:
+                                try:
+                                    db = self._get_db()
+                                    if db is not None:
+                                        import ujson as json
+                                        rp = db.get(b"Network.wifi.ssid_pw")
+                                        if rp is not None:
+                                            pw = json.loads(rp.decode()) or ""
+                                except Exception:
+                                    pass
+                            if ssid and not iface.isconnected():
+                                dprint("   reconnect → {}".format(ssid))
+                                iface.connect(ssid, pw)
+                        except Exception:
+                            pass
                         
             except Exception as e:
                 dprint(f"⚠ 檢查 {name} 狀態錯誤: {e}")
