@@ -51,6 +51,9 @@ def init_spi(sysbus=None):
         return []
 
     spi_list = []
+    # 🔧 force_machine: 1 = 強制用 machine.SPI (同步、中斷路線), 不走 lcd_bus DMA。
+    #    給「只要穩定交貨、不要 DMA 撕裂風險」的場景用 (APA102 等)。
+    force_machine = cfg.get("force_machine", 0)
     for item in cfg.get("list", []):
         gpio = item.get("GPIO", {})
         data = item.get("data_pins")
@@ -59,7 +62,7 @@ def init_spi(sysbus=None):
         if data is not None and len(data) == 0:
             data = None
 
-        if _LCD_BUS:
+        if _LCD_BUS and not force_machine:
             if data is not None:
                 d = data
             else:
