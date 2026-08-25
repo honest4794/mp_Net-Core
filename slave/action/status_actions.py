@@ -65,12 +65,13 @@ def register(app):
 
     bus.register_provider("ips", _ips_provider)
 
-    # 🔧 目前渲染幀率 provider (主動同步/Profile 用; PC 端 0x1101 可取回)
-    def _local_fps_provider():
+    # 🔧 目前渲染幀間隔 provider：直接回報儲存的原始數字（System.frame_interval_ms），
+    # 不做任何換算；換算由 PC 端自己做。
+    def _frame_interval_ms_provider():
         try:
-            return bus.shared.get("System", {}).get("local_fps", 0)
+            return bus.shared.get("System", {}).get("frame_interval_ms", 0)
         except Exception:
             return 0
 
-    bus.register_provider("local_fps", _local_fps_provider)
+    bus.register_provider("frame_interval_ms", _frame_interval_ms_provider)
     print("✅ [Action] Status & Health actions integrated")

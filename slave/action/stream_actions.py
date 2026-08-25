@@ -3,6 +3,29 @@ from lib.sys.sys_bus import bus
 from lib.sys.proto import Proto
 from lib.sys.schema_codec import SchemaCodec
 from lib.sys.fs_manager import fs
+
+# ── 原始儲存數字（slave 只存不換算；換算由 PC 端自己做）─────────────────
+# status_actions.get_runtime_info / STATUS provider 直接回報這些原始數字。
+_STREAM_STATE = {
+    "fps": 0,           # 0x3001 STREAM_INFO 收到的原始 fps（不做任何換算）
+    "frame_count": 0,   # 供給鏈已 commit 的原始幀計數
+    "mode": 0,          # 0x3009 的原始 play_mode
+    "streaming": False, # 是否串流播放（原始旗標）
+}
+
+
+def get_frame_count():
+    return _STREAM_STATE["frame_count"]
+
+
+def get_mode():
+    return _STREAM_STATE["mode"]
+
+
+def is_streaming():
+    return bool(_STREAM_STATE["streaming"])
+
+
 def on_stream_state_set(ctx, args):
     """0x3009: 準備分塊與文件模式"""
     bus.shared.update({
@@ -14,6 +37,9 @@ def on_stream_state_set(ctx, args):
         "is_ready": False,
         "is_streaming": False # 先設為 False 以免 Ready 途中亂跳
     })
+    _STREAM_STATE["mode"] = args["play_mode"]
+    _STREAM_STATE["frame_count"] = 0
+    _STREAM_STATE["streaming"] = False
     print(f"📡 [Stream] Set: {args['file_name']}")
 
 def on_stream_play(ctx, args):
@@ -34,6 +60,7 @@ def on_stream_play(ctx, args):
         print(f"▶️ PLAY from start")
         
     bus.shared.update({"stream_active": True, "is_streaming": True})
+    _STREAM_STATE["streaming"] = True
 
 def handle_supply_chain(hub, s, ctx):
     """由 Core 0 定時調用，負責加載與 READY 回報"""
@@ -58,6 +85,7 @@ def handle_supply_chain(hub, s, ctx):
             if view is not None:
                 if s["f_local"].readinto(view) > 0:
                     hub.commit()
+                    _STREAM_STATE["frame_count"] += 1
             
             bus.shared["is_seeking"] = False
             bus.shared["is_ready"] = True
@@ -82,27 +110,42 @@ def handle_supply_chain(hub, s, ctx):
                     else: bus.shared["is_streaming"] = False
                 else:
                     hub.commit()
+                    _STREAM_STATE["frame_count"] += 1
 
 def on_stream_info(ctx, args):
-    """0x3001 STREAM_INFO: 主動同步幀率 (Active Sync)。
+    """0x3001 STREAM_INFO: 主控廣播串流 fps。
 
-    主控 (NetBusMaster) 定時廣播此指令, 本機據此覆寫渲染幀率
-    (bus.shared["System"]["local_fps"] + fps_override), RenderTask 偵測到
-    fps_override 變化即時更新節拍, 不需重開機。
+    本機只儲存原始數字（_STREAM_STATE["fps"] + bus.shared["stream_fps_override"]），
+    不做任何換算；RenderTask 偵測到變化時才換算一次節拍。
+    上報（STATUS / log）也是原始數字，換算由 PC 端自己做。
     """
     fps = args.get("fps", 0) or 0
     if fps > 0:
-        sys_cfg = bus.shared.setdefault("System", {})
-        sys_cfg["local_fps"] = fps
-        bus.shared["fps_override"] = fps
-        print("📡 [Stream] FPS override -> {} (active sync)".format(fps))
+        _STREAM_STATE["fps"] = fps
+        bus.shared["stream_fps_override"] = fps
+        print("📡 [Stream] raw fps stored -> {}".format(fps))
+
+
+def on_stream_stop(ctx, args):
+    """0x3002 STOP：熄燈停流，還原原始旗標（fps 保留最後收到的原始數字）。"""
+    bus.shared.update({"stream_active": False, "is_streaming": False, "is_ready": False})
+    _STREAM_STATE["streaming"] = False
+    _STREAM_STATE["mode"] = 0
+
 
 def register(app):
     # 播放控制
-    app.disp.on(0x3001, on_stream_info)   # INFO: 主控主動同步幀率
+    app.disp.on(0x3001, on_stream_info)   # INFO: 主控主動同步幀率（只存原始 fps）
     app.disp.on(0x3009, on_stream_state_set) # SET
     app.disp.on(0x300A, on_stream_play) # PLAY
     app.disp.on(0x3005, lambda c,a: bus.shared.update({"is_paused": bool(a["pause"])})) # PAUSE
-    app.disp.on(0x3002, lambda c,a: bus.shared.update({"stream_active": False, "is_streaming": False, "is_ready": False})) # STOP
+    app.disp.on(0x3002, on_stream_stop) # STOP
     # 0x3003 Direct Mode
     app.disp.on(0x3003, lambda c,a: bus.get_service("pixel_stream").write_from(a["pixel_data"]))
+
+    # 原始數字 provider：主機（PC）經 0x1101 STATUS_GET 主動獲取，
+    # 主機端自己加遮罩挑要的欄位、自己做換算。
+    bus.register_provider("stream_fps", lambda: _STREAM_STATE["fps"])
+    bus.register_provider("stream_frame_count", get_frame_count)
+    bus.register_provider("stream_mode", get_mode)
+    bus.register_provider("stream_active", is_streaming)

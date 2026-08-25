@@ -16,36 +16,50 @@
 
 ### 2.1 effects/ — 效果
 
-`pixel/effects/effects.json`（JSON 形式，id + params）+ `pixel/effects/effects.py`
-（PY 形式，效果類別）。兩者共用登記表：**名稱撞車時程式（py）優先**，json 只補
-id / params。
+`pixel/effects/effects.json`（JSON 形式，效果完整定義）+ `pixel/effects/effects.py`
+（PY 形式，只放畫波寫不出來的補充類別）。**json 是唯一真源：id / name / params
+（含 program 畫波）都在 json 手寫**；載入時按 name 把 py 補充類別與 json 配對。
 
-- 效果 = `Effect` 類別（有 id/name、可 `restart()`、可 `seek(t)`），每次播放重建實例。
-- 數學核心在 `slave/lib/PixelMathMethod.py`：**`@micropython.viper` 整數多項式逼近**
+- 框架（`Effect` 基類 / 登記表 / 波表快取 / 衝突檢查）在 **`lib/sw/effect_core.py`**；
+  `pixel/effects/effects.py` 只放畫波寫不出來的 py 補充類別（內建 + register + 自檢）。
+- **畫波效果（breathing / eyes / wave）不需要 py 類別**：program 寫在 json，由內建
+  `Effect` 直接播放（波表預算 + viper + 無浮點）。
+- 數學核心在 `slave/lib/sw/PixelMathMethod.py`：**`@micropython.viper` 整數多項式逼近**
   （拋物線基底 + `922*(y²-y)>>12` 修正），**無查表、無浮點、值域固定 12-bit 0-4095**。
 - 空間分布：`frame(t)` 把時間波攤到 pixel_n 顆 → `pattern_value_at(program, 相位)`，
   相位 = `(t // speed) * step + i * spacing + offset`（對齊舊 `wave_list_assign_next`）。
 - 吐 `array('H')`（0-4095），供 scatter 的 viper 用 ptr16 直接讀。
+- **id/name/配對衝突**：不 raise；啟動時 `PixelTask._init_effects` 呼叫 `check_conflicts()`
+  列印警告（對齊 boot GPIO 檢查），人肉判斷修正。
 
 波形段 `type`：`keep` / `math_now` / `square_wave_now` / `pulse_wave` / `pulse` / `starter`。
 
 | JSON 欄位 | 說明 |
 |---|---|
+| `id` | 效果識別碼（手寫，全 json 唯一） |
+| `name` | 效果名稱（手寫；畫波效果自由命名，補充類別需對應 py 類別名） |
+| `program` | 波形段序列（畫波效果必填；補充類別可省） |
 | `pixel_n` | 輸出位數 |
-| `program` | 波形段序列（type / F / l_max / l_lim / phi / end_Time / pulse） |
 | `step` | 時間步進（舊 step） |
 | `spacing` | pixel 間距（空間分布） |
 | `offset` | 空間偏移 |
 | `speed` | 倍速 |
 | `reverse` | 反向 |
 
+> **所有效果都需要輸入這組 json 參數**（id/name/pixel_n/step/spacing/offset/speed/reverse），
+> 缺了啟動會印 `EFFECT 缺參數` 警告。畫波效果缺 `program` 會印 `EFFECT 缺 program` 警告。
+> **波形（program）唯一真源 = effects.json**，py 不再重複 DEFAULT_PROGRAM。
+
 #### 寫效果（最高優化）
 
-- **路 A 波形類（首選）**：`class xxx(Effect)` + 定義 `DEFAULT_PROGRAM`。自動拿到
-  波表預算（開機 `warm_up()` 先算好）+ viper `_fill_fwd` 播放，熱路徑只做 index 讀取。
-  範例：`wave` / `eyes` / `breathing`。
-- **路 B 自訂/狀態機類**：`class xxx(Effect)` + override `frame(t)`。保持整數、無浮點，
-  能 bulk 就 bulk、能 viper 就 viper；輸出 `array('H')`、長度 `pixel_n`、值域 0-4095。
+- **路 A 畫波類（首選，純 json）**：只在 effects.json 加一段（id/name + program 波形 +
+  空間分布參數），框架用內建 `Effect` 播放。範例：`wave` / `eyes` / `breathing`。
+- **路 B 自訂/狀態機類（畫波寫不出來）**：`class xxx(Effect)` + override `frame(t)` +
+  `register(xxx)`，json 補 id/params（program 可省）。保持整數、無浮點；輸出 `array('H')`、
+  長度 `pixel_n`、值域 0-4095。
+- **路 C 完全自訂類別**：不繼承 `Effect`，實作 `__next__` / `restart` / `seek` / `release`，
+  再 `register(xxx)`。目前沒有這類效果；效果多了可再拆 `xxx_effect.py`。
+- 詳見 `doc/02_guides/11_developing_effects.md`。
 
 #### 色彩接口（bulk，暫時包裝）
 
@@ -134,6 +148,9 @@ scatter/effect/controller**——未來彩色 effect 再接；controller 整合�
 - show = registry.list 的 mode 序列，循環播放；每播完一輪 `pass+1`。
 - mode 每次播放 = 用 effects.json params **重建 generator**（fresh gen），播到耗盡（StopIteration）。
   想播久一點 → 在效果內延長（如 `end_Time`）。
+- 例外：**下一個要播的 mode 與剛播完的是同一個**（播放清單連續放同一 mode）→ 重用現有
+  generator（`restart()` + 重置 done），不剷除不重建，避免重複播放時的卡頓。
+  generator 不支援 `restart()` → 自動回退剷除重建。
 - 每輪依播放參數決定該 mode 是否出現：
   - `play_count==0` → 永遠跳過
   - `play_count>0` 且 `pass > play_count` → 這輪起消失（開頭段）

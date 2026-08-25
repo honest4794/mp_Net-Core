@@ -36,24 +36,61 @@
       "name": "wave",
       "pixel_n": 64,
       "program": [
-        {"type": "math_now", "F": 1, "l_max": 3200, "l_lim": 100, "phi": 0, "end_Time": 120}
+        {"type": "math_now", "F": 10, "l_max": 4095, "l_lim": 0, "phi": 3071, "end_Time": 100}
       ],
       "step": 1,
-      "spacing": 2,
+      "spacing": 4,
       "offset": 0,
       "speed": 1,
       "reverse": false
     },
     {
       "id": 4,
-      "name": "diffusion",
+      "name": "example_eyes",
       "pixel_n": 64,
-      "program": [],
+      "program": [
+        {"type": "keep",     "F": 1, "l_max": 0,    "l_lim": 0,   "phi": 0,    "end_Time": 60},
+        {"type": "math_now", "F": 5, "l_max": 100,  "l_lim": 20,  "phi": 3071, "end_Time": 100},
+        {"type": "math_now", "F": 5, "l_max": 1023, "l_lim": 100, "phi": 3071, "end_Time": 200},
+        {"type": "math_now", "F": 5, "l_max": 1023, "l_lim": 200, "phi": 1023, "end_Time": 320}
+      ],
+      "step": 1,
+      "spacing": 10,
+      "offset": 0,
+      "speed": 1,
+      "reverse": false
+    },
+    {
+      "id": 5,
+      "name": "rise_fall",
+      "pixel_n": 64,
+      "program": [
+        {"type": "math_now", "F": 5, "l_max": 4095, "l_lim": 0, "phi": 3071, "end_Time": 40},
+        {"type": "keep",     "F": 1, "l_max": 4095, "l_lim": 0, "phi": 0,    "end_Time": 70},
+        {"type": "math_now", "F": 5, "l_max": 4095, "l_lim": 0, "phi": 1023, "end_Time": 110}
+      ],
+      "step": 1,
+      "spacing": 10,
+      "offset": 0,
+      "speed": 1,
+      "reverse": false
+    },
+    {
+      "id": 6,
+      "name": "pearl_chain",
+      "pixel_n": 64,
+      "program": [
+        {"type": "math_now", "F": 5, "l_max": 4095, "l_lim": 0, "phi": 3071, "end_Time": 8},
+        {"type": "keep",     "F": 1, "l_max": 4095, "l_lim": 0, "phi": 0,    "end_Time": 16},
+        {"type": "math_now", "F": 5, "l_max": 4095, "l_lim": 0, "phi": 1023, "end_Time": 24}
+      ],
       "step": 1,
       "spacing": 0,
       "offset": 0,
       "speed": 1,
-      "reverse": false
+      "reverse": false,
+      "pearl_n": 4,
+      "pearl_gap": 12
     }
   ]
 }

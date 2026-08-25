@@ -45,10 +45,16 @@ else:
 import gc
 from array import array as _array
 
-from lib.PixelMathMethod import mt
+from lib.sw.PixelMathMethod import mt
 from pixel.effects import effects
 
-EYES_PROGRAM = effects.eyes.DEFAULT_PROGRAM
+# eyes 的 program（畫波範例；單一真源在 effects.json，此處複製一份當測試固定輸入）
+EYES_PROGRAM = [
+    {"type": "keep",     "F": 1, "l_max": 0,    "l_lim": 0,   "phi": 0,    "end_Time": 60},
+    {"type": "math_now", "F": 5, "l_max": 100,  "l_lim": 20,  "phi": 3071, "end_Time": 100},
+    {"type": "math_now", "F": 5, "l_max": 1023, "l_lim": 100, "phi": 3071, "end_Time": 200},
+    {"type": "math_now", "F": 5, "l_max": 1023, "l_lim": 200, "phi": 1023, "end_Time": 320},
+]
 
 
 def _fmt(v):

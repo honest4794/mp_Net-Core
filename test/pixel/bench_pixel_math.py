@@ -41,10 +41,16 @@ else:
         return int((b - a) * 1_000_000)   # 秒 → 微秒
 
 
-from lib.PixelMathMethod import mt, _wave01_q12
+from lib.sw.PixelMathMethod import mt, _wave01_q12
 from pixel.effects import effects
 
-EYES_PROGRAM = effects.eyes.DEFAULT_PROGRAM
+# eyes 的 program（畫波範例；單一真源在 effects.json，此處複製一份當測試固定輸入）
+EYES_PROGRAM = [
+    {"type": "keep",     "F": 1, "l_max": 0,    "l_lim": 0,   "phi": 0,    "end_Time": 60},
+    {"type": "math_now", "F": 5, "l_max": 100,  "l_lim": 20,  "phi": 3071, "end_Time": 100},
+    {"type": "math_now", "F": 5, "l_max": 1023, "l_lim": 100, "phi": 3071, "end_Time": 200},
+    {"type": "math_now", "F": 5, "l_max": 1023, "l_lim": 200, "phi": 1023, "end_Time": 320},
+]
 
 def _fmt(v, unit="us"):
     if v >= 1000:
@@ -79,10 +85,10 @@ def run():
     print("[value_at 預編譯] {} 值 / {} → {}/值 (acc={})".format(
         N2, _fmt(dt), _fmt(dt / N2), acc))
 
-    # 3. Effect.frame 完整幀（64 pixel、eyes）
-    eff = effects.eyes("eyes", {"pixel_n": 64, "program": EYES_PROGRAM,
-                                "step": 1, "spacing": 10, "offset": 0,
-                                "speed": 1, "reverse": False})
+    # 3. Effect.frame 完整幀（64 pixel、eyes）—— 畫波效果用內建 Effect
+    eff = effects.Effect("eyes", {"pixel_n": 64, "program": EYES_PROGRAM,
+                                  "step": 1, "spacing": 10, "offset": 0,
+                                  "speed": 1, "reverse": False})
     FRAMES = 2000
     t0 = _ticks()
     for _ in range(FRAMES):

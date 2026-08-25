@@ -1015,8 +1015,8 @@ class NetBusMaster:
             try:
                 status_data = json.loads(args["status_json"])
                 
-                # 🔧 修复: MCU 回报的 render_fps 实际是当前帧号
-                current_frame = status_data.get('render_fps', 0)  # ✅ 这是帧号
+                # 🔧 修复: MCU 回报的 played_frames 实际是当前已播放帧号
+                current_frame = status_data.get('played_frames', 0)  # ✅ 这是帧号
                 mem_free = status_data.get('mem_free', 0)
                 real_id = status_data.get('id')
                 
@@ -1266,8 +1266,8 @@ class NetBusMaster:
     def query_status(self, cid, timeout=2.0):
         """主動查詢設備狀態 (0x1101 STATUS_GET → 0x1102 STATUS_RSP)。
 
-        回傳 status_json 解析後的 dict (含 render_fps 幀號、mem_free、ips、
-        local_fps、slave_id), 失敗回 None。
+        回傳 status_json 解析後的 dict (含 played_frames 已播幀號、frame_interval_ms、
+        stream_frame_count、stream_mode、stream_active、slave_id), 失敗回 None。
         """
         node = self.slaves.get(cid)
         if not node:
@@ -1333,7 +1333,8 @@ class NetBusMaster:
             if status:
                 profile["status"] = {
                     k: status.get(k) for k in
-                    ("render_fps", "mem_free", "uptime_ms", "fs_free_kb", "ips", "local_fps", "slave_id")
+                    ("frame_interval_ms", "played_frames", "stream_frame_count",
+                     "stream_mode", "stream_active", "slave_id")
                     if k in status
                 }
             # 本地燈效模式
@@ -1373,7 +1374,8 @@ class NetBusMaster:
         print(f"      PlayID: {profile.get('play_id')}  │  在線: {'是' if profile.get('online') else '否'}")
         st = profile.get("status") or {}
         if st:
-            print(f"      local_fps: {st.get('local_fps', '?')}  │  mem_free: {st.get('mem_free', '?')}  │  ips: {st.get('ips', '?')}")
+            print(f"      frame_interval_ms: {st.get('frame_interval_ms', '?')}  │  played_frames: {st.get('played_frames', '?')}  │  stream_frame_count: {st.get('stream_frame_count', '?')}")
+            print(f"      stream_mode: {st.get('stream_mode', '?')}  │  stream_active: {st.get('stream_active', '?')}")
         if "latency_ms" in profile:
             print(f"      單向延遲: {profile['latency_ms']} ms  │  offset: {profile.get('clock_offset_ms')} ms")
         modes = profile.get("modes") or []
@@ -3430,8 +3432,8 @@ class NetBusMaster:
     def _start_active_sync(self):
         """啟動主動同步幀率廣播執行緒 (config: active_sync_fps / active_sync_interval_s)。
 
-        定時廣播現有指令 0x3001 STREAM_INFO {fps}, slave 端即時更新渲染幀率,
-        取代被動等待各設備用自己的 local_fps 播放。
+        定時廣播現有指令 0x3001 STREAM_INFO {fps}, slave 端只儲存原始 fps 不換算,
+        RenderTask 偵測到變化時才換算一次節拍, 取代被動等待各設備用自己的 frame_interval_ms 播放。
         """
         self._stop_active_sync()
         fps = self._cfg_int("active_sync_fps", 0)

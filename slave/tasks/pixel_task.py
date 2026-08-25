@@ -10,6 +10,7 @@ pixel_task.py — pixel 子系統統一管理任務（PixelTask）
 on_start 依序初始化：硬體（st_pixel）→ effects → mapping（PixelLayout）→ modes → registry。
 loop() = 播放端：大隊列（registry.list）依序播放，show 循環；mode 的播放參數
 （play_count / play_interval）控制每輪出現與否，單位全用 frame。
+同一個 mode 連續播放（重複播放）時重用現有生成器（restart），不剷除重建。
 
 硬體 order/counts 一律從播放器（PixelStreamer.controllers）推導，不自己設定
 （硬體真值）。registry.json 只用來選擇「播什麼 / 開不開自動播放」。
@@ -20,7 +21,6 @@ loop() = 播放端：大隊列（registry.list）依序播放，show 循環；mo
   pixel_pause  → 暫停 / 恢復
 """
 
-import time
 import json
 from lib.sys.task import Task
 from lib.sys.sys_bus import bus
@@ -65,8 +65,7 @@ class PixelTask(Task):
         self._pass = 1       # 目前 show 的輪次（第 1 輪起）
         self._mode_idx = 0
         self._cur = None
-        self._interval_us = 25000
-        self._next_tick_us = 0
+        self._cur_mode = None   # _cur 對應的 mode（判斷下一個是否同一 mode → 重用生成器）
 
     # ── 啟動：依序初始化 ──────────────────────────
     def on_start(self):
@@ -108,12 +107,15 @@ class PixelTask(Task):
             except Exception as e:
                 get_log().error("[Pixel] pixel_stream hub 建立失敗: {}".format(e))
         self._hub = hub
-
-        fps = bus.shared.get("System", {}).get("local_fps", 50)
-        self._interval_us = (1000 * 1000) // fps
+        # 節奏完全由 RenderTask（core0）依 System.frame_interval_ms 控制；
+        # 本 task（計算核）全力算幀，hub 滿即 drop（不推進生成器，同一幀重試）。
 
     def _init_effects(self):
-        """py register + 載 effects.json → bus.shared["pixel_gens"]（存 cls/params，播放時建 Effect）。"""
+        """py register + 載 effects.json → bus.shared["pixel_gens"]（存 cls/params，播放時建 Effect）。
+
+        衝突檢查：載入後呼叫 effects.check_conflicts()，把 id/name 衝突列印成警告
+        （對齊 boot.py 的 GPIO 檢查；不 raise，人肉判斷修正）。
+        """
         from pixel.effects import effects
         try:
             with open(EFFECTS_JSON) as f:
@@ -125,6 +127,9 @@ class PixelTask(Task):
 
         gens = {}
         for name, eid in effects.dump().items():
+            if eid is None:
+                # py 有類別但 json 沒給 id/params → 不播放（check_conflicts() 已警告）
+                continue
             gens[name] = {
                 "id": eid,
                 "name": name,
@@ -136,6 +141,9 @@ class PixelTask(Task):
         # 開機預計算波表：掩蓋首次播放的計算成本（同 effect 之後零重算）
         n_wave = effects.warm_up()
         get_log().info("[Pixel] effects: {} 個（波表預算 {} 個）".format(len(gens), n_wave))
+        # 啟動檢查：id/name 衝突警告（對齊 boot GPIO 檢查，人肉判斷修正）
+        for line in effects.check_conflicts():
+            get_log().warn("[Pixel] " + line)
 
     def _init_layout(self):
         """從播放器推導 order/counts，載入 map/*.json 註冊全部 mapping → pixel_layout。"""
@@ -303,7 +311,7 @@ class PixelTask(Task):
         self._mode_idx = 0
         self._release_player(self._cur)
         self._cur = None
-        self._next_tick_us = time.ticks_us()
+        self._cur_mode = None
         # 通知播放核（RenderTask）開始取幀
         bus.shared["is_streaming"] = True
         bus.shared["is_ready"] = True
@@ -313,6 +321,7 @@ class PixelTask(Task):
         self._playing = False
         self._release_player(self._cur)
         self._cur = None
+        self._cur_mode = None
         bus.shared["is_streaming"] = False
         bus.shared["is_ready"] = False
         if self._st:
@@ -364,8 +373,13 @@ class PixelTask(Task):
             return False                       # 週期性：每隔 N 輪出現一次
         return True                            # -1 = 常駐每輪
 
-    def _find_next(self):
-        """掃一圈找下一個要播的 mode；沒有 → _cur 保持 None（空輪，pass 已推進）。"""
+    def _find_next(self, prev_mode=None):
+        """掃一圈找下一個要播的 mode；沒有 → _cur 清空（空輪，pass 已推進）。
+
+        prev_mode：剛播完的 mode。若下一個要播的正是同一個 mode（同一物件，
+        例如播放清單連續放同一個 mode），重用現有播放器（restart 生成器），
+        不釋放不重建 —— 避免「剷除 → 重建」在重複播放時造成卡頓。
+        """
         lst = self._show_list
         for _ in range(len(lst)):
             mode = lst[self._mode_idx]
@@ -373,17 +387,49 @@ class PixelTask(Task):
             if self._mode_idx >= len(lst):
                 self._mode_idx = 0
                 self._pass += 1
-            if self._should_play(mode):
+            if not self._should_play(mode):
+                continue
+            if (prev_mode is not None and mode is prev_mode
+                    and self._cur is not None and self._restart_player(self._cur)):
+                # 下一個與剛播完的是同一個 mode → 重用生成器（不剷除、不重建）
+                pass
+            else:
+                self._release_player(self._cur)
                 self._cur = self._make_player(mode)
-                return
+            self._cur_mode = mode
+            return
+        # 掃一圈沒找到要播的 → 空輪
+        self._release_player(self._cur)
+        self._cur = None
+        self._cur_mode = None
 
     def _make_player(self, mode):
-        """mode → 播放器：每個 entry 一個 fresh generator（每次播放都重建）。"""
+        """mode → 播放器：每個 entry 一個 fresh generator（換 mode 時才重建）。
+
+        同一個 mode 連續播放（重複播放）不經過這裡 —— _find_next 會直接
+        restart 重用，避免「釋放 → 重建」造成卡頓。
+        """
         return [{
             "mref": e["mref"], "gref": e["gref"], "write": e["write"],
             "gen": self._instantiate(e["cls"], e["name"], e["params"]),
             "done": False,
         } for e in mode["entries"]]
+
+    @staticmethod
+    def _restart_player(player):
+        """重用播放器：restart 每個 entry 的生成器，重置 done。
+
+        全部 entry 都可 restart → 回 True（重用成功）；任何一個不支援
+        restart（例如原生 generator 物件）→ 回 False，呼叫端改走剷除重建。
+        """
+        for e in player:
+            gen = e.get("gen")
+            if gen is None or not hasattr(gen, "restart"):
+                return False
+        for e in player:
+            e["gen"].restart()
+            e["done"] = False
+        return True
 
     @staticmethod
     def _instantiate(cls, name, params):
@@ -442,8 +488,8 @@ class PixelTask(Task):
             if self._cur is None:
                 return
         if not self._tick_player(self._cur):
-            self._release_player(self._cur)
-            self._cur = None
+            # mode 播完 → 找下一個；若下一個還是同一個 mode，_find_next 會重用生成器
+            self._find_next(self._cur_mode)
 
     def on_stop(self):
         super().on_stop()
@@ -451,3 +497,4 @@ class PixelTask(Task):
         self._orig_show_list = None
         self._release_player(self._cur)
         self._cur = None
+        self._cur_mode = None

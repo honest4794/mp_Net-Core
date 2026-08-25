@@ -13,15 +13,15 @@
 
 ## 2. 核心技術
 
-### 2.1 波形（`slave/lib/PixelMathMethod.py`）
+### 2.1 波形（`slave/lib/sw/PixelMathMethod.py`）
 - **免查表多項式逼近**：拋物線基底 + 二次修正 `922*(y²-y)>>12`，把 0-65535 相位映射到 0-4095 正弦。取代舊專案的 65536 點查表。
 - **決定性（無狀態）**：`value_at(comp, g)` 給全域幀直接回傳單值，是 `Effect.restart()`/`seek()` 的基石。
 
-### 2.2 波表快取（`slave/pixel/effects/effects.py`）
+### 2.2 波表快取（`slave/lib/sw/effect_core.py`）
 - **啟動即算、off 即丟、重啟重算**：波形只在 `Effect` 建構時算一次 `array('H')`（波長 = `end_Time`，與 pixel 數無關），之後每幀只做 index 讀取。
 - **乘數變加數**：`frame()` 熱路徑用 `g += spacing` 累加 + 單次減法取模，去掉 `i*spacing` 乘法與昂貴的 `%`。
 
-### 2.3 色彩（`slave/lib/PixelMathMethod.py`）
+### 2.3 色彩（`slave/lib/sw/PixelMathMethod.py`）
 - HSV↔RGB，兩套位深（8-bit 0-255 / 12-bit 0-4095）、各雙向。
 - **bulk 批次**：`hsv_to_rgb8_buf` / `rgb_to_hsv8_buf` / `hsv_to_rgb12_buf` / `rgb_to_hsv12_buf`。
 - 修掉舊專案 `mp_LEDController` 的 bug：RGB 順序（舊 G,R,B → 新 R,G,B）、飽和度（`delta*SCALE//max_val`）、色相 offset（`+120/+240` 不再被整數除法吞掉）。

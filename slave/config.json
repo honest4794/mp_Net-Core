@@ -14,7 +14,7 @@
     "master_port": 0,
     "discovery_port": 9000,
     "heartbeat_interval": 10000,
-    "local_fps": 50,
+    "frame_interval_ms": 20,
     "num_pixels": 336,
     "buffer_frames": 1,
     "log_interval_ms": 1000
@@ -253,51 +253,23 @@
   "APA102": {
     "enable": 0,
     "list": [
-      {
-        "GPIO": {
-          "spi": 0
-        },
-        "Q": 290,
-        "order": "BGRW"
-      }
+      {"GPIO": {"spi": 0},"Q": 290,"order": "BGRW"}
     ]
   },
   "PCA9685": {
     "enable": 0,
     "list": [
       {
-        "GPIO": {
-          "i2c": 0,
-          "dArc": 0,
-          "type": 0
-        },
-        "address": [
-          "0x40"
-        ]
+        "GPIO": {"i2c": 0,"dArc": 0,"type": 0},"address": ["0x40"]
       }
     ]
   },
   "uartMotor": {
     "enable": 0,
     "list": [
-      {
-        "GPIO": {
-          "uart": 1
-        },
-        "address": [
-          "51"
-        ],
-        "version": 1
-      },
-      {
-        "GPIO": {
-          "uart": 1
-        },
-        "address": [
-          "66"
-        ],
-        "version": 1
-      }
+      {"GPIO": {"uart": 1},"address": ["51"],"version": 1},
+      {"GPIO": {"uart": 1},"address": ["66"],"version": 1}
+      
     ]
   }
 }

@@ -254,3 +254,55 @@ FILE_* 0x20xx 檔案傳輸鏈路的重新設計：接收端完全被動、傳輸
 - **掉包根因**：slave 端 `bus_decode` 每輪只讀 1 slot（`decode_budget_slots` 預設 1）+ CircuitTask 排程，是架構級瓶頸，需進一步調整。
 - **RS485 半雙工**：master 端時序要照 `_Rs485Uart`（listen-before-talk + DE 切換 + txdone）重寫；目前是點對點全雙工。
 - **無線 ESP-NOW 傳檔**：鏈路驗證過、腳本備好，端到端未測。
+
+---
+
+## 10) 2026-08-24 新增：pixel 效果子系統重構 + RenderTask 節拍 wrap 修復
+
+> 這輪圍繞 pixel 燈效做了兩塊：①效果框架與目錄解耦、json 成為唯一真源；②修掉 RenderTask 計時器 wrap 導致「跑一段時間燈自己停」的 bug。
+
+### 10.1 效果子系統重構（框架 / 目錄 / json 三權分立）
+
+| 檔案 | 角色 |
+|------|------|
+| `slave/lib/sw/effect_core.py` | 框架：`Effect` 基類 + 登記表 + 波表快取 + `check_conflicts()` |
+| `slave/pixel/effects/effects.py` | 效果目錄：畫波效果 + py 補充類別 + `register()` + 自檢 |
+| `slave/pixel/effects/effects.json` | **唯一真源**：id/name/params（含 program 畫波）都在這手寫 |
+
+設計要點：
+
+- **json 是唯一真源**：id / name / params（含 program 畫波）全在 `effects.json` 手寫。
+- **畫波效果不需要 py 類別**：program 寫 json，由內建 `Effect` 播放（波表預算 + viper + 無浮點）。
+- **只有畫波寫不出來的效果才寫 py**：`register(類別)`，靠 name 與 json 配對（如 `pearl_chain` 珍珠鏈：畫完波後「批量派發 + 控制間距」）。
+- **id/name/配對衝突不 raise**：啟動時 `check_conflicts()` 列印警告（對齊 boot GPIO 檢查），人肉判斷修正。
+- 波形段 `F` 語義：**`F/10 = 段內週期數`**（`F=5` 半週期=純升或純降、`F=10` 完整週期=升+降）。
+- 相位 `phi`（0-4095 ≈ 0-360°）：`1023`=峰、`2047`=中點、`3071`=谷。
+
+### 10.2 RenderTask 節拍 wrap bug（燈跑一陣子自己停、無 log）
+
+**症狀**：本地燈效無限循環播放一段時間後，燈靜止/熄滅，且**不印任何 log**（不是 buffer 爆、不是重啟）。
+
+**根因**：`slave/tasks/render.py` 的 RenderTask 節拍推進用錯 API：
+
+```python
+# ❌ 錯：普通整數加法，next_tick_us 不會 wrap
+self.next_tick_us += self.interval_us
+```
+
+而 `time.ticks_us()` 在 ESP32 MicroPython 是**會週期性 wrap 的 32-bit 值**。`+=` 讓 `next_tick_us` 一路往上加，與 wrap 回小值的 `now` 相位錯開後，`ticks_diff(now, next_tick_us)` 永遠為負 → `>= 0` 永不成立 → RenderTask 每輪都 `return`，靜默停止取幀。
+
+**修復**：
+
+```python
+# ✅ 對：ticks_add 會正確 wrap
+self.next_tick_us = time.ticks_add(self.next_tick_us, self.interval_us)
+```
+
+> 已 grep 全 `slave/` 確認只有 `render.py` 這一處誤用；其餘 tick 推進都用 `ticks_add` / `ticks_diff`。
+
+### 10.3 相關文件
+
+- `02_guides/11_developing_effects.md` — 開發燈效完整教學（三種寫法 / Effect API / 波形段 / 色彩 / write 模式 / 框架 API / 四層資料）。
+- `02_guides/08_pixel_subsystem.md` — pixel 四層資料 + 播放模型。
+- `slave/lib/sw/effect_core.py` — 效果框架。
+- `slave/pixel/effects/effects.py` — 效果目錄（含 `pearl_chain` / `example_eyes` 範例）。

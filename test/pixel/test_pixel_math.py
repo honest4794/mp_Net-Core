@@ -25,7 +25,7 @@ if not IS_MICROPYTHON:
     if _SLAVE not in sys.path:
         sys.path.insert(0, _SLAVE)
 
-from lib.PixelMathMethod import mt, _wave01_q12, _sin_q12
+from lib.sw.PixelMathMethod import mt, _wave01_q12, _sin_q12
 from pixel.effects import effects
 
 _PASS = []
@@ -120,9 +120,18 @@ def _test_segments():
 
 
 # ── 3. pattern_value_at ──────────────────────────────
+# eyes 的 program（畫波範例；單一真源在 effects.json，此處複製一份當測試固定輸入）
+_EYES_PROGRAM = [
+    {"type": "keep",     "F": 1, "l_max": 0,    "l_lim": 0,   "phi": 0,    "end_Time": 60},
+    {"type": "math_now", "F": 5, "l_max": 100,  "l_lim": 20,  "phi": 3071, "end_Time": 100},
+    {"type": "math_now", "F": 5, "l_max": 1023, "l_lim": 100, "phi": 3071, "end_Time": 200},
+    {"type": "math_now", "F": 5, "l_max": 1023, "l_lim": 200, "phi": 1023, "end_Time": 320},
+]
+
+
 def _test_pattern():
     print("-- pattern_value_at --")
-    prog = effects.eyes.DEFAULT_PROGRAM
+    prog = _EYES_PROGRAM
     total = prog[-1]["end_Time"]
 
     # 決定性
@@ -143,14 +152,14 @@ def _test_pattern():
 # ── 4. Effect ────────────────────────────────────────
 def _test_effect():
     print("-- Effect --")
-    # 直接建構（pixel_n=8，math_now 波形 + spacing）
+    # 直接建構（pixel_n=8，math_now 波形 + spacing）—— 畫波效果用內建 Effect
     params = {
         "pixel_n": 8,
         "program": [{"type": "math_now", "F": 2, "l_max": 4095, "l_lim": 0,
                      "phi": 0, "end_Time": 100}],
         "step": 1, "spacing": 3, "offset": 0, "speed": 1, "reverse": False,
     }
-    e = effects.breathing("breathing", params)
+    e = effects.Effect("breathing", params)
     buf = e.frame(0)
     _check("frame 長度 == pixel_n", len(buf) == 8, "len={}".format(len(buf)))
     _check("frame 值域 0-4095", all(0 <= v <= 4095 for v in buf))
@@ -159,21 +168,21 @@ def _test_effect():
 
     # speed：speed=2 → frame(0) == frame(1)（同輸出重複）
     params2 = dict(params, speed=2, spacing=0)
-    e2 = effects.breathing("breathing", params2)
+    e2 = effects.Effect("breathing", params2)
     _check("speed=2 重複輸出", list(e2.frame(0)) == list(e2.frame(1)))
 
     # reverse：反轉
     params3 = dict(params, reverse=True)
-    e3 = effects.breathing("breathing", params3)
-    fwd = list(effects.breathing("breathing", params).frame(5))
+    e3 = effects.Effect("breathing", params3)
+    fwd = list(effects.Effect("breathing", params).frame(5))
     rev = list(e3.frame(5))
     _check("reverse 反轉輸出", rev == fwd[::-1], "fwd={} rev={}".format(fwd[:4], rev[:4]))
 
     # restart / seek 決定性
-    ey = effects.eyes("eyes", {"pixel_n": 8,
-                               "program": effects.eyes.DEFAULT_PROGRAM,
-                               "step": 1, "spacing": 10, "offset": 0,
-                               "speed": 1, "reverse": False})
+    ey = effects.Effect("eyes", {"pixel_n": 8,
+                                 "program": _EYES_PROGRAM,
+                                 "step": 1, "spacing": 10, "offset": 0,
+                                 "speed": 1, "reverse": False})
     f0 = list(next(ey))
     f1 = list(next(ey))
     ey.seek(0)

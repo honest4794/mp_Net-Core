@@ -63,37 +63,37 @@ def launcher():
     bus.shared["log_print_levels"] = ["info", "warn", "error", "immediate"]
     bus.shared["log_subscribe"] = []
 
-    # ── Layer 0: 網路 + 通訊 + FS 掃描 + 硬體採樣，最先啟動 ──
-    # 核心分工（定案）:
-    #   core0(主線程) = 通訊 + UI:network / web_ui / circuit / bus_decode /
-    #     log / lvgl / motor。通訊任務單一呼叫鏈淺(<8KB,探針實測),
-    #     與 LVGL 共用主線程 16KB stack 沒有壓力。
-    #   core1(_thread) = 重活:fs_scan / hw_sample / pixel。
+    # ═══════════════════════════════════════════════════════════════════
+    # ▍第一區：系統核心任務（System Core）—— 系統基礎設施，永遠常駐
+    #   網路 + 通訊 + 電路輪詢 + FS 掃描 + 硬體採樣，最先啟動
+    #   核心分工（定案）:
+    #     core0(主線程) = 通訊 + UI:network / web_ui / circuit / bus_decode /
+    #       log / lvgl / motor。通訊任務單一呼叫鏈淺(<8KB,探針實測),
+    #       與 LVGL 共用主線程 16KB stack 沒有壓力。
+    #     core1(_thread) = 重活:fs_scan / hw_sample / pixel。
+    # ═══════════════════════════════════════════════════════════════════
     tm.register_task("log", LogTask, default_affinity=(1, 0), layer=0)
     tm.register_task("network", NetworkTask, default_affinity=(1, 0), layer=0)
-    # 裝置角色互斥(見 temp/cp 面板 vs temp/motor 執行,兩份各自 flash):
-    #   - 本樹 = 面板裝置(LCD+encoder+按鍵):ControlPanelTask + LvglTask。
-    #     cpanel 兩模式分層:LVGL 在跑(_ui_active)→ 不發 vbtn,改轉發
-    #     LVGL 的 _display_cmd 成 0x1501;LVGL 沒跑 → 原按鈕模式發 vbtn。
-    #   - 執行裝置(無 LCD):在 temp/motor 的 Core_Manager 啟用 motor。
-#     tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
-#     tm.register_task("motor", ActionTask1, default_affinity=(1, 0), layer=0)
-#     tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
     tm.register_task("circuit", CircuitTask, default_affinity=(1, 0), layer=0)
     tm.register_task("bus_decode", BusDecodeTask, default_affinity=(1, 0), layer=0)
     tm.register_task("now", NowTask, default_affinity=(1, 0), layer=0)
-    tm.register_task("web_ui",  WebUITask,   default_affinity=(1, 0), layer=0)
     tm.register_task("fs_scan", FsScanTask,  default_affinity=(0, 1), layer=0)
     from tasks.hw_sample_task import HwSampleTask
     tm.register_task("hw_sample", HwSampleTask, default_affinity=(0, 1), layer=0)
 
-    # ── pixel 子系統（雙核播放）：
+    # ═══════════════════════════════════════════════════════════════════
+    # ▍第二區：應用任務（Application）—— 使用者面向功能，依需要增刪
+    #   佈署時要拿掉某個功能，直接註解掉對應一行即可
+    # ═══════════════════════════════════════════════════════════════════
+    tm.register_task("web_ui",  WebUITask,   default_affinity=(0, 0), layer=1)
+
+    # ── pixel 子系統（雙核播放）──
     #   core1（計算核）PixelTask：初始化 effects/mapping/modes/registry + 效果計算 → pixel_stream hub
     #   core0（播放核）RenderTask：固定 fps（20ms/50fps）從 hub 取幀推硬體（tasks/render.py）──
     from tasks.pixel_task import PixelTask
     from tasks.render import RenderTask
-    tm.register_task("pixel", PixelTask, default_affinity=(0, 1), layer=0)
-    tm.register_task("render", RenderTask, default_affinity=(1, 0), layer=0)
+    tm.register_task("pixel", PixelTask, default_affinity=(1, 0), layer=1)
+    tm.register_task("render", RenderTask, default_affinity=(0, 1), layer=1)
 
     # ── Layer 1: LVGL UI（依賴 TFT/LCD，沒 LCD 整段跳過）──
     # affinity=(1,0)=CPU0: LVGL 完整 UI 不能在 _thread(CPU1)裡跑
@@ -101,9 +101,22 @@ def launcher():
     # CPU1 跑其他 task(採樣等)。
     if bus.has_lcd():
         from tasks.lvgl_task import LvglTask
-        tm.register_task("lvgl", LvglTask, default_affinity=(1, 0), layer=1)
+        tm.register_task("lvgl", LvglTask, default_affinity=(1, 0), layer=-1)
     else:
         log.info("⏭ [CoreManager] lvgl skipped — no LCD/TFT on bus")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # ▍第三區：邊緣 / 選配任務（Edge）—— 可有可無，依裝置角色啟用
+    #   裝置角色互斥(見 temp/cp 面板 vs temp/motor 執行,兩份各自 flash):
+    #     - 本樹 = 面板裝置(LCD+encoder+按鍵):ControlPanelTask + LvglTask。
+    #       cpanel 兩模式分層:LVGL 在跑(_ui_active)→ 不發 vbtn,改轉發
+    #       LVGL 的 _display_cmd 成 0x1501;LVGL 沒跑 → 原按鈕模式發 vbtn。
+    #     - 執行裝置(無 LCD):在 temp/motor 的 Core_Manager 啟用 motor。
+    #   預設全關，要用才把註解打開。
+    # ═══════════════════════════════════════════════════════════════════
+    # tm.register_task("cpanel", ControlPanelTask, default_affinity=(1, 0), layer=1)
+    # tm.register_task("motor", ActionTask1, default_affinity=(1, 0), layer=0)
+    # tm.register_task("action", ActionTask, default_affinity=(1, 0), layer=0)
 
     tm.finalize()
 

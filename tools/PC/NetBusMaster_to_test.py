@@ -727,8 +727,8 @@ class NetBusMaster:
             try:
                 status_data = json.loads(args["status_json"])
                 
-                # 🔧 修复: MCU 回报的 render_fps 实际是当前帧号
-                current_frame = status_data.get('render_fps', 0)  # ✅ 这是帧号
+                # 🔧 修复: MCU 回报的 played_frames 实际是当前已播放帧号
+                current_frame = status_data.get('played_frames', 0)  # ✅ 这是帧号
                 mem_free = status_data.get('mem_free', 0)
                 real_id = status_data.get('id')
                 

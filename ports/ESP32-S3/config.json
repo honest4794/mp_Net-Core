@@ -9,7 +9,7 @@
         "master_port": 0,
         "discovery_port": 9000,
         "heartbeat_interval": 10000,
-        "local_fps": 40,
+        "frame_interval_ms": 25,
         "num_pixels": 336,
         "buffer_frames": 1,
         "log_interval_ms": 1000

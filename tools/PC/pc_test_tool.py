@@ -113,9 +113,9 @@ class PCTestTool:
                     # 🚀 格式化打印診斷數據
                     print(f"\n--- 🩺 Health Check [{cid}] ---")
                     print(f"  Mem Free: {data.get('mem_free', 0)//1024} KB")
-                    print(f"  Render FPS: {data.get('render_fps', 0)}")
+                    print(f"  Played Frames: {data.get('played_frames', 0)}")
                     print(f"  Net In FPS: {data.get('net_in_fps', 0)}")
-                    print(f"  Status: {'Active' if data.get('render_fps',0)>0 else 'IDLE'}")
+                    print(f"  Status: {'Active' if data.get('played_frames',0)>0 else 'IDLE'}")
                     print("-" * 35)
 
                 except: 

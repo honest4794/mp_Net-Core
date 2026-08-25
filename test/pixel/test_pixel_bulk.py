@@ -26,7 +26,7 @@ if not IS_MICROPYTHON:
 import math
 from array import array as _array
 
-from lib.PixelMathMethod import (
+from lib.sw.PixelMathMethod import (
     _wave01_q12, _sin_q12,
     hsv_to_rgb8, rgb_to_hsv8, hsv_to_rgb12, rgb_to_hsv12,
     hsv_to_rgb8_buf, rgb_to_hsv8_buf, hsv_to_rgb12_buf, rgb_to_hsv12_buf,
