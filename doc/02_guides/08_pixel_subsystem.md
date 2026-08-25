@@ -2,7 +2,7 @@
 
 > **用途**：pixel 子系統架構與使用。子系統把「效果 / 群組排列 / 模式配對 / 播放清單」拆成四層，各自定義，由 `PixelTask`（`slave/tasks/pixel_task.py`）在開機時依序初始化並執行大隊列自動播放。
 > **分類**：使用教學（02_guides）
-> **最後更新**：2026-08-18
+> **最後更新**：2026-08-24
 > **位置**：`slave/pixel/`（`effects/`、`map/`、`modes/`、`registry.json`）
 > **測試結果與未來方向**：`03_notes/07_pixel_test_results.md`
 
@@ -165,11 +165,57 @@ big_buffer（RGBW 幀，bytearray）──▶ st_pixel.show_all()（一次推硬
 
 ---
 
+## 4.1 Pixel Render 架構簡介（雙核 + hub + controller）
+
+pixel 渲染由「計算核 + 播放核 + 中間 hub」三件套組成，寫效果的人完全不碰這些：
+
+```
+core1（計算核）PixelTask                  core0（播放核）RenderTask
+┌─────────────────────────────┐          ┌─────────────────────────────┐
+│ 效果計算 → scatter 進 hub    │  ──幀──▶  │ 固定 fps 節奏取幀 → show_all │
+│ (pixel_stream hub)          │          │ 推硬體（WS2812/APA102/UART…）│
+└─────────────────────────────┘          └─────────────────────────────┘
+        ▲ 計算多快就多快                        ▲ 節奏固定，不受計算影響
+        │ hub 滿就 drop 幀（不阻塞）            │ 沒幀就跳過（不重播）
+```
+
+| 角色 | 檔案 | 職責 |
+|---|---|---|
+| 計算核 | `tasks/pixel_task.py` | 初始化四層資料 + 大隊列播放 + `_tick_player` 全力算幀 scatter 進 hub |
+| 播放核 | `tasks/render.py` | 依 `System.frame_interval_ms`（預設 20ms）從 hub `read_into` → `show_all()` |
+| 中間 hub | `lib/sys/buffer_hub.py` | SPSC 無鎖環形緩衝（3 slot），計算滿就 drop、播放空就跳過 |
+| 聚合播放器 | `lib/sw/PixelController.py` `PixelStreamer` | 把多個 controller（WS2812/APA102/PCA9685/UartMotor）合成一個 big_buffer |
+
+**controller 介面**（每個硬體型別實作同一套，`PixelStreamer.show_all()` 依序呼叫）：
+
+| 方法 | 說明 |
+|---|---|
+| `frame_size` | big_buffer 佔用（每顆 RGBW 4 bytes） |
+| `st_load_and_convert(buf, offset)` | 從 big_buffer 轉換到硬體 buffer |
+| `st_show()` | 推硬體 |
+| `st_init()` | 初始化 |
+| `neutral_value` | 停止/熄燈時填回的中性值（config `dStay`，12-bit >>4） |
+
+**停止/熄燈 = 填中性值（`PixelStreamer.clear_all()`）**：
+- 對齊舊專案 mp_LEDController 的 `dArc` 概念（reset 回到中性值）。
+- config 每台設備可設 `dStay`（default Stay）：燈 `0`（熄滅）、motor `2048`（= 0x80 死區停）。
+- 不能全清 0 —— UART-412 馬達的 `0` = 全速正轉（危險！）。
+- 三處停止流程統一用 `clear_all()`：`render.py`（is_streaming 熄燈）、`pixel_task._stop()`、`Core_Manager` 退出。
+
+**motor 接入（UART-412）**：
+- `UartMotor` 實作 controller 介面（`pixel_type="uartMotor1"`），從 big_buffer **W 通道**讀速度 byte（8-bit），`st_show()` 一次過發射單台 frame 串接（`ff addr value fe` × N）。
+- UART-412 廣播模式受 `MAX_DEVICE=32` 限制，address > 32 時只能用單台串接。
+- 歸零保護：W=0 會是「全速正轉」，故映射成中性值（死區 0x80）。
+- 初始化：`driver/motor_drv.py` 讀 config `uartMotor` → 建 `UartMotor` → `boot.py` 註冊 → `pixel_drv.py` 聚合進 pixel_list。
+
+---
+
 ## 5. PixelTask 初始化順序
 
 ```
 on_start
 ├─ 1. 硬體：確保 st_pixel（無 → driver.pixel_drv.init_pixel()；config 全 disable → 空播放器）
+│    聚合順序：apa102 + ws2812 + pca9685 + motor（boot.py 各 driver 先 init）
 ├─ 2. effects：py register + 載 effects.json → bus.shared["pixel_gens"]
 ├─ 3. mapping：從播放器推導 order/counts + 載 map/*.json → bus.shared["pixel_layout"]
 ├─ 4. modes：載 modes/*.json（解析複合 group 引用）→ bus.shared["pixel_maps"]

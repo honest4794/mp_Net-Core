@@ -287,6 +287,24 @@ assert next(eff) == eff.frame(0)
 > **別搞錯長度**：scatter 的 `rgb` 是「3 值/顆 依序」——`[R0,G0,B0, R1,G1,B1, ...]`。
 > 輸出長度 = pixel_n × 每顆值數。值流不足 → 取模循環；過長 → 多餘丟棄。
 
+### 用 `write:"w"` 驅動馬達（UART-412）
+
+馬達 controller（`UartMotor`，mapping type `uartMotor1`）從 big_buffer 的 **W 通道**讀速度 byte（8-bit，0-255）：
+
+| W 值 | 馬達行為（UART-412 `updateMotor`） |
+|---|---|
+| `0x80` (128) | **死區停**（兩腳 PWM 都 0）——也是停止/歸零的中性值 |
+| `0x01..0x7F` | 正轉，越接近 0 越快 |
+| `0x81..0xFF` | 反轉，越接近 0xFF 越快 |
+
+效果輸出（0-4095）→ `>>4` → W 通道。**要讓馬達停，效果輸出 2048（中點）**；輸出 0 會被歸零保護映射成死區（不會全速暴走）。
+
+```json
+{ "group": "matrix.motors", "effect": "wave", "write": "w" }
+```
+
+> 廣播模式受 UART-412 `MAX_DEVICE=32` 限制，address > 32 時 `UartMotor.show_all()` 自動改用單台 frame 串接（`ff addr value fe` × N）一次過發射。
+
 ---
 
 ## 8. 框架 API 完整清單（`lib/sw/effect_core.py`）

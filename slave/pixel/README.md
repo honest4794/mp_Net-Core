@@ -176,6 +176,10 @@ big_buffer（RGBW 幀，bytearray）──▶ st_pixel.show_all()（一次推硬
 - `rgb`：3 值/顆；`rgbw`：4 值/顆；全部 >>4。
 - 保底：值流不足 → 取模循環；過長 → 多餘丟棄；空 → 全寫 0。
 
+> **Pixel Render 架構**：雙核 + hub + controller（詳見 `doc/02_guides/08_pixel_subsystem.md` §4.1）。
+> 計算核（PixelTask）scatter → hub → 播放核（RenderTask）固定 fps 取幀 → `show_all()` 依序驅動各 controller（WS2812/APA102/PCA9685/UartMotor）。
+> **停止/熄燈 = 填中性值**（`clear_all()`）：config 的 `dStay`（燈 0 熄滅、motor 2048=0x80 死區停），不是全清 0。
+
 ## 5. PixelTask 初始化順序
 
 ```

@@ -306,3 +306,34 @@ self.next_tick_us = time.ticks_add(self.next_tick_us, self.interval_us)
 - `02_guides/08_pixel_subsystem.md` — pixel 四層資料 + 播放模型。
 - `slave/lib/sw/effect_core.py` — 效果框架。
 - `slave/pixel/effects/effects.py` — 效果目錄（含 `pearl_chain` / `example_eyes` 範例）。
+
+---
+
+## 11) 2026-08-24 新增：UART-412 馬達接入 pixel + 停止填中性值（dStay）
+
+> 這輪把 UART-412 馬達（ATTiny412 電機控制器）接入 pixel 系統，並把「停止/熄燈」改成填中性值（對齊舊專案 mp_LEDController 的 dArc 概念）。
+
+### 11.1 馬達走 pixel 系統（讀 W 通道）
+
+- `UartMotor`（`slave/lib/hw/uart_motor.py`）實作 controller 介面：`pixel_type="uartMotor1"`、`frame_size`（×4）、`st_load_and_convert()`（從 big_buffer 提取 W 通道 8-bit）、`st_show()`。
+- 效果用 `write:"w"`（或 rgbw）→ W 通道 = 速度 byte（0x80 停、<0x80 正轉、>0x80 反轉）。
+- 初始化鏈：`driver/motor_drv.py`（讀 config `uartMotor`）→ `boot.py` 註冊 → `pixel_drv.py` 聚合進 pixel_list → `pixel_task.TYPE_MAP` 加 `uartMotor1`。
+
+### 11.2 UART-412 協議關鍵（單台串接，不用廣播）
+
+- 廣播模式受 `MAX_DEVICE=32` 限制（原碼 `while i < MAX_DEVICE+2`），address > 32 收不到。
+- `show_all()` 改為**單台 frame 串接**：`ff addr value fe` × N 一次過 uart.write（address 不連續也不填空洞）。
+- **歸零保護**：UART-412 的 `value=0` = 全速正轉（updateMotor: IN1 PWM 254）！`st_load_and_convert` 讀到 0 → 映射中性值（死區 0x80），避免 reset/熄燈暴走。
+
+### 11.3 停止 = 填中性值（dStay，對齊舊項目 dArc）
+
+- 舊專案 `LEDController.reset()` 回到 config 的 `dArc`（不是 0）；本專案命名 **`dStay`**（default Stay，12-bit 0-4095）。
+- `PixelStreamer.clear_all()`：每個 controller 填自己的 `neutral_value`（燈=0 熄滅、motor=0x80 死區停）。
+- 三處停止流程統一改用：`render.py`（is_streaming 熄燈）、`pixel_task._stop()`、`Core_Manager` 退出。
+- config 每台設備可設 `dStay`：WS2812/APA102/PCA9685 預設 0；uartMotor 預設 2048（= 0x80）。
+
+### 11.4 相關文件
+
+- `02_guides/08_pixel_subsystem.md` — §4.1 Pixel Render 架構簡介（雙核 + hub + controller + 停止填中性值 + motor 接入）。
+- `02_guides/11_developing_effects.md` — §7 新增「用 write:w 驅動馬達」。
+- `slave/lib/hw/uart_motor.py`、`slave/driver/motor_drv.py`、`slave/lib/sw/PixelController.py`（clear_all / neutral_value）。
