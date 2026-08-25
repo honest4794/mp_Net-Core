@@ -18,9 +18,11 @@ class PixelController:
         self.hw = pixel_io_cfg['pixel_IO']
         self.num_pixels = pixel_io_cfg['Q']
 
-        # 停止/熄燈時填回的中性值（對齊舊專案 dArc 概念）：
-        # 燈 = 0（熄滅）；motor（UartMotor）覆寫為 0x80（死區停）。
-        self.neutral_value = 0
+        # 停止/熄燈時填回的中性值（對齊舊專案 mp_LEDController 的 reset 語義）：
+        # config 的 dStay（default Stay）是 12-bit（0-4095，舊 dArc 位深），
+        # big_buffer 通道是 8-bit → >>4。燈 = 0（熄滅）；motor（UartMotor）預設 2048。
+        dstay = int(pixel_io_cfg.get("dStay", 0))
+        self.neutral_value = (dstay >> 4) & 0xFF
 
         # 內部映射: 1:WS2812, 2:APA102, 3:i2c_pixel
         type_map = {'WS2812': 1, 'APA102': 2, 'i2c_pixel': 3}

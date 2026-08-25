@@ -185,7 +185,8 @@
                 "address": [
                     "51"
                 ],
-                "version": 1
+                "version": 1,
+                "dStay": 2048
             }
         ]
     }

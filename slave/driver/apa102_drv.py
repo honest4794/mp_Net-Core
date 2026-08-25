@@ -29,6 +29,7 @@ def init_apa102(sysbus=None):
             "pixel_IO": apa,
             "Q": item["Q"],
             "order": item.get("order", "BGRW"),
+            "dStay": item.get("dStay", 0),
         }))
     sysbus.register_service("apa1022_list", apa_list)
     get_log().info("APA102: {} channel(s)".format(len(apa_list)))

@@ -122,21 +122,21 @@
     "WS2812": {
         "enable": 0,
         "list": [
-            { "GPIO": 15, "Q": 10, "order": "GRB" },
-            { "GPIO": 16, "Q": 10, "order": "GRB" },
-            { "GPIO": 17, "Q": 10, "order": "GRB" }
+            { "GPIO": 15, "Q": 10, "order": "GRB", "dStay": 0 },
+            { "GPIO": 16, "Q": 10, "order": "GRB", "dStay": 0 },
+            { "GPIO": 17, "Q": 10, "order": "GRB", "dStay": 0 }
         ]
     },
     "APA102": {
         "enable": 0,
         "list": [
-            { "GPIO": { "spi": 0 }, "Q": 290, "order": "BGRW" }
+            { "GPIO": { "spi": 0 }, "Q": 290, "order": "BGRW", "dStay": 0 }
         ]
     },
     "PCA9685": {
         "enable": 0,
         "list": [
-            { "GPIO": { "i2c": 0, "dArc": 0, "type": 0 }, "address": ["0x40"] }
+            { "GPIO": { "i2c": 0, "type": 0 }, "address": ["0x40"], "dStay": 0 }
         ]
     }
 }

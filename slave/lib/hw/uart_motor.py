@@ -210,6 +210,11 @@ class UartMotor:
         self._tx_single = bytearray(4)
         self.set_all(STOP)
 
+        # 中性值（停止/歸零時回到的數值）：config 的 dStay（default Stay, 12-bit）
+        # → big_buffer 8-bit。預設 2048 = 0x80 死區停（UART-412 的 0 = 全速正轉！）。
+        dstay = int(cfg.get("dStay", self.DEFAULT_DSTAY))
+        self.neutral_value = (dstay >> 4) & 0xFF
+
         # ── 行程模式狀態（每台一份，索引 addr-1，與 buffer 同構）──
         # 全部整數；_pos/_pos0/_target 為 Q 定點，對外位置 = 值 >> _Q（0..4095）
         self._pos    = [0] * self.num_devices
@@ -326,8 +331,9 @@ class UartMotor:
     # 死區（停）值：UART-412 的 updateMotor 中 value=0 → PWM 254（全速正轉！），
     # value=128(0x80) → 兩腳 PWM 都 0（死區停）。所以「歸零」絕不能填 0，
     # 必須填 0x80 才是停。pixel 系統 big_buffer 初始全 0，故 st_load_and_convert
-    # 讀到 0 時要映射成死區值（除非效果明確想全速正轉）。
-    neutral_value = STOP   # 0x80
+    # 讀到 0 時要映射成停值（除非效果明確想全速正轉）。
+    # dStay（default Stay，12-bit，config 可覆寫）：停止/歸零時回到的數值。
+    DEFAULT_DSTAY = 2048   # = 0x80 死區（12-bit 語義，>>4 = 0x80）
 
     def show_all(self):
         """單台 frame 串接：一次 write 發所有 address 的 frame（FF addr value FE × N）。

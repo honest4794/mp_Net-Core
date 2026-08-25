@@ -128,7 +128,7 @@
     "list": [
       {
         "GPIO": 0,
-        "dArc": 0,
+        "dStay": 0,
         "type": 0
       }
     ]
@@ -244,17 +244,20 @@
       {
         "GPIO": 15,
         "Q": 10,
-        "order": "GRB"
+        "order": "GRB",
+        "dStay": 0
       },
       {
         "GPIO": 16,
         "Q": 10,
-        "order": "GRB"
+        "order": "GRB",
+        "dStay": 0
       },
       {
         "GPIO": 17,
         "Q": 10,
-        "order": "GRB"
+        "order": "GRB",
+        "dStay": 0
       }
     ]
   },
@@ -266,7 +269,8 @@
           "spi": 0
         },
         "Q": 290,
-        "order": "BGRW"
+        "order": "BGRW",
+        "dStay": 0
       }
     ]
   },
@@ -276,12 +280,12 @@
       {
         "GPIO": {
           "i2c": 0,
-          "dArc": 0,
           "type": 0
         },
         "address": [
           "0x40"
-        ]
+        ],
+        "dStay": 0
       }
     ]
   },
@@ -295,7 +299,8 @@
         "address": [
           "51"
         ],
-        "version": 1
+        "version": 1,
+        "dStay": 2048
       }
     ]
   }

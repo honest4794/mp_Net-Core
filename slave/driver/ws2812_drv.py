@@ -25,6 +25,7 @@ def init_ws2812(sysbus=None):
             "pixel_IO": pixel,
             "Q": item["Q"],
             "order": item.get("order", "GRB"),
+            "dStay": item.get("dStay", 0),
         }))
     sysbus.register_service("ws2812_list", ws_list)
     get_log().info("WS2812: {} channel(s)".format(len(ws_list)))

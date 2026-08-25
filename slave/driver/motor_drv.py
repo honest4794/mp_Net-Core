@@ -36,6 +36,7 @@ def init_motor(sysbus=None):
                 "version": item.get("version", 1),
                 "addresses": addresses,
                 "uart": uart_list[uart_idx],
+                "dStay": item.get("dStay", 2048),   # 預設 2048 = 0x80 死區停
             })
             motor_list.append(motor)
             get_log().info("uartMotor: {} (addr {}) on uart[{}]".format(

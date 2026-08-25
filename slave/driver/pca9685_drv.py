@@ -43,6 +43,7 @@ def init_pca9685(sysbus=None):
                     "pixel_IO": pca,
                     "Q": 16,
                     "order": "W",
+                    "dStay": item.get("dStay", 0),
                 }))
             except Exception as e:
                 get_log().error("PCA9685@{} error: {}".format(hex(addr), e))
