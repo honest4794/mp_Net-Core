@@ -54,9 +54,9 @@ class RenderTask(Task):
         if not is_streaming:
             is_ready = self.fcache_get("is_ready")
             if is_ready == False:
-                for i in range(len(self.st_pixel.big_buffer)):
-                    self.st_pixel.big_buffer[i] = 0
-                self.st_pixel.show_all()
+                # 停止/熄燈：填中性值（燈=0 熄滅，motor=0x80 死區停），
+                # 不能全清 0 —— UART-412 的 0 = 全速正轉！
+                self.st_pixel.clear_all()
 
             if time.ticks_diff(time.ticks_us(), self.next_tick_us) < 0:
                 return

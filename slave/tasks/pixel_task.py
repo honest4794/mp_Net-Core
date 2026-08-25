@@ -33,7 +33,8 @@ MODES_DIR = "/pixel/modes"
 REGISTRY_JSON = "/pixel/registry.json"
 
 # 硬體 controller 型別 → registry 統一 key（單一真源）
-TYPE_MAP = {"APA102": "apa102", "WS2812": "ws2812", "i2c_pixel": "pca9685"}
+TYPE_MAP = {"APA102": "apa102", "WS2812": "ws2812", "i2c_pixel": "pca9685",
+            "uartMotor1": "uartMotor1"}
 
 WRITE_WHITELIST = ("r", "g", "b", "w", "ww", "rgb", "rgbw", "wwww")
 
@@ -325,10 +326,9 @@ class PixelTask(Task):
         bus.shared["is_streaming"] = False
         bus.shared["is_ready"] = False
         if self._st:
-            buf = self._st.big_buffer
-            for i in range(len(buf)):
-                buf[i] = 0
-            self._st.show_all()
+            # 停止/熄燈：填中性值（燈=0 熄滅，motor=0x80 死區停），
+            # 不能全清 0 —— UART-412 的 0 = 全速正轉！
+            self._st.clear_all()
         get_log().info("[Pixel] ■ show 停止")
 
     def _consume_cmds(self):

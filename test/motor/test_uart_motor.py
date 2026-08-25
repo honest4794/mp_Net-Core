@@ -14,9 +14,11 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "slave"))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(os.path.dirname(_HERE))
+sys.path.insert(0, os.path.join(_ROOT, "slave"))
 
-from lib.uart_motor import (
+from lib.hw.uart_motor import (
     UartMotor, register_command_method,
     HEADER, ENDING, STOP, FWD, REV, FWD_FS, REV_FS,
     SPEED_MAX, SPEED_MED, SPEED_STOP, POS_MAX,
@@ -32,6 +34,14 @@ class FakeUART:
         return len(data)
 
 
+def _chain(*pairs):
+    """單台串接 frame：pairs = [(addr, value), ...] → b'FF addr value FE' × N。"""
+    out = bytearray()
+    for addr, value in pairs:
+        out += bytes([HEADER, addr, value, ENDING])
+    return bytes(out)
+
+
 class TestFramesV1(unittest.TestCase):
 
     def setUp(self):
@@ -45,13 +55,15 @@ class TestFramesV1(unittest.TestCase):
     def test_initial_buffer_safe_stop(self):
         self.assertEqual(bytes(self.motor.buffer), bytes([STOP] * 3))
 
-    def test_broadcast_frame_after_show_all(self):
+    def test_show_all_single_chain(self):
+        """show_all = 單台 frame 串接（UART-412 廣播受 MAX_DEVICE=32 限制，
+        address 不連續/超 32 時只能單台串接一次過發送）。"""
         self.motor.set(1, FWD)
         self.motor.set(2, REV)
         self.motor.show_all()
         # addr3 未設定 → 停車 0x80
         self.assertEqual(self.uart.writes[-1],
-                         bytes([HEADER, 0x00, FWD, REV, STOP, ENDING]))
+                         _chain((1, FWD), (2, REV), (3, STOP)))
 
     def test_single_frame_via_send(self):
         self.motor.send(2, FWD)
@@ -61,7 +73,7 @@ class TestFramesV1(unittest.TestCase):
     def test_send_updates_buffer(self):
         self.motor.send(1, FWD)
         self.assertEqual(self.motor.buffer[0], FWD)
-        # buffer 為權威狀態：之後 show_all 廣播的是最新值
+        # buffer 為權威狀態：之後 show_all 串接的是最新值
         self.motor.show_all()
         self.assertEqual(self.uart.writes[-1][2], FWD)
 
@@ -72,20 +84,49 @@ class TestFramesV1(unittest.TestCase):
             self.motor.show_all()
         self.assertEqual(len(self.uart.writes) - n_before, 3)
         for w in self.uart.writes[-3:]:
-            self.assertEqual(w, bytes([HEADER, 0x00, REV, REV, REV, ENDING]))
+            self.assertEqual(w, _chain((1, REV), (2, REV), (3, REV)))
 
     def test_set_all_and_stop_all(self):
         self.motor.set_all(REV)
         self.assertEqual(bytes(self.motor.buffer), bytes([REV] * 3))
         self.motor.stop_all()
         self.assertEqual(self.uart.writes[-1],
-                         bytes([HEADER, 0x00, STOP, STOP, STOP, ENDING]))
+                         _chain((1, STOP), (2, STOP), (3, STOP)))
         self.assertEqual(bytes(self.motor.buffer), bytes([STOP] * 3))
 
     def test_send_all_immediate(self):
         self.motor.send_all(FWD)
         self.assertEqual(self.uart.writes[-1],
-                         bytes([HEADER, 0x00, FWD, FWD, FWD, ENDING]))
+                         _chain((1, FWD), (2, FWD), (3, FWD)))
+
+    def test_sparse_address_chain(self):
+        """address 不連續（如 [1,51]）→ 單台串接，中間不填空洞。"""
+        uart = FakeUART()
+        motor = UartMotor({"version": 1, "addresses": [1, 51], "uart": uart})
+        motor.set(1, FWD)
+        motor.set(51, REV)
+        motor.show_all()
+        self.assertEqual(uart.writes[-1], _chain((1, FWD), (51, REV)))
+
+    def test_zero_to_deadzone_protection(self):
+        """歸零保護：big_buffer W=0（初始/熄燈）→ 死區 0x80，不是全速正轉。"""
+        big = bytearray(self.motor.frame_size)   # 全 0
+        self.motor.st_load_and_convert(big, 0)
+        self.assertEqual(bytes(self.motor.buffer), bytes([STOP] * 3))
+        self.motor.st_show()
+        self.assertEqual(self.uart.writes[-1],
+                         _chain((1, STOP), (2, STOP), (3, STOP)))
+
+    def test_w_channel_to_motor(self):
+        """W 通道直讀：0x40 正轉中速、0xC0 反轉中速、0x80 停。"""
+        big = bytearray(12)
+        big[3] = 0x40
+        big[7] = 0xC0
+        big[11] = 0x80
+        self.motor.st_load_and_convert(big, 0)
+        self.motor.st_show()
+        self.assertEqual(self.uart.writes[-1],
+                         _chain((1, 0x40), (2, 0xC0), (3, 0x80)))
 
     def test_set_many_dict(self):
         self.motor.set_many({1: FWD, 3: REV})
@@ -167,21 +208,14 @@ class TestInitValidation(unittest.TestCase):
 class TestVersionDispatch(unittest.TestCase):
 
     def test_register_v2_switches_frame(self):
-        # 模擬對方改協定：v2 用不同 HEADER（0xEE）與結尾
-        def build_v2_broadcast(frame, buffer, n):
-            frame[0] = 0xEE
-            frame[1] = 0x00
-            for i in range(n):
-                frame[2 + i] = buffer[i]
-            frame[2 + n] = 0xEF
-
+        # 模擬對方改協定：v2 用不同 HEADER（0xEE）與結尾（單台 frame 格式）
         def build_v2_single(frame, addr, value):
             frame[0] = 0xEE
             frame[1] = addr
             frame[2] = value
             frame[3] = 0xEF
 
-        register_command_method(2, build_v2_broadcast, build_v2_single)
+        register_command_method(2, None, build_v2_single)
 
         uart = FakeUART()
         motor = UartMotor({
@@ -191,9 +225,12 @@ class TestVersionDispatch(unittest.TestCase):
         })
         motor.send(1, FWD)
         self.assertEqual(uart.writes[-1], bytes([0xEE, 0x01, FWD, 0xEF]))
+        # show_all = 單台 frame 串接（v2 用自己的 frame 格式）
+        motor.set(2, STOP)
         motor.show_all()
         self.assertEqual(uart.writes[-1],
-                         bytes([0xEE, 0x00, FWD, STOP, 0xEF]))
+                         bytes([0xEE, 0x01, FWD, 0xEF,
+                                0xEE, 0x02, STOP, 0xEF]))
 
         # v1 不受影響
         uart_v1 = FakeUART()

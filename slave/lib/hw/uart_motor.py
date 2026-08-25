@@ -323,10 +323,28 @@ class UartMotor:
 
     # ── 硬體輸出（統一發送）──
 
+    # 死區（停）值：UART-412 的 updateMotor 中 value=0 → PWM 254（全速正轉！），
+    # value=128(0x80) → 兩腳 PWM 都 0（死區停）。所以「歸零」絕不能填 0，
+    # 必須填 0x80 才是停。pixel 系統 big_buffer 初始全 0，故 st_load_and_convert
+    # 讀到 0 時要映射成死區值（除非效果明確想全速正轉）。
+    neutral_value = STOP   # 0x80
+
     def show_all(self):
-        """由 buffer 組出廣播 frame，單次 uart.write 推送全部。"""
-        self._build_broadcast(self._tx_broadcast, self.buffer, self.num_devices)
-        self.uart.write(self._tx_broadcast)
+        """單台 frame 串接：一次 write 發所有 address 的 frame（FF addr value FE × N）。
+
+        UART-412 廣播模式受 MAX_DEVICE=32 限制（原碼 while i < MAX_DEVICE+2），
+        address > 32 的設備廣播收不到；故一律用單台 frame 串接，一次過發射。
+        依 version 用對應的 _build_single 編碼（v1=FF/addr/value/FE，可註冊其他版本）。
+        """
+        n = len(self.addresses)
+        need = n * 4
+        if len(self._tx_broadcast) < need:
+            self._tx_broadcast = bytearray(need)
+        frame = self._tx_broadcast
+        for k, addr in enumerate(self.addresses):
+            seg = memoryview(frame)[k * 4:(k + 1) * 4]
+            self._build_single(seg, addr & 0xFF, self.buffer[addr - 1])
+        self.uart.write(memoryview(frame)[:need])
 
     def send(self, addr, value):
         """set + 立即發送單台 frame（同時更新 buffer，保持 buffer 為權威狀態）。"""
@@ -511,6 +529,47 @@ class UartMotor:
 
     def __len__(self):
         return self.num_devices
+
+    # ── pixel 系統相容介面（走 big_buffer，讀 W 通道）─────────────
+    # UartMotor 可作為 PixelStreamer 的 controller（像 PCA9685 的 i2c_pixel）：
+    #   PixelTask scatter 效果輸出 → big_buffer（RGBW 4 bytes/顆）
+    #   PixelStreamer.show_all() → st_load_and_convert() 提取 W 通道（8-bit）
+    #                              → st_show() 一次過組 UART frame 發射
+    # 效果輸出用 write:"w"（或 rgbw）→ big_buffer W 通道 = 速度 byte（0x80=停）。
+
+    @property
+    def pixel_type(self):
+        """registry 統一 key（對齊 pixel_task TYPE_MAP 的 uartMotor1）。"""
+        return "uartMotor1"
+
+    @property
+    def num_pixels(self):
+        return self.num_devices
+
+    @property
+    def frame_size(self):
+        """big_buffer 佔用：每顆 RGBW 4 bytes。"""
+        return self.num_devices * 4
+
+    def st_init(self):
+        """PixelStreamer.init() 呼叫；motor 不需額外初始化（UartMotor 建構已設 STOP）。"""
+
+    def st_load_and_convert(self, source_buffer, offset):
+        """從 big_buffer 提取 W 通道（每顆第 4 byte，8-bit 速度）填進 motor buffer。
+
+        歸零保護：W 通道是 0（big_buffer 初始值 / 效果熄燈）時，UART-412 會把它
+        當「全速正轉」（updateMotor: value=0 → IN1 PWM 254）。這極危險（電機暴走）。
+        故 0 → 映射成死區值 0x80（停）。要讓 motor 全速正轉，效果輸出值
+        0x01..0x7F（或寫入端直接給非 0 值）。
+        """
+        n = self.num_devices
+        for i in range(n):
+            v = source_buffer[offset + (i << 2) + 3]
+            self.buffer[i] = v if v != 0 else self.neutral_value
+
+    def st_show(self):
+        """組廣播 frame（FF 00 V1..VN FE）一次過 uart.write。"""
+        self.show_all()
 
 
 # === PC 快速 demo（FakeUART + FakeClock，不依賴硬體）===

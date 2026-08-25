@@ -9,6 +9,13 @@
       "sel": [
         {"type": "ws2812", "sel": ":"}
       ]
+    },
+    {
+      "id": 2,
+      "name": "motors",
+      "sel": [
+        {"type": "uartMotor1", "sel": ":"}
+      ]
     }
   ]
 }

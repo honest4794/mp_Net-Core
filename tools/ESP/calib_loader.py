@@ -5,7 +5,7 @@
       forward_ms / reverse_ms 為 null → 該方向死區（不建立該速度點）
 
 用法:
-    from lib.uart_motor import UartMotor
+    from lib.hw.uart_motor import UartMotor
     from tools.ESP.calib_loader import load_calibration
 
     motor = UartMotor({...})
@@ -21,7 +21,7 @@ try:
 except ImportError:
     import json
 
-from lib.uart_motor import SPEED_MAX
+from lib.hw.uart_motor import SPEED_MAX
 
 
 def _iter_files(src):

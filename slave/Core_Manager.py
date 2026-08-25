@@ -142,6 +142,7 @@ def launcher():
         print("[CoreManager]🛑 All cores stopping...")
         time.sleep_ms(500)
         if st_pixel:
-            st_pixel.big_buffer = bytearray(st_pixel.total_bytes)
-            st_pixel.show_all()
+            # 停止/熄燈：填中性值（燈=0 熄滅，motor=0x80 死區停），
+            # 不能全清 0 —— UART-412 的 0 = 全速正轉！
+            st_pixel.clear_all()
         print("[CoreManager]🏁 Clean Exit.")

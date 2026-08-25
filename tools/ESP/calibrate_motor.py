@@ -50,7 +50,7 @@ except AttributeError:
     def _default_clock_diff(a, b):
         return a - b
 
-from lib.uart_motor import UartMotor, speed_to_byte, STOP, SPEED_MAX
+from lib.hw.uart_motor import UartMotor, speed_to_byte, STOP, SPEED_MAX
 
 
 class MotorCalibrator:

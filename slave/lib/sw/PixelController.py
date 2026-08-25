@@ -17,7 +17,11 @@ class PixelController:
         self.pixel_io = pixel_io_cfg
         self.hw = pixel_io_cfg['pixel_IO']
         self.num_pixels = pixel_io_cfg['Q']
-        
+
+        # 停止/熄燈時填回的中性值（對齊舊專案 dArc 概念）：
+        # 燈 = 0（熄滅）；motor（UartMotor）覆寫為 0x80（死區停）。
+        self.neutral_value = 0
+
         # 內部映射: 1:WS2812, 2:APA102, 3:i2c_pixel
         type_map = {'WS2812': 1, 'APA102': 2, 'i2c_pixel': 3}
         self._tid = type_map.get(pixel_type, 0)
@@ -120,6 +124,26 @@ class PixelStreamer:
         for c in self.controllers:
             c.st_init()
         print(f"[Streamer] Ready. Total Buffer: {self.total_bytes} bytes")
+
+    def clear_all(self):
+        """停止/熄燈：把每個 controller 的區域填回中性值。
+
+        對齊舊專案 mp_LEDController 的 dArc 概念（reset 回到中性值）：
+          - 燈（PixelController）    : RGBW 全 0（熄滅）
+          - motor（UartMotor）       : W = 0x80（死區停，0 會是全速正轉！）
+        每個 controller 用各自的 neutral_value（預設 0）。
+        """
+        buf = self.big_buffer
+        for i, c in enumerate(self.controllers):
+            neutral = getattr(c, "neutral_value", 0)
+            off = self.offsets[i]
+            for k in range(c.num_pixels):
+                o = off + (k << 2)
+                buf[o]     = 0
+                buf[o + 1] = 0
+                buf[o + 2] = 0
+                buf[o + 3] = neutral
+        self.show_all()
 
     def get_write_view(self):
         """獲取原始緩衝供外部填充數據"""

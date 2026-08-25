@@ -50,6 +50,7 @@ from driver.network_drv  import init_network
 from driver.ws2812_drv   import init_ws2812
 from driver.apa102_drv   import init_apa102
 from driver.pca9685_drv  import init_pca9685
+from driver.motor_drv    import init_motor
 from driver.pixel_drv    import init_pixel
 
 
@@ -120,6 +121,7 @@ _init("network", init_network)
 _init("ws2812",  init_ws2812)
 _init("apa102",  init_apa102)
 _init("pca9685", init_pca9685)
+_init("motor",   init_motor)
 _init("pixel",   init_pixel)
 
 _oks   = [n for n, s, _ in _boot_status if s == "ok"]

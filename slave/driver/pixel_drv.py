@@ -1,7 +1,7 @@
 """
 pixel_drv.py — pixel 統一聚合層
 
-將 apa1022_list + ws2812_list + pca9685_list 合併成 pixel_list，
+將 apa1022_list + ws2812_list + pca9685_list + motor_list 合併成 pixel_list，
 並建立 PixelStreamer (st_pixel)。
 
 設定來源: 無（聚合下游 driver 結果）
@@ -18,8 +18,9 @@ def init_pixel(sysbus=None):
     apa_list = sysbus.get_service("apa1022_list") or []
     ws_list = sysbus.get_service("ws2812_list") or []
     pca_list = sysbus.get_service("pca9685_list") or []
+    motor_list = sysbus.get_service("motor_list") or []
 
-    pixel_list = apa_list + ws_list + pca_list
+    pixel_list = apa_list + ws_list + pca_list + motor_list
     sysbus.register_service("pixel_list", pixel_list)
 
     try:

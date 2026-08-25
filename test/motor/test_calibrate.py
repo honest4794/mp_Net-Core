@@ -16,11 +16,12 @@ import sys
 import tempfile
 import unittest
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(_ROOT, "slave"))   # lib.uart_motor（slave/lib）
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_ROOT = os.path.dirname(os.path.dirname(_HERE))
+sys.path.insert(0, os.path.join(_ROOT, "slave"))   # lib.hw.uart_motor（slave/lib/hw）
 sys.path.insert(0, _ROOT)                          # tools.calibrate_motor / tools.calib_loader
 
-from lib.uart_motor import (
+from lib.hw.uart_motor import (
     UartMotor, speed_to_byte,
     SPEED_MAX, SPEED_MED, STOP,
 )
