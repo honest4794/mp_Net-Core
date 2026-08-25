@@ -16,6 +16,10 @@ class Dispatcher:
     # 可由 config.json 的 System.debug_level 覆寫（boot 載入 config 後設定）
     debug_level = 1
 
+    # 高頻 bulk 指令：debug_level==1 時不逐幀印 (避免拖垮傳輸吞吐)。
+    # debug_level>=2 仍會印 (含 args/exec time)，用於深度調試。
+    _QUIET_CMDS = {0x2002}
+
     @staticmethod
     def configure(level):
         """從 config 設定調試等級（0/1/2）。"""
@@ -57,7 +61,9 @@ class Dispatcher:
             args = SchemaCodec.decode(cmd_def, payload_bytes, self.store)
             
             # 3. 調試輸出面板 (現代化風格)
-            if self.debug_level >= 1:
+            #    高頻 bulk 數據幀 (FILE_CHUNK 等) 逐幀 print 會拖垮吞吐
+            #    (UART 115200 ≈ 2.9ms/行)，debug_level==1 時跳過，只在 >=2 才印。
+            if self.debug_level >= 1 and cmd_int not in self._QUIET_CMDS:
                 t = time.ticks_ms()
                 source = ctx.get("transport", "Unknown")
                 print(f"🔹 [{source}] {cmd_def['name']} (0x{cmd_int:04X})")

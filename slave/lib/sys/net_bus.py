@@ -5,6 +5,44 @@ from lib.sys.sys_bus import bus
 from lib.sys.buffer_hub import AtomicStreamHub
 from lib.sys.proto import RX_BUF_SIZE, SEND_CAP
 
+try:
+    _IS_MP = (__import__("sys").implementation.name == "micropython")
+except Exception:
+    _IS_MP = False
+
+if _IS_MP:
+    import micropython
+else:
+    class micropython:
+        @staticmethod
+        def native(f):
+            return f
+
+
+@micropython.native
+def _ws_unmask(buf, start, n, mask, mask_i):
+    """WS client 幀 unmask：把 4 位元組週期 mask XOR 回 buf[start:start+n]。
+    逐 byte 純 Python 迴圈很貴 (4KB 幀 = 4096 次 int()/分支)，
+    用 native 讓 emitter 直接產生機器碼, 回傳新的 mask 相位。"""
+    m0 = mask[0]
+    m1 = mask[1]
+    m2 = mask[2]
+    m3 = mask[3]
+    mi = mask_i
+    for j in range(n):
+        idx = start + j
+        b = buf[idx]
+        if mi == 0:
+            buf[idx] = b ^ m0
+        elif mi == 1:
+            buf[idx] = b ^ m1
+        elif mi == 2:
+            buf[idx] = b ^ m2
+        else:
+            buf[idx] = b ^ m3
+        mi = (mi + 1) & 3
+    return mi
+
 class NetBus:
     """
     NetBus: 純傳輸層 (TCP/WS/UDP)
@@ -282,23 +320,7 @@ class NetBus:
                             break
                         chunk = mv[i:i + take]
                         if self._ws_masked:
-                            mi = self._ws_mask_i
-                            m0 = self._ws_mask[0]
-                            m1 = self._ws_mask[1]
-                            m2 = self._ws_mask[2]
-                            m3 = self._ws_mask[3]
-                            for j in range(take):
-                                b = int(chunk[j])
-                                if mi == 0:
-                                    chunk[j] = b ^ m0
-                                elif mi == 1:
-                                    chunk[j] = b ^ m1
-                                elif mi == 2:
-                                    chunk[j] = b ^ m2
-                                else:
-                                    chunk[j] = b ^ m3
-                                mi = (mi + 1) & 3
-                            self._ws_mask_i = mi
+                            self._ws_mask_i = _ws_unmask(self._buf, i, take, self._ws_mask, self._ws_mask_i)
 
                         view = self.rx_hub.get_write_view()
                         if view is None:

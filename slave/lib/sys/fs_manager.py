@@ -343,16 +343,14 @@ class FileSystemManager:
         if not isinstance(data, (bytes, bytearray, memoryview)):
             data = bytes(data)
 
-        # 中途容量安全網 (前置 QUERY.free 才是主力)
-        # ⚠️ statvfs 在 FAT/flash 模式可能返回負數(overflow)，那時 free_bytes 不可靠，
-        # 不能當作「沒空間」；只有拿到「明確的正數且不足」才擋。
-        _free = self.free_bytes(self.session["path"])
-        if _free > 0 and _free < len(data) + 4096:
-            self.session["last_error"] = "NO_SPACE"
-            return False
-
+        # 容量安全網移到 begin_write 做一次 (傳輸前已有 QUERY.free)。
+        # 這裡每 chunk 呼叫 statvfs 會讓 FatFS 掃整張 FAT 表算 free space，
+        # 32GB 卡每次幾十 ms，直接吃掉上傳吞吐，故移除。
+        # 空間不足時 fp.write() 本身會拋 OSError，由下方 catch 轉成 WRITE_FAIL。
         try:
-            self.session["fp"].seek(off)
+            # 順序寫入時 off == 目前位置，seek 是多餘的；只有重傳/亂序才 seek。
+            if off != self.session["written"]:
+                self.session["fp"].seek(off)
             self.session["fp"].write(data)
             self.session["written"] = off + len(data)
             return True
