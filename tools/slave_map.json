@@ -20,7 +20,8 @@
     "mapping": {
         "80F1B2D1F7DE": {
             "play_id": 0,
-            "last_sha": "229c41d80f52132ea121f951ecc080c899e2d02cd53980291cd3c4691786241e"
+            "last_sha": "0196bc8544db9e4399af683aaf06ecd436cae506b7bc53418080b0f8ee06d8d0",
+            "ip": "192.168.1.78"
         },
         "80F1B2D1B758": {
             "play_id": 1,

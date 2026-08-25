@@ -54,6 +54,10 @@ def init_spi(sysbus=None):
     for item in cfg.get("list", []):
         gpio = item.get("GPIO", {})
         data = item.get("data_pins")
+        # 容忍跨語言空值寫法: 空 list / null / 缺省 一律視為未設定。
+        # (空 list 若不轉 None, 會被丟給 lcd_bus 當「0 條資料線」報錯)
+        if data is not None and len(data) == 0:
+            data = None
 
         if _LCD_BUS:
             if data is not None:
@@ -79,9 +83,27 @@ def init_spi(sysbus=None):
                 if 'spi' in locals():
                     try: spi.deinit()
                     except: pass
-                spi = _make_machine_spi(item, gpio, data)
+                # 🔧 fallback 也要防護: 失敗 (例: SPI host 殘留佔用) 只跳過這條,
+                #    不再讓例外往上拋把整個 boot 搞掛。
+                try:
+                    spi = _make_machine_spi(item, gpio, data)
+                except Exception as e2:
+                    try:
+                        from lib.sys.log_service import get_log
+                        get_log().error("[spi_drv] SPI{} fallback fail: {}".format(item["id"], e2))
+                    except Exception:
+                        print("[spi_drv] SPI{} fallback fail: {}".format(item["id"], e2))
+                    continue
         else:
-            spi = _make_machine_spi(item, gpio, data)
+            try:
+                spi = _make_machine_spi(item, gpio, data)
+            except Exception as e:
+                try:
+                    from lib.sys.log_service import get_log
+                    get_log().error("[spi_drv] SPI{} init fail: {}".format(item["id"], e))
+                except Exception:
+                    print("[spi_drv] SPI{} init fail: {}".format(item["id"], e))
+                continue
 
         spi_list.append(spi)
 

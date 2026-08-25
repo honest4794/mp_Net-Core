@@ -3,6 +3,13 @@ import micropython
 import array
 import time
 
+# ⚠️ 廣播位址注意:
+#   PCA9685 的 ALLCALL 廣播位址是 0x70 (112)。只要該晶片 ALLCALL 啟用
+#   (預設啟用), 所有 writeto_mem(0x70, ...) 都會被匯流排上「每一顆」
+#   PCA9685 同時接收 — 寫一次 = 全部板子同時動作 (同步播放用)。
+#   因此 0x70 不應作為一般裝置註冊 (scan 掃到要排除), 只有明確想
+#   「單一廣播一次同步」時才把 address 設成 0x70。
+
 class PCA9685:
     def __init__(self, i2c, address=0x40, n=16, invert=False):
         self.i2c = i2c

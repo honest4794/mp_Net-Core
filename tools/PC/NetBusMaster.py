@@ -2878,7 +2878,12 @@ class NetBusMaster:
             bin_path = os.path.join(bins_dir, f'pid_{pid}.bin')
             if os.path.isfile(bin_path):
                 with open(bin_path, 'rb') as f:
-                    self.prepared_data[pid] = bytearray(f.read())
+                    data = bytearray(f.read())
+                # 🔧 PCA9685 點亮: 若每幀最後 16 顆的 W 通道全為 0 (來源 pxld
+                #    沒提供 PWM 值), 把最後 16 顆的 W 填成前 660 顆的平均亮度,
+                #    讓 PCA9685 有訊號可驅動。frame 大小 = num_pixels*4 (676*4)。
+                self._fill_pca_w(data)
+                self.prepared_data[pid] = data
                 print(f"  📂 已載入 pid_{pid}.bin ({len(self.prepared_data[pid])//1024} KB)")
                 loaded += 1
             else:
@@ -2888,6 +2893,35 @@ class NetBusMaster:
             print(f"  ⚠️ 缺少 PlayID: {missing}")
 
         return loaded, missing
+
+    def _fill_pca_w(self, data):
+        """把 data.bin 每幀「最後 16 顆」的 W 通道填上有值。
+
+        前提: 每幀大小 = System.num_pixels * 4 (676*4 = 2704 bytes),
+        最後 16 顆對應 PCA9685 的 16 通道。來源 pxld 常把這 16 顆 W 留 0,
+        導致 PCA 收不到 PWM。此處把 W 填成「該幀前面燈的平均亮度」,
+        若整幀全 0 (熄燈幀) 就維持 0。
+        """
+        frame = self._cfg_int("num_pixels", 0) * 4
+        if frame <= 0 or len(data) < frame:
+            # 不確定 frame 大小就 fallback: 用 676*4 (已知格式)
+            frame = 2704
+            if len(data) < frame:
+                return
+        n_frames = len(data) // frame
+        for i in range(n_frames):
+            base = i * frame
+            # 前 660 顆的 W (index 3,7,11,...)
+            front_end = base + 660 * 4
+            front_ws = data[base + 3 : front_end : 4]
+            avg = sum(front_ws) // len(front_ws) if front_ws else 0
+            if avg <= 0:
+                avg = 128  # 全黑幀也給個中性亮度, 讓 PCA 不滅
+            # 最後 16 顆的 W (index 660..675)
+            for k in range(16):
+                idx = base + (660 + k) * 4 + 3
+                if idx < len(data):
+                    data[idx] = avg
 
     def step_2_prepare_data(self):
         """切分 PXLD 動畫數據"""
@@ -3021,6 +3055,8 @@ class NetBusMaster:
                         if slave_data:
                             data.extend(slave_data)
                     
+                    # 🔧 PCA9685 點亮: 與 load_bins 一致, 把每幀最後 16 顆 W 填上有值
+                    self._fill_pca_w(data)
                     self.prepared_data[pid] = data
                     # Update metadata with actual sliced frame count
                     sliced_frames = end_frame - start_frame
@@ -3208,10 +3244,7 @@ class NetBusMaster:
             return
         
         if AUDIO_MODE is None:
-            print("❌ 音訊模塊未安裝,無法播放")
-            input("\n按 Enter 繼續...")
-            self.panel.start()
-            return
+            print("⚠️ 音訊模塊未安裝 (miniaudio/pygame) — MP3 無法播放,但仍可播放燈效 (靜音模式)")
         
         mp3_files = [f for f in os.listdir('.') if f.endswith('.mp3')]
         if not mp3_files:
@@ -3222,6 +3255,7 @@ class NetBusMaster:
         for i, f in enumerate(mp3_files):
             print(f"  {i+1}. {f}")
         print("  q. 取消返回")
+        print("  [Enter] 等同 0 (靜音模式)")
         
         selected_mp3 = None
         try:
@@ -3230,13 +3264,20 @@ class NetBusMaster:
                 self.panel.start()
                 return
             
-            choice = int(raw_choice)
+            if raw_choice == '':
+                choice = 0
+            else:
+                choice = int(raw_choice)
             if choice == 0:
                 selected_mp3 = None
-                print("✅ 已選擇: 靜音模式")
+                print("✅ 已選擇: 靜音模式 (僅播放燈效)")
             elif 1 <= choice <= len(mp3_files):
                 selected_mp3 = mp3_files[choice-1]
-                print(f"✅ 已選擇: {selected_mp3}")
+                if AUDIO_MODE is None:
+                    print(f"⚠️ 音訊模塊未安裝,無法播放 {selected_mp3},改為靜音模式 (僅播放燈效)")
+                    selected_mp3 = None
+                else:
+                    print(f"✅ 已選擇: {selected_mp3}")
             else:
                 print("❌ 選擇無效")
                 time.sleep(1)

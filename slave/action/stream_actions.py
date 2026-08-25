@@ -1,11 +1,13 @@
 # action/stream_actions.py
-from lib.sys.sys_bus import bus
-from lib.sys.proto import Proto
-from lib.sys.schema_codec import SchemaCodec
-from lib.sys.fs_manager import fs
+# stream (0x30xx) 命令層：只把 Master 指令寫成「離散命令」進 bus.shared，
+# 由 StreamTask（tasks/stream_task.py）消費後執行讀檔 / 補幀 / 狀態管理。
+#
+# 本模組不再持有播放狀態（檔案 handle、供給鏈、播放次序都已移入 StreamTask）；
+# 只保留對外回報用的 _STREAM_STATE 與 providers（status_actions 會讀）。
 
-# ── 原始儲存數字（slave 只存不換算；換算由 PC 端自己做）─────────────────
-# status_actions.get_runtime_info / STATUS provider 直接回報這些原始數字。
+from lib.sys.sys_bus import bus
+
+# ── 原始儲存數字（StreamTask 更新，slave 只存不換算；換算由 PC 端自己做）───
 _STREAM_STATE = {
     "fps": 0,           # 0x3001 STREAM_INFO 收到的原始 fps（不做任何換算）
     "frame_count": 0,   # 供給鏈已 commit 的原始幀計數
@@ -27,97 +29,44 @@ def is_streaming():
 
 
 def on_stream_state_set(ctx, args):
-    """0x3009: 準備分塊與文件模式"""
-    bus.shared.update({
-        "active_file": fs.resolve(args["file_name"])[1],
-        "cur_block": args["block_id"],
+    """0x3009: 準備檔案與播放模式 → stream_cmd_set"""
+    bus.shared["stream_cmd_set"] = {
+        "file_name": args["file_name"],
+        "block_id": args["block_id"],
         "play_mode": args["play_mode"],
-        "stream_active": True,   # 串流供給鏈專用旗標 (本地燈效 MODE_SET 會關掉它)
-        "is_seeking": True,
-        "is_ready": False,
-        "is_streaming": False # 先設為 False 以免 Ready 途中亂跳
-    })
-    _STREAM_STATE["mode"] = args["play_mode"]
-    _STREAM_STATE["frame_count"] = 0
-    _STREAM_STATE["streaming"] = False
-    print(f"📡 [Stream] Set: {args['file_name']}")
+    }
+
 
 def on_stream_play(ctx, args):
-    """0x300A: 開始播放 (支持中途加入)"""
-    start_frame = args.get("start_frame", 0)
-    
-    # 如果指定了起始幀，通知 Supply Chain 進行跳轉
-    if start_frame > 0:
-        bus.shared.update({
-            "seek_frame": start_frame,
-            "is_seeking": True # 觸發重新加載/跳轉
-        })
-        # 刷新 Buffer Hub 以清除舊數據
-        hub = bus.get_service("pixel_stream")
-        if hub: hub.flush()
-        print(f"▶️ PLAY from frame {start_frame}")
-    else:
-        print(f"▶️ PLAY from start")
-        
-    bus.shared.update({"stream_active": True, "is_streaming": True})
-    _STREAM_STATE["streaming"] = True
+    """0x300A: 開始播放（可帶 start_frame 中途加入）→ stream_cmd_play"""
+    bus.shared["stream_cmd_play"] = {
+        "start_frame": args.get("start_frame", 0),
+    }
 
-def handle_supply_chain(hub, s, ctx):
-    """由 Core 0 定時調用，負責加載與 READY 回報"""
-    if bus.shared.get("is_seeking"):
-        try:
-            hub.flush()
-            if s.get("f_local"): s["f_local"].close()
-            s["f_local"] = open(bus.shared["active_file"], "rb")
-            
-            # 處理跳轉
-            seek_frame = bus.shared.get("seek_frame", 0)
-            if seek_frame > 0:
-                st = bus.get_service("st_pixel")
-                if st:
-                    offset = seek_frame * st.total_bytes
-                    s["f_local"].seek(offset)
-                    print(f"⏩ Seek to frame {seek_frame} (offset {offset})")
-                bus.shared["seek_frame"] = 0 # Reset
-            
-            # 預填第一幀
-            view = hub.get_write_view()
-            if view is not None:
-                if s["f_local"].readinto(view) > 0:
-                    hub.commit()
-                    _STREAM_STATE["frame_count"] += 1
-            
-            bus.shared["is_seeking"] = False
-            bus.shared["is_ready"] = True
-            
-            # --- 主動回報 READY 給 PC ---
-            cmd_def = ctx["app"].store.get(0x3008)
-            payload = SchemaCodec.encode(cmd_def, {"block_id": bus.shared["cur_block"]})
-            ctx["send"](Proto.pack(0x3008, payload))
-            print(f"✅ READY: {bus.shared['active_file']}")
-        except Exception as e:
-            print(f"❌ Load Error: {e}")
-            bus.shared["is_seeking"] = False
 
-    # 播放規律預讀 (僅在串流啟用時供給, 本地燈效播放時 stream_active=False 不會搶 hub)
-    if bus.shared.get("stream_active") and bus.shared.get("is_streaming") and not bus.shared.get("is_paused"):
-        # 利用 Hub 自帶 dirty 位檢查供給
-        if not hub.dirty and s.get("f_local"):
-            view = hub.get_write_view()
-            if view is not None:
-                if s["f_local"].readinto(view) == 0:
-                    if bus.shared.get("play_mode") == 1: s["f_local"].seek(0)
-                    else: bus.shared["is_streaming"] = False
-                else:
-                    hub.commit()
-                    _STREAM_STATE["frame_count"] += 1
+def on_stream_pause(ctx, args):
+    """0x3005: 暫停/恢復 → stream_cmd_pause"""
+    bus.shared["stream_cmd_pause"] = bool(args.get("pause", 0))
+
+
+def on_stream_stop(ctx, args):
+    """0x3002: 停止 → stream_cmd_stop"""
+    bus.shared["stream_cmd_stop"] = True
+
+
+def on_stream_seek(ctx, args):
+    """0x3004: 跳轉 → stream_cmd_seek"""
+    bus.shared["stream_cmd_seek"] = {
+        "target_block": args.get("target_block", 0),
+        "target_frame": args.get("target_frame", 0),
+    }
+
 
 def on_stream_info(ctx, args):
     """0x3001 STREAM_INFO: 主控廣播串流 fps。
 
     本機只儲存原始數字（_STREAM_STATE["fps"] + bus.shared["stream_fps_override"]），
     不做任何換算；RenderTask 偵測到變化時才換算一次節拍。
-    上報（STATUS / log）也是原始數字，換算由 PC 端自己做。
     """
     fps = args.get("fps", 0) or 0
     if fps > 0:
@@ -126,22 +75,22 @@ def on_stream_info(ctx, args):
         print("📡 [Stream] raw fps stored -> {}".format(fps))
 
 
-def on_stream_stop(ctx, args):
-    """0x3002 STOP：熄燈停流，還原原始旗標（fps 保留最後收到的原始數字）。"""
-    bus.shared.update({"stream_active": False, "is_streaming": False, "is_ready": False})
-    _STREAM_STATE["streaming"] = False
-    _STREAM_STATE["mode"] = 0
+def _direct_mode(ctx, args):
+    """0x3003 Direct Mode: 直接寫入整幀 pixel_data。"""
+    hub = bus.get_service("pixel_stream")
+    if hub is None:
+        return
+    hub.write_from(args["pixel_data"])
 
 
 def register(app):
-    # 播放控制
-    app.disp.on(0x3001, on_stream_info)   # INFO: 主控主動同步幀率（只存原始 fps）
-    app.disp.on(0x3009, on_stream_state_set) # SET
-    app.disp.on(0x300A, on_stream_play) # PLAY
-    app.disp.on(0x3005, lambda c,a: bus.shared.update({"is_paused": bool(a["pause"])})) # PAUSE
-    app.disp.on(0x3002, on_stream_stop) # STOP
-    # 0x3003 Direct Mode
-    app.disp.on(0x3003, lambda c,a: bus.get_service("pixel_stream").write_from(a["pixel_data"]))
+    app.disp.on(0x3001, on_stream_info)    # INFO: 主控主動同步幀率（只存原始 fps）
+    app.disp.on(0x3009, on_stream_state_set)  # SET
+    app.disp.on(0x300A, on_stream_play)    # PLAY
+    app.disp.on(0x3005, on_stream_pause)   # PAUSE
+    app.disp.on(0x3002, on_stream_stop)    # STOP
+    app.disp.on(0x3004, on_stream_seek)    # SEEK
+    app.disp.on(0x3003, _direct_mode)      # Direct Mode
 
     # 原始數字 provider：主機（PC）經 0x1101 STATUS_GET 主動獲取，
     # 主機端自己加遮罩挑要的欄位、自己做換算。

@@ -69,7 +69,12 @@ class PixelController:
                 dst[d_idx + go] = src[s_idx + 1] # G
                 dst[d_idx + bo] = src[s_idx + 2] # B
                 
-        elif tid == 2: # APA102 (Frame: Header[0xE1] + BGR)
+        elif tid == 2: # APA102 — 與 lib/hw/apa102.py 的 _convert 一致 (header 在前) + 雙緩衝
+            # 🔧 雙緩衝: DMA 可能還在傳上一個 buffer, flip 切到另一個再寫,
+            #    確保不覆寫正在傳輸的緩衝 (lcd_bus write 是非同步 DMA → 撕裂)
+            hw = self.hw
+            if hasattr(hw, 'flip'):
+                hw.flip()
             dst = self.hw.spi_buffer
             ro = int(self._r)
             go = int(self._g)
@@ -78,10 +83,13 @@ class PixelController:
             for i in range(n):
                 s_idx = offset + (i << 2)
                 d_idx = 4 + (i << 2)
-                dst[d_idx + wo] = 0xEF           # 亮度頭部
-                dst[d_idx + ro] = src[s_idx]     # R
-                dst[d_idx + go] = src[s_idx + 1] # G
-                dst[d_idx + bo] = src[s_idx + 2] # B
+                # ⚠️ APA102 規格: 每顆 4 bytes = [0xE0|亮度][B][G][R], 亮度頭部在前。
+                # 頭部若放最後, APA102 會把「B 色值」當亮度頭部 — RGB 轉換時
+                # B 從 0↔255, 亮度跟著暴變 → 轉色瞬間整條閃。header 在前才正確。
+                dst[d_idx]     = 0xE0 | (src[s_idx + wo] >> 3)   # 亮度頭部 (5-bit)
+                dst[d_idx + 1] = src[s_idx + bo]     # B
+                dst[d_idx + 2] = src[s_idx + go]     # G
+                dst[d_idx + 3] = src[s_idx + ro]     # R
 
         elif tid == 3: # i2c_pixel (PCA9685)
             # 專門提取 W 通道 (src[+3]) 給 PWM 控制器

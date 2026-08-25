@@ -95,18 +95,18 @@ def launcher():
     #   core0（播放核）RenderTask：固定 fps（20ms/50fps）從 hub 取幀推硬體（tasks/render.py）──
     from tasks.pixel_task import PixelTask
     from tasks.render import RenderTask
-    tm.register_task("pixel", PixelTask, default_affinity=(1, 0), layer=1)
+#     tm.register_task("pixel", PixelTask, default_affinity=(1, 0), layer=1)
     tm.register_task("render", RenderTask, default_affinity=(0, 1), layer=1)
 
     # ── Layer 1: LVGL UI（依賴 TFT/LCD，沒 LCD 整段跳過）──
     # affinity=(1,0)=CPU0: LVGL 完整 UI 不能在 _thread(CPU1)裡跑
     # (MicroPython threading 限制:完整 UI 的 widget 操作在 thread 裡會崩潰)。
     # CPU1 跑其他 task(採樣等)。
-    if bus.has_lcd():
-        from tasks.lvgl_task import LvglTask
-        tm.register_task("lvgl", LvglTask, default_affinity=(1, 0), layer=-1)
-    else:
-        log.info("⏭ [CoreManager] lvgl skipped — no LCD/TFT on bus")
+#     if bus.has_lcd():
+#         from tasks.lvgl_task import LvglTask
+#         tm.register_task("lvgl", LvglTask, default_affinity=(1, 0), layer=-1)
+#     else:
+#         log.info("⏭ [CoreManager] lvgl skipped — no LCD/TFT on bus")
 
     # ═══════════════════════════════════════════════════════════════════
     # ▍第三區：邊緣 / 選配任務（Edge）—— 可有可無，依裝置角色啟用

@@ -5,7 +5,6 @@ from lib.sys.net_bus import NetBus
 from lib.sys.bus_sources import BusSources
 from action.sys_actions import on_connect_request
 from lib.sys.network_manager import NetworkManager
-from action.stream_actions import handle_supply_chain
 from lib.sys.log_service import get_log
 
 class NetworkTask(Task):
@@ -18,8 +17,6 @@ class NetworkTask(Task):
         self.tried_config_connect = False
         
         self.last_report = time.ticks_ms()
-        self.s = {"f_local": None, "last_hb": time.ticks_ms()}
-        self.hub = None
         self.now_bus = None
         self._last_discv_poll = 0
 
@@ -99,9 +96,7 @@ class NetworkTask(Task):
         sources.add(self.ctrl_bus)
         if self.now_bus:
             sources.add(self.now_bus)
-        
-        self.hub = bus.get_service("pixel_stream")
-        
+
         get_log().info("🚀 [NetworkTask] Data Router Active")
 
     def _on_connect_wrapper(self, url):
@@ -163,13 +158,6 @@ class NetworkTask(Task):
                         self.success += 1
                     except Exception as e:
                         get_log().error("Discovery Poll Error: {}".format(e))
-
-        # ═════════════════════════════════════════════════
-        # P3 — 數據路由 (WS 自帶 ping/pong，此處不需額外心跳)
-        # ═════════════════════════════════════════════════
-        worker_ctx = {"app": self.app, "send": self.ctrl_bus.write}
-        if self.hub is not None:
-            handle_supply_chain(self.hub, self.s, worker_ctx)
 
     def on_stop(self):
         super().on_stop()
