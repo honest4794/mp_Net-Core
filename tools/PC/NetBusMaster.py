@@ -36,7 +36,13 @@ DEFAULT_CONFIG = {
     "loop_play": 0,                       # 1 = 循環播放 (slave play_mode=1, 播完自動重頭)
     # 🔧 主動同步幀率 (0x3001 STREAM_INFO, 現有指令): 播放期間定時廣播設定 fps
     "active_sync_fps": 0,                 # 0 = 關閉 (被動同步); >0 = 定時廣播此 fps 給所有目標
-    "active_sync_interval_s": 10.0        # 廣播間隔 (秒)
+    "active_sync_interval_s": 10.0,       # 廣播間隔 (秒)
+    # 🔧 播放會話 / 離線自癒: 播放期間定期向 slave 查詢播放進度 (0x1101→0x1102)
+    "progress_poll_interval_s": 1.0,      # 進度輪詢間隔 (秒)
+    # 🔧 離線裝置自動敲門 (unicast 0x1001 DISCOVER) 間隔: 裝置斷線後被自動叫回
+    "reconnect_knock_interval_s": 10.0,   # 敲門間隔 (秒)
+    # 🔧 中途加入 (mid-join) 的 prepare/READY 握手重試次數
+    "join_retry_count": 3
 }
 
 # ==================== 跨平台輸入處理 ====================
@@ -472,7 +478,12 @@ class MonitorPanel:
             "錯誤": "\033[91m",
             "無響應": "\033[31m", # 暗紅/紅色
             "中途加入": "\033[92m", # 🔧 中途加入 (同步播放)
-            "配對中": "\033[94m"    # 🔧 配對模式
+            "配對中": "\033[94m",   # 🔧 配對模式
+            "完成": "\033[92m",     # 🔧 傳輸/作業完成
+            "已停止": "\033[90m",   # 🔧 使用者取消
+            "播完": "\033[96m",     # 🔧 本次串流自然播完
+            "重啟中": "\033[94m",   # 🔧 重啟設備等待回連
+            "配置更新": "\033[92m"  # 🔧 配置已更新
         }
         status_color = status_colors.get(monitor.status, "\033[0m")
         if monitor.transfer_label:
@@ -529,6 +540,22 @@ class MonitorPanel:
             # 🔧 配對模式: 播放本地燈效中
             info = "播放本地燈效,等待確認..."
         
+        elif monitor.status == "播完":
+            # 🔧 本次串流已自然播完 (非循環)
+            frame_str = f"{monitor.current_frame}/{monitor.total_frames}"
+            info = f"本次已播完 │ Frame: {frame_str}"
+        
+        elif monitor.status == "重啟中":
+            # 🔧 韌體/配置更新後的重啟等待
+            info = "重啟中, 等待重新連線..."
+        
+        elif monitor.status in ("完成", "配置更新"):
+            # 🔧 傳輸/作業完成 (清除殘留的「閒置 Xs」顯示)
+            info = f"✅ {monitor.status}"
+        
+        elif monitor.status == "已停止":
+            info = "已停止 (使用者取消)"
+        
         else:
             idle_time = int(time.time() - monitor.last_update)
             info = f"閒置 {idle_time}s"
@@ -550,6 +577,7 @@ class DeviceManager:
         self.slaves = {}  # {device_id: {conn, addr, parser, ...}}
         self.lock = threading.Lock()
         self.running = True
+        self._knock_last = {}   # 🔧 自動敲門節流: {ip: last_knock_ts}
         
         # 啟動健康檢查線程
         self.health_thread = threading.Thread(target=self._health_check_loop, daemon=True)
@@ -652,6 +680,45 @@ class DeviceManager:
         except Exception:
             pass
 
+    def _knock_offline_devices(self):
+        """🔧 自動敲門: 對「離線/無響應」且有 IP 紀錄的設備週期性 unicast DISCOVER (0x1001)。
+
+        背景: slave 的 WS 斷線後只會被動等 DISCOVER 敲門 (見 slave/tasks/network.py),
+        不會自己重連; PC 端若不敲門, 半夜斷線的設備就永遠回不來, 中途加入的
+        自動續播自然不會發生。本方法由健康檢查循環週期呼叫, 把離線設備叫回,
+        連上後 handle_client 的中途加入邏輯會自動接回播放。
+        """
+        master = getattr(self, "master", None)
+        if master is None:
+            return
+        mapping = master.config.get("mapping", {})
+        if not mapping:
+            return
+        interval = float(master.config.get("reconnect_knock_interval_s", 10.0))
+        interval = max(5.0, interval)
+        now = time.time()
+        for cid, info in mapping.items():
+            if not isinstance(info, dict):
+                continue
+            ip = (info.get("ip") or "").strip()
+            if not ip:
+                continue
+            node = self.slaves.get(cid)
+            mon = self.panel.monitors.get(cid)
+            # 已連線且非離線/無響應 → 不需要敲門
+            if node is not None and (mon is None or mon.status not in ("離線", "無響應")):
+                continue
+            last = self._knock_last.get(ip, 0.0)
+            if now - last >= interval:
+                self._knock_last[ip] = now
+                if master._knock_ip(ip, cid):
+                    print(f"🔔 [Health] {cid} ({ip}) 離線/無響應 → 自動敲門叫回...")
+        # 清理長期不在 mapping 的節流紀錄 (防無限增長)
+        known_ips = {str(v.get("ip", "")) for v in mapping.values() if isinstance(v, dict)}
+        for ip in list(self._knock_last.keys()):
+            if ip not in known_ips:
+                self._knock_last.pop(ip, None)
+
     def _health_check_loop(self):
         """每 5 秒檢查一次設備健康狀態 (主動探測版)。
 
@@ -663,6 +730,11 @@ class DeviceManager:
         """
         while self.running:
             time.sleep(5)
+            # 🔧 自動敲門: 離線/無響應的設備會被 DISCOVER 叫回, 連上後自動接回播放
+            try:
+                self._knock_offline_devices()
+            except Exception as e:
+                print(f"⚠️ [Health] 自動敲門錯誤: {e}")
             now = time.time()
             timeout = 30.0   # 無流量上限
             probe_at = 15.0  # 超過此秒數沒流量 → 主動探測
@@ -675,8 +747,8 @@ class DeviceManager:
                 monitor = self.panel.monitors.get(cid)
                 if not monitor:
                     continue
-                # 傳輸中/下載中/準備中 → 強制餵狗
-                if monitor.status in ["傳輸中", "下載中", "準備中"] or "Up " in monitor.status:
+                # 傳輸中/下載中/準備中/重啟中 → 強制餵狗 (等重啟回連時別標無響應)
+                if monitor.status in ["傳輸中", "下載中", "準備中", "重啟中"] or "Up " in monitor.status:
                     monitor.last_update = now
                     continue
 
@@ -728,10 +800,23 @@ class NetBusMaster:
         self.is_paused = False
         self.play_lock = threading.Lock()
         self.playback_start_time = 0
+        self.paused_since = None     # 🔧 暫停起始時刻 (中途加入計算要扣掉暫停時間)
+        self.paused_total = 0.0      # 🔧 本次會話累計暫停秒數
         self.current_fps = 40
         self.current_play_mode = 0   # 🔧 目前播放的 play_mode (0=一次, 1=循環), 中途加入沿用
         self._active_sync_stop = threading.Event()   # 🔧 主動同步幀率廣播執行緒
         self._active_sync_thread = None
+        
+        # 🔧 播放會話狀態 (離線重連自動續播 / 進度輪詢用)。
+        # play_session_active: go 開始 → stop_all 結束; 音檔播完不等於會話結束
+        # (循環播放時燈效仍繼續), 所以中途加入改用此旗標, 不再看 is_playing。
+        self.play_session_active = False
+        self.audio_finished = False
+        self._dev_finished = set()        # 🔧 本次會話「已自然播完」的設備 (重連不再自動續播)
+        self._dev_drift = {}              # 🔧 每台設備的「連續進度偏差」次數 (3 次 → SEEK 校正)
+        self._progress_poll_stop = threading.Event()   # 🔧 播放進度輪詢執行緒
+        self._progress_poll_thread = None
+        self._local_ip_ts = 0.0           # 🔧 敲門時 local_ip 定期刷新節流
         
         self.config_file = config_file
         self.config = copy.deepcopy(DEFAULT_CONFIG)
@@ -742,6 +827,10 @@ class NetBusMaster:
         self.transfer_cancel = threading.Event()
         self._transfer_kb_stop = threading.Event()
         self._transfer_kb_thread = None
+        
+        # 🔧 只載入 bins/metadata.json (總幀數等), 不載入大型 bin 資料 —
+        # 讓工具重開後連上設備時面板就有正確的 total_frames (進度% 才能顯示)
+        self._load_metadata_only()
         
         threading.Thread(target=self.start_ws_server, daemon=True).start()
     
@@ -846,12 +935,25 @@ class NetBusMaster:
         cid = f"PENDING_{addr[1]}"
         
         try:
-            header_data = conn.recv(1024).decode()
-            if not header_data or "Upgrade: websocket" not in header_data:
+            # 🔧 循環讀 HTTP header 直到 \r\n\r\n (TCP 可能切段, 舊版只 recv 一次會
+            #    在慢速 Wi-Fi 重連時拿到半截 header → 握手被誤判失敗)
+            conn.settimeout(5.0)
+            header_data = b""
+            try:
+                while b"\r\n\r\n" not in header_data and len(header_data) < 8192:
+                    chunk = conn.recv(1024)
+                    if not chunk:
+                        break
+                    header_data += chunk
+            except socket.timeout:
+                pass
+            conn.settimeout(None)
+            if not header_data or b"Upgrade: websocket" not in header_data:
                 conn.close()
                 return
             
-            first_line = header_data.split('\r\n')[0]
+            header_text = header_data.decode(errors="ignore")
+            first_line = header_text.split('\r\n')[0]
             parts = first_line.split(' ')
             if len(parts) >= 2:
                 path = parts[1].strip('/')
@@ -900,67 +1002,21 @@ class NetBusMaster:
             print(f"👋 [Connect] {cid} 已上線 (PlayID {play_id})")
             
             # --- Mid-Stream Join Logic (🔧 延遲補償 + READY 等待, 推算最準確幀號) ---
-            if self.is_playing:
+            # 🔧 改用 play_session_active (go→stop_all), 不再用 is_playing:
+            #    音檔播完 is_playing 會被音訊執行緒設 False, 之後重連就永遠
+            #    不觸發自動續播; 會話旗標只在使用者停止時才結束。
+            if self.play_session_active:
                 try:
-                    # 異步執行加入流程，避免阻塞主循環
-                    def _join_task(target_cid):
-                        try:
-                            node = self.device_manager.get_slave(target_cid)
-                            if node is None:
-                                return
-
-                            # 0. 量測此設備的單向延遲 (RTT/2), 供幀號補償
-                            lat_s = 0.0
-                            lat = self.measure_latency(target_cid, samples=3)
-                            if lat is not None:
-                                lat_s = lat / 1000.0
-                                self._log_latency([(target_cid, lat)], note="mid-join")
-                                print(f"   📡 {target_cid} latency {lat:.1f}ms → 補償 {lat_s*1000:.0f}ms")
-
-                            # 1. 發送準備指令 (與 step_4 保持一致; play_mode 沿用目前播放模式)
-                            self.send_pkt([target_cid], 0x3009, {
-                                "file_name": "data.bin",
-                                "block_id": 0,
-                                "play_mode": self.current_play_mode
-                            })
-
-                            # 2. 等待從機 READY (0x3008) — 代表已 seek 並預填第一幀
-                            node["ready_event"].clear()
-                            if not node["ready_event"].wait(timeout=5.0):
-                                print(f"❌ {target_cid} READY timeout, skip play")
-                                self.panel.update_device(target_cid, status="錯誤", error_msg="READY timeout")
-                                return
-
-                            # 3. 就緒瞬間重新計算幀號:
-                            #    其他設備已播放 elapsed 秒; PLAY 指令到達 slave 時又過了
-                            #    latency 秒 → 目標幀 = (elapsed + latency) * fps
-                            now = time.time()
-                            elapsed = now - self.playback_start_time
-                            if elapsed < 0: elapsed = 0
-                            target_frame = int((elapsed + lat_s) * self.current_fps)
-
-                            # 處理循環播放的幀數計算
-                            play_id = self.config["mapping"].get(target_cid, {}).get("play_id")
-                            if play_id is not None:
-                                meta = self.pxld_metadata.get(play_id)
-                                if meta and meta.get("total_frames", 0) > 0:
-                                    target_frame = target_frame % meta["total_frames"]
-
-                            print(f"🔄 [Mid-Join] {target_cid} → frame {target_frame} (elapsed {elapsed:.2f}s + lat {lat_s*1000:.0f}ms)")
-
-                            # 4. 發送帶幀號的播放指令
-                            self.send_pkt([target_cid], 0x300A, {"start_frame": target_frame})
-                            self.panel.update_device(target_cid, status="中途加入")
-                        except Exception as e:
-                            print(f"❌ Join task failed for {target_cid}: {e}")
-
-                    threading.Thread(target=_join_task, args=(cid,), daemon=True).start()
-
+                    # 異步執行加入流程，避免阻塞 recv 主循環
+                    threading.Thread(target=self._mid_join_task, args=(cid,), daemon=True).start()
                 except Exception as e:
                     print(f"❌ Mid-Join logic error: {e}")
             # --- END Mid-Join Logic ---
             
-            parser = self.slaves[cid]["parser"]
+            node = self.device_manager.get_slave(cid)
+            if node is None:   # 🔧 極端 case: 剛註冊就被移除, 直接收尾
+                return
+            parser = node["parser"]
             ws_ass = WSFrameAssembler()  # 🔧 跨 recv 重組 WS frame (TCP 切分安全)
             while self.running:
                 raw = conn.recv(4096)
@@ -1005,6 +1061,214 @@ class NetBusMaster:
             except:
                 pass
     
+    def _mid_join_task(self, target_cid, _attempt=0):
+        """🔧 中途加入 (mid-join): 裝置離線後重連, 自動接回目前播放的「正確進度」。
+
+        完整流程 (缺一不可):
+          1. 量延遲 (幀號補償)
+          2. 0x3009 準備 → 等 0x3008 READY (重試 join_retry_count 次)
+          3. 依主控時鐘推算目標幀 (扣暫停時間; 循環取模; 非循環 clamp)
+          4. 0x300A 帶幀號播放 + 0x3001 同步 fps (剛接回的設備用主控節拍)
+          5. master 暫停中 → 補發 0x3005 同步暫停
+          6. 🔧 接回後驗證: 輪詢確認 slave 真的有在播; 沒播 → 再救一輪;
+             進度偏差過大 → 0x3004 SEEK 校正回正確進度
+
+        修正重點 (舊版只做到第 4 步就停, 所以 Console 只看到「中途加入」):
+          - 觸發條件改用 play_session_active (音檔結束 ≠ 會話結束)
+          - ready_event 在 send 之前 clear; 每次嘗試重抓 node (防重連換 dict)
+          - 接回後「驗證 + 校正」閉環, 保證按著正確進度播放
+        """
+        with self.play_lock:
+            session = self.play_session_active
+            finished = target_cid in self._dev_finished
+            paused = self.is_paused
+            play_mode = self.current_play_mode
+        if not session:
+            return
+        if finished:
+            print(f"ℹ️ [Mid-Join] {target_cid} 本次會話已自然播完, 不自動續播")
+            return
+
+        self.panel.update_device(target_cid, status="中途加入")
+        print(f"🔗 [Mid-Join] {target_cid} 開始接回流程 (attempt {_attempt + 1})...")
+
+        # 0. 量測此設備的單向延遲 (RTT/2), 供幀號補償
+        lat_s = 0.0
+        lat = self.measure_latency(target_cid, samples=3)
+        if lat is not None:
+            lat_s = lat / 1000.0
+            self._log_latency([(target_cid, lat)], note="mid-join")
+            print(f"   📡 {target_cid} latency {lat:.1f}ms → 補償 {lat_s*1000:.0f}ms")
+
+        # 非循環且主控已播到結尾 → 視為已播完, 不續播
+        total = self._device_total_frames(target_cid)
+        if play_mode == 0 and total > 0:
+            done_frame = int((time.time() - self.playback_start_time) * self.current_fps)
+            if done_frame >= total:
+                self._dev_finished.add(target_cid)
+                self.panel.update_device(target_cid, status="播完")
+                print(f"ℹ️ [Mid-Join] {target_cid} 非循環已播完 (frame {total}), 不續播")
+                return
+
+        attempts = max(1, self._cfg_int("join_retry_count", 3))
+
+        # 1+2. 準備 → 等 READY (0x3008), 失敗重試
+        node = None
+        for attempt in range(1, attempts + 1):
+            if not self.play_session_active:
+                return
+            node = self.device_manager.get_slave(target_cid)
+            if node is None:
+                return
+            # 🔧 先 clear 再 send (修 race); node 每次重抓 (修重連換 dict 的 race)
+            node["ready_event"].clear()
+            self.send_pkt([target_cid], 0x3009, {
+                "file_name": "data.bin",
+                "block_id": 0,
+                "play_mode": play_mode
+            })
+            if node["ready_event"].wait(timeout=5.0):
+                break
+            print(f"⚠️ {target_cid} READY timeout (attempt {attempt}/{attempts})")
+            if attempt < attempts:
+                time.sleep(1.0)
+        else:
+            # 🔧 握手全數失敗 → 整輪重來一次 (剛連上時 slave 可能還在開機/忙線)
+            if _attempt == 0:
+                print(f"🔁 [Mid-Join] {target_cid} READY 握手失敗 → 整輪重來一次")
+                time.sleep(1.0)
+                self._mid_join_task(target_cid, _attempt=1)
+                return
+            print(f"❌ {target_cid} READY timeout, skip play")
+            self.panel.update_device(target_cid, status="錯誤", error_msg="READY timeout")
+            return
+
+        # 3. 就緒瞬間推算目標幀 = (有效播放時間 + 單向延遲補償) * fps
+        with self.play_lock:
+            paused_extra = self.paused_total
+            if self.paused_since is not None:
+                paused_extra += time.time() - self.paused_since
+        elapsed = time.time() - self.playback_start_time - paused_extra
+        if elapsed < 0:
+            elapsed = 0
+        target_frame = int((elapsed + lat_s) * self.current_fps)
+        if total > 0:
+            target_frame = target_frame % total if play_mode == 1 else min(target_frame, total - 1)
+        print(f"🔄 [Mid-Join] {target_cid} → frame {target_frame}")
+
+        # 4. 帶幀號播放 + 同步 fps; master 暫停中則讓新裝置也跟上暫停
+        self.send_pkt([target_cid], 0x300A, {"start_frame": target_frame})
+        if self.current_fps > 0:
+            self.send_pkt([target_cid], 0x3001, {
+                "total_blocks": 0,
+                "frames_per_block": 0,
+                "fps": int(self.current_fps)
+            })
+        if paused:
+            self.send_pkt([target_cid], 0x3005, {"pause": 1})
+        self._dev_finished.discard(target_cid)
+        self.panel.update_device(target_cid, status=("暫停" if paused else "播放中"))
+        self.panel.update_device(target_cid, current_frame=target_frame)
+
+        # 5. 🔧 接回後驗證閉環: 確認 slave 真的開始播, 進度偏差就 SEEK 拉回
+        ok = self._verify_join(target_cid, target_frame)
+        if not ok and _attempt == 0:
+            print(f"🔁 [Mid-Join] {target_cid} 接回後未開始播放 → 整輪重來一次")
+            time.sleep(1.0)
+            self._mid_join_task(target_cid, _attempt=1)
+            return
+        if ok:
+            print(f"✅ [Mid-Join] {target_cid} 已接回播放 (frame {target_frame}{', 同步暫停' if paused else ''})")
+
+    def _verify_join(self, target_cid, target_frame, rounds=3):
+        """接回後驗證: 輪詢 slave 狀態, 確認 stream 真的有在跑且進度正確。
+
+        回 True = 播放中/已對齊; False = 3 輪都未開始 (接口/狀態沒生效)。
+        進度偏差超過容差 → 發 0x3004 SEEK 校正 (slave 端 seek 後回 0x3008,
+        狀態自動回 PLAYING, 不需要重送 0x300A)。
+        """
+        for rnd in range(1, rounds + 1):
+            time.sleep(1.2)
+            if not self.play_session_active:
+                return True   # 會話已結束, 不再折騰
+            node = self.device_manager.get_slave(target_cid)
+            if node is None:
+                return True   # 又斷線了 — 交給下次重連的中途加入
+            st = self.query_status(target_cid, timeout=1.0)
+            if not st:
+                continue
+            cur, pos, active, mem_free, _rid = self._parse_status(st)
+            if active is False:
+                print(f"   ⏳ [Verify] {target_cid} 第{rnd}輪: stream_active=False (可能仍在準備)")
+                continue
+            # 有在播 → 對齊檢查
+            self.panel.update_device(target_cid, current_frame=cur, mem_free=mem_free)
+            total = self._device_total_frames(target_cid)
+            if pos is not None and total > 0:
+                expected = self._expected_frame(target_cid)
+                drift = abs(pos - expected)
+                drift_tol = max(30, int(total * 0.03))
+                if drift > drift_tol:
+                    print(f"   🩹 [Verify] {target_cid} 進度偏差 {drift} 幀 (pos={pos}, expect={expected}) → SEEK 校正")
+                    self.send_pkt([target_cid], 0x3004, {"target_block": 0, "target_frame": expected})
+                else:
+                    print(f"   ✅ [Verify] {target_cid} 播放中且進度正確 (frame {pos}/{total})")
+            return True
+        self.panel.update_device(target_cid, status="錯誤", error_msg="join後未開始播放")
+        return False
+
+    # ==================== 狀態解析 (新舊韌體兩種 0x1102 格式相容) ====================
+    @staticmethod
+    def _parse_status(status_data):
+        """解析 slave 回報的 status_json → (current_frame, pos_frame, active, mem_free, real_id)。
+
+        🔧 接口正確性重點: 韌體歷史上存在兩種 0x1102 內容格式 —
+          新格式 bus.get_metrics():  stream_pos_frame / played_frames / stream_active / slave_id
+          舊格式 get_runtime_info(): frame_count / is_streaming / id (無 played_frames)
+        PC 端兩種 key 都接受, 否則舊韌體回報的進度會被當 0 (看起來像「PC 沒收到」)。
+        """
+        pos = status_data.get("stream_pos_frame")
+        if pos is None:
+            pos = status_data.get("pos_frame")
+        played = status_data.get("played_frames")
+        if played is None:
+            played = status_data.get("frame_count", 0)
+        active = status_data.get("stream_active")
+        if active is None:
+            active = status_data.get("is_streaming")
+        cur = int(pos) if pos is not None else int(played)
+        real_id = status_data.get("id") or status_data.get("slave_id")
+        return cur, pos, active, status_data.get("mem_free", 0), real_id
+
+    def _device_total_frames(self, cid):
+        """該設備對應 PlayID 的總幀數 (metadata), 無資料回 0。"""
+        play_id = self.config.get("mapping", {}).get(cid, {}).get("play_id")
+        if play_id is None:
+            return 0
+        return self.pxld_metadata.get(play_id, {}).get("total_frames", 0) or 0
+
+    def _expected_frame(self, cid):
+        """依主控時鐘推算該設備「現在應該在哪一幀」。
+
+        有效播放時間 = now - playback_start_time - 暫停時間; 循環模式取模,
+        非循環 clamp 到最後一幀。中途加入與進度校正共用此推算, 保證一致。
+        """
+        with self.play_lock:
+            paused_extra = self.paused_total
+            if self.paused_since is not None:
+                paused_extra += time.time() - self.paused_since
+        elapsed = time.time() - self.playback_start_time - paused_extra
+        if elapsed < 0:
+            elapsed = 0
+        frame = int(elapsed * self.current_fps)
+        total = self._device_total_frames(cid)
+        if total > 0:
+            if self.current_play_mode == 1:
+                frame = frame % total
+            else:
+                frame = min(frame, max(0, total - 1))
+        return frame
+
     def dispatch_logic(self, cid, cmd, payload):
         c_def = self.store.get(cmd)
         # 🔧 修復: 帶 store 解碼 (CPython 走純 Python 路徑), 否則欄位全空
@@ -1015,10 +1279,9 @@ class NetBusMaster:
             try:
                 status_data = json.loads(args["status_json"])
                 
-                # 🔧 修复: MCU 回报的 played_frames 实际是当前已播放帧号
-                current_frame = status_data.get('played_frames', 0)  # ✅ 这是帧号
-                mem_free = status_data.get('mem_free', 0)
-                real_id = status_data.get('id')
+                # 🔧 用 _parse_status 統一解析 (新舊韌體格式都接受):
+                #   stream_pos_frame(檔內絕對幀號) 優先 → played_frames/frame_count 兜底
+                current_frame, pos_frame, active, mem_free, real_id = self._parse_status(status_data)
                 
                 # 🔧 更新当前帧号 (触发 FPS 计算)
                 self.panel.update_device(
@@ -1050,6 +1313,18 @@ class NetBusMaster:
             except Exception as e:
                 pass
         
+        elif cmd == 0x1201:
+            # 🔧 舊式 HEARTBEAT (0x1201): 部分韌體版本會週期主動推 (slave 主動回報通道)。
+            #    它不含播放進度, 只快取 uptime/mem 供查詢使用, 並當作存活心跳。
+            if cid in self.slaves:
+                self.slaves[cid]["status_data"] = {
+                    "slave_id": args.get("slave_id", cid),
+                    "uptime_ms": args.get("uptime_ms", 0),
+                    "mem_free": args.get("mem_free", 0),
+                    "ws_connected": args.get("ws_connected", 1),
+                }
+                self.slaves[cid]["status_event"].set()
+
         elif cmd == 0x3008:
             # 🔧 STREAM_READY_ACK: slave 已完成準備/跳轉, 供中途加入計算最準確幀號
             if cid in self.slaves:
@@ -1582,6 +1857,106 @@ class NetBusMaster:
             print("ℹ️ 暫不確認 — MCU 將在 3 次重啟後自動復原未確認的檔案")
             print("   (之後可再用 Step 0 檔案管理 或本工具的確認/復原指令處理)")
 
+    # ==================== 重啟確認流程 (0x100F REBOOT) ====================
+    def _reboot_and_confirm(self, targets=None, wait_seconds=90):
+        """🔧 上傳/更新後的重啟確認流程 (逐台選擇 + 等待回連 + 確認新韌體生效)。
+
+        固件/關鍵配置要重啟才會生效; 上傳完成後讓用戶自己選擇:
+          [a] 全部重啟 / [n] 挑選幾台 / [Enter] 暫不重啟
+        重啟後等待設備自動連回 (slave 開機會依紀錄的 master IP 自動連線),
+        逐台回報, 並查詢狀態確認設備真的活著。
+        """
+        targets = [t for t in (targets or self.selected_targets) if t in self.slaves]
+        if not targets:
+            print("⚠️ 無在線設備可重啟")
+            return
+
+        print("\n🔁 [Reboot] 重啟設備讓新韌體/配置生效:")
+        for i, tid in enumerate(targets):
+            print(f"   {i+1}. {tid}")
+        ch = input("👉 [a] 全部重啟 / [n] 挑選部分 / [Enter] 暫不重啟: ").strip().lower()
+        if ch == "":
+            print("ℹ️ 暫不重啟 (之後可再更新確認)")
+            return
+        chosen = targets
+        if ch == "n":
+            chosen = []
+            sel = input("👉 輸入編號 (逗號分隔, 例: 1,3): ").strip()
+            try:
+                for part in sel.replace("，", ",").split(","):
+                    idx = int(part.strip()) - 1
+                    if 0 <= idx < len(targets):
+                        chosen.append(targets[idx])
+            except Exception:
+                print("❌ 輸入無效")
+                return
+        elif ch != "a":
+            print("❌ 無效選擇")
+            return
+        if not chosen:
+            print("ℹ️ 未選擇任何設備")
+            return
+
+        # 記下舊連線身份, 之後判斷「是否真的重啟回連」(新 socket)
+        old_conns = {}
+        for tid in chosen:
+            node = self.slaves.get(tid)
+            if node is not None:
+                old_conns[tid] = id(node["conn"])
+
+        for tid in chosen:
+            print(f"🔁 [Reboot] {tid} 送出重啟指令 (0x100F)...")
+            self.send_pkt([tid], 0x100F, {"delay_ms": 500})
+            self.panel.update_device(tid, status="重啟中")
+
+        print(f"\n⏳ 等待設備重啟回連 (最多 {wait_seconds}s, slave 開機會自動連回 master)...")
+        deadline = time.time() + wait_seconds
+        back = set()
+        while time.time() < deadline and len(back) < len(chosen):
+            time.sleep(1)
+            for tid in chosen:
+                if tid in back:
+                    continue
+                node = self.slaves.get(tid)
+                if node is not None:
+                    is_new = tid not in old_conns or id(node["conn"]) != old_conns[tid]
+                    if is_new:
+                        back.add(tid)
+                        print(f"   ✅ {tid} 已回連 (新連線)")
+                    else:
+                        # 連線沒斷 → 可能沒重啟成功; 稍後統一報告
+                        pass
+            # 中途可退出
+            if input_handler.kbhit():
+                try:
+                    if input_handler.getch().lower() in ("q", "s"):
+                        print("ℹ️ 等待被中斷")
+                        break
+                except Exception:
+                    pass
+
+        print("\n📊 [Reboot] 結果:")
+        for tid in chosen:
+            if tid in back:
+                st = self.query_status(tid, timeout=2.0)
+                up = (st or {}).get("uptime_ms")
+                if st:
+                    up_str = f", uptime {up}ms" if up is not None else ""
+                    print(f"   ✅ {tid}: 已回連且狀態正常{up_str}")
+                    self.panel.update_device(tid, status="待機")
+                else:
+                    print(f"   ⚠️ {tid}: 已回連但狀態查詢無回應")
+                    self.panel.update_device(tid, status="待機")
+            else:
+                node = self.slaves.get(tid)
+                if node is not None:
+                    print(f"   ⚠️ {tid}: 連線未中斷過 (可能未重啟成功, 請確認 0x100F 是否有被執行)")
+                    self.panel.update_device(tid, status="待機")
+                else:
+                    print(f"   ❌ {tid}: {wait_seconds}s 內未回連 (可先 Scan 再確認)")
+                    self.panel.update_device(tid, status="離線")
+        print("💡 提示: 重啟後 slave 開機自動連 master; 若未回連請用 Step 1 掃描/敲門。")
+
     def _upload_bytes(self, tid, data, remote_path, file_idx=1, total_files=1, file_id=None):
         node = self.slaves.get(tid)
         if not node:
@@ -1895,7 +2270,8 @@ class NetBusMaster:
                             retry_count += 1
                             if retry_count >= 3:
                                 raise e
-                            self.panel.update_device(tid, status=f"Retry {retry_count} {r_path[:10]}...")
+                            # 🔧 狀態保持「傳輸中」, 重試資訊放 transfer_label (panel 才有進度條)
+                            self.panel.update_device(tid, status="傳輸中", transfer_label=f"Retry {retry_count} {r_path[:16]}")
                             time.sleep(1)
                     # 🔧 root 目標: 上傳到 /sd 暫存後, 搬到 root (自動 .bak 備份 + pending)
                     #    /sd/... 開頭的路徑表示本來就在 /sd, 不搬運 (例如 data.bin 走 deploy 不在此)
@@ -2013,6 +2389,8 @@ class NetBusMaster:
                 
         time.sleep(1)
         print("\n✅ 手動上傳完成")
+        # 🔧 讓用戶選擇是否重啟確認 (例如上傳了 .py/.json 等需要重啟的檔案)
+        self._reboot_and_confirm(targets=self.selected_targets)
         self.panel.stop()
         ConsoleUI.show_cursor()
 
@@ -2345,6 +2723,8 @@ class NetBusMaster:
                 
         time.sleep(1)
         print("\n✅ 固件更新完成")
+        # 🔧 固件要重啟才會生效 → 讓用戶選擇重啟並確認回連
+        self._reboot_and_confirm(targets=self.selected_targets)
 
     def _modify_config(self):
         target = self.selected_targets[0]
@@ -2427,6 +2807,8 @@ class NetBusMaster:
                 
         print("\n✅ Config 更新完成")
         time.sleep(1)
+        # 🔧 配置變更多數要重啟才生效 → 讓用戶選擇重啟並確認回連
+        self._reboot_and_confirm(targets=self.selected_targets)
         
     def _delete_file(self):
         remote_path = input("\n👉 輸入要刪除的文件/目錄路徑 (e.g. /app.py): ").strip()
@@ -2576,6 +2958,28 @@ class NetBusMaster:
             {"server_ip": self.local_ip, "ws_url": f"ws://{self.local_ip}:{ws_port}"}
         )
         return Proto.pack(0x1001, p_data)
+
+    def _knock_ip(self, ip, label=""):
+        """🔧 對單一 IP 發 unicast DISCOVER (0x1001) 敲門, 叫該設備連回 WS。
+
+        供健康檢查自動敲門使用; slave 收到後會依 ws_url 主動連回 master。
+        local_ip 定期刷新 (DHCP 可能換 IP), 避免敲門包裡帶舊的 ws_url。
+        """
+        try:
+            now = time.time()
+            if now - self._local_ip_ts > 60.0:
+                self._local_ip_ts = now
+                self.local_ip = self.get_local_ip()
+            pkt = self._build_discover_packet()
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.settimeout(1.0)
+                s.sendto(pkt, (ip, self.config.get("upt_port", 9000)))
+                return True
+            finally:
+                s.close()
+        except Exception:
+            return False
 
     def _send_unicast_discover(self, ips, label=""):
         """對指定 IP 清單逐一 unicast DISCOVER (0x1001), 每個重發 3 次。"""
@@ -2850,6 +3254,26 @@ class NetBusMaster:
                 json.dump(self.pxld_metadata, f)
         except Exception as e:
             print(f"  ⚠️ Metadata save failed: {e}")
+
+    def _load_metadata_only(self):
+        """🔧 只載入 bins/metadata.json (不載 bin 資料)。
+
+        讓工具重開後 (未跑 Step 2) 也能知道各 PlayID 的 total_frames/fps:
+        - handle_client 註冊設備時面板 total_frames 正確 → 播放進度% 可顯示
+        - 中途加入計算目標幀時 current_fps 正確
+        """
+        bins_dir = os.path.join('.', 'bins')
+        meta_path = os.path.join(bins_dir, 'metadata.json')
+        if not os.path.exists(meta_path):
+            return
+        try:
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                loaded_meta = json.load(f)
+            loaded = {int(k): v for k, v in loaded_meta.items()}
+            self.pxld_metadata.update(loaded)
+            print(f"  📋 Metadata (only) loaded ({len(loaded)} entries) — total_frames/fps 可用")
+        except Exception as e:
+            print(f"  ⚠️ Metadata (only) load failed: {e}")
 
     def _load_bins(self):
         """從 bins/ 目錄載入 bin 檔案到 prepared_data"""
@@ -3368,6 +3792,12 @@ class NetBusMaster:
 
         for tid in self.selected_targets:
             self.panel.update_device(tid, status="播放中")
+            # 🔧 補齊面板 total_frames (工具重開沒跑 Step 2 時, 這裡用已載入的 metadata)
+            pid = self.config["mapping"][tid].get("play_id")
+            tf = 0
+            if pid is not None:
+                tf = self.pxld_metadata.get(pid, {}).get("total_frames", 0) or 0
+            self.panel.register_device(tid, pid, tf)
         
         self.panel.start(interactive=True)
         
@@ -3385,6 +3815,15 @@ class NetBusMaster:
         
         # 🔧 播放模式: 0=一次, 1=循環 (中途加入沿用此值)
         self.current_play_mode = 1 if self.config.get("loop_play", 0) else 0
+        
+        # 🔧 播放會話開始: go → stop_all 之間持續有效 (音檔播完 ≠ 會話結束)。
+        #    離線重連的自動續播 (mid-join) 依此旗標觸發。
+        with self.play_lock:
+            self.play_session_active = True
+            self.audio_finished = False
+            self.paused_since = None
+            self.paused_total = 0.0
+        self._dev_finished.clear()
         
         # 🔧 提前啟動 is_playing, 避免音訊執行緒啟動前的空窗期 (中途加入會漏掉)
         self.is_playing = True
@@ -3405,6 +3844,9 @@ class NetBusMaster:
         else:
             # Silent mode: just trigger
             self.send_pkt(self.selected_targets, 0x300A, {"start_frame": 0})
+        
+        # 🔧 播放進度輪詢: 每秒向 slave 查 0x1101, 用 0x1102 更新面板進度
+        self._start_progress_poll()
         
         # print("\n[控制提示] SPACE=暫停/繼續 | S=停止 | Q=退出") # 移除此行，因為 MonitorPanel 已經顯示了控制提示，且此行會導致 UI 錯亂
         
@@ -3427,14 +3869,21 @@ class NetBusMaster:
                         key = key.lower()
                         
                         if key == ' ':
+                            # 🔧 修復: 暫停/繼續用 0x3005 STREAM_PAUSE {pause}。
+                            #    舊版誤用 0x3003 (Direct Mode, 需 pixel_data) 與
+                            #    0x3004 (SEEK) — 按繼續會 seek 回第 0 幀重播!
                             with self.play_lock:
                                 self.is_paused = not self.is_paused
                                 if self.is_paused:
-                                    self.send_pkt(self.selected_targets, 0x3003, {})
+                                    self.paused_since = time.time()
+                                    self.send_pkt(self.selected_targets, 0x3005, {"pause": 1})
                                     for tid in self.selected_targets:
                                         self.panel.update_device(tid, status="暫停")
                                 else:
-                                    self.send_pkt(self.selected_targets, 0x3004, {})
+                                    if self.paused_since is not None:
+                                        self.paused_total += time.time() - self.paused_since
+                                        self.paused_since = None
+                                    self.send_pkt(self.selected_targets, 0x3005, {"pause": 0})
                                     for tid in self.selected_targets:
                                         self.panel.update_device(tid, status="播放中")
                         
@@ -3461,8 +3910,13 @@ class NetBusMaster:
         finally:
             # 確保退出播放循環時恢復原始模式
             input_handler.exit_raw_mode()
-            # 🔧 停止主動同步廣播
+            # 🔧 停止主動同步廣播 / 進度輪詢
             self._stop_active_sync()
+            self._stop_progress_poll()
+            # 🔧 會話結束 (使用者停止 或 非循環模式音檔播完)
+            with self.play_lock:
+                self.play_session_active = False
+            self._dev_finished.clear()
         
         for tid in self.selected_targets:
             self.panel.update_device(tid, status="待機")
@@ -3511,6 +3965,76 @@ class NetBusMaster:
                 pass
         self._active_sync_thread = None
 
+    # ==================== 播放進度輪詢 (0x1101 → 0x1102) ====================
+    def _start_progress_poll(self):
+        """🔧 啟動播放進度輪詢執行緒。
+
+        播放期間定期對每個目標發 0x1101 STATUS_GET, 用回覆的 0x1102 更新面板
+        (frame/進度%/mem)。舊韌體只「被問才答」, 沒有這個輪詢 PC 端永遠收不到
+        播放進度; 新韌體即使每秒主動推 0x1102, 輪詢也作為兜底與離線偵測。
+        """
+        self._stop_progress_poll()
+        self._progress_poll_stop.clear()
+        self._progress_poll_thread = threading.Thread(target=self._progress_poll_loop, daemon=True)
+        self._progress_poll_thread.start()
+
+    def _stop_progress_poll(self):
+        self._progress_poll_stop.set()
+        t = self._progress_poll_thread
+        if t:
+            try:
+                t.join(timeout=0.5)
+            except Exception:
+                pass
+        self._progress_poll_thread = None
+
+    def _progress_poll_loop(self):
+        interval = self._cfg_float("progress_poll_interval_s", 1.0)
+        interval = max(0.5, interval)
+        while not self._progress_poll_stop.is_set():
+            if not self.play_session_active:
+                break
+            targets = list(self.selected_targets)
+            for tid in targets:
+                if self._progress_poll_stop.is_set() or not self.play_session_active:
+                    break
+                if tid not in self.slaves:
+                    continue
+                st = self.query_status(tid, timeout=1.0)
+                if not st:
+                    continue
+                # 🔧 新舊韌體格式統一解析 (接口相容)
+                cur, pos, active, mem_free, _rid = self._parse_status(st)
+                self.panel.update_device(tid, current_frame=cur, mem_free=mem_free)
+                mon = self.panel.monitors.get(tid)
+                # 🔧 自然播完偵測: 裝置回報 stream_active=False 且已播過幀 →
+                #    非循環播放已到檔尾; 標記後, 之後重連不再自動續播。
+                #    (剛重啟的裝置 cur=0 且 stream_active=False, 不算播完,
+                #     避免把「重啟後還沒接回」誤判成「播完」)
+                if active is False:
+                    if mon and mon.status in ("播放中", "暫停", "中途加入") and cur > 0:
+                        self._dev_finished.add(tid)
+                        self.panel.update_device(tid, status="播完")
+                        print(f"🏁 [Play] {tid} 串流已自然播完 (frame {cur})")
+                    continue
+                # 🔧 進度校正: 播放中且回報進度與主控推算偏差過大 → SEEK 拉回。
+                #    (新韌體有 stream_pos_frame 才做; 舊韌體 played_frames 是
+                #    session 計數, 拿來比對會誤校正, 跳過)
+                if pos is not None and mon and mon.status == "播放中":
+                    total = self._device_total_frames(tid)
+                    if total > 0:
+                        expected = self._expected_frame(tid)
+                        tol = max(30, int(total * 0.03))
+                        if abs(pos - expected) > tol:
+                            self._dev_drift[tid] = self._dev_drift.get(tid, 0) + 1
+                            if self._dev_drift.get(tid, 0) >= 3:
+                                self._dev_drift[tid] = 0
+                                print(f"🩹 [Sync] {tid} 進度偏差 {abs(pos - expected)} 幀 (pos={pos}, expect={expected}) → SEEK 校正")
+                                self.send_pkt([tid], 0x3004, {"target_block": 0, "target_frame": expected})
+                        else:
+                            self._dev_drift[tid] = 0
+            self._progress_poll_stop.wait(interval)
+
     def _start_audio_stream(self, file_path):
         """啟動音訊流 (修復版)"""
         global mixer
@@ -3556,7 +4080,12 @@ class NetBusMaster:
                 traceback.print_exc()
             
             finally:
-                self.is_playing = False
+                # 🔧 音檔播完 ≠ 播放會話結束:
+                #   - 循環播放: 燈效繼續循環, is_playing 保持 True, 主迴圈/中途加入照常
+                #   - 非循環: 音檔結束代表整場結束 → is_playing=False 讓主迴圈退出
+                self.audio_finished = True
+                if self.current_play_mode != 1:
+                    self.is_playing = False
         
         threading.Thread(target=_play_task, daemon=True).start()
     
@@ -3564,8 +4093,15 @@ class NetBusMaster:
         global mixer
         self.is_playing = False
         self.is_paused = False
-        # 🔧 停止主動同步幀率廣播
+        # 🔧 播放會話結束 (離線重連不再自動續播)
+        with self.play_lock:
+            self.play_session_active = False
+            self.paused_since = None
+            self.paused_total = 0.0
+        self._dev_finished.clear()
+        # 🔧 停止主動同步幀率廣播 / 進度輪詢
         self._stop_active_sync()
+        self._stop_progress_poll()
         
         if self.selected_targets:
             self.send_pkt(self.selected_targets, 0x3002, {})

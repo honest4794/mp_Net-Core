@@ -13,6 +13,8 @@ _STREAM_STATE = {
     "frame_count": 0,   # 供給鏈已 commit 的原始幀計數
     "mode": 0,          # 0x3009 的原始 play_mode
     "streaming": False, # 是否串流播放（原始旗標）
+    "pos_frame": 0,     # 檔內絕對幀號（fp.tell()//frame_bytes，剛 commit 的那一幀）
+                        # 進度回報專用: seek/暫停/循環後仍準確 (played_frames 會歸零不準)
 }
 
 
@@ -98,3 +100,5 @@ def register(app):
     bus.register_provider("stream_frame_count", get_frame_count)
     bus.register_provider("stream_mode", get_mode)
     bus.register_provider("stream_active", is_streaming)
+    # 檔內絕對幀號 (播放進度): seek/暫停/循環後仍準確
+    bus.register_provider("stream_pos_frame", lambda: _STREAM_STATE.get("pos_frame", 0))

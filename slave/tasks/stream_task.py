@@ -30,6 +30,8 @@ from lib.sys.schema_codec import SchemaCodec
 from lib.sys.log_service import get_log
 from lib.sys.fs_manager import fs
 from action import stream_actions
+from action import status_actions
+import time
 
 
 # ── 狀態 ──
@@ -58,6 +60,7 @@ class StreamTask(Task):
         self._play_mode = 0
         self._cur_block = 0        # READY_ACK 回報用
         self._resume = _READY      # seek 完成後回到的狀態
+        self._last_report = 0      # 🔧 主動回報播放進度節流 (ticks_ms)
 
     def on_start(self):
         super().on_start()
@@ -123,6 +126,30 @@ class StreamTask(Task):
         except Exception as e:
             get_log().error("[Stream] READY_ACK 發送失敗: {}".format(e))
 
+    # ── 主動回報播放進度（0x1102, 每秒一次）──────────────
+    def _send_status_push(self):
+        """串流播放中主動推 0x1102 STATUS_RSP 給 master (含 stream_pos_frame)。
+
+        這是「slave 主動回報」通道: 與 PC 端 0x1101 查詢 (PC 主動) 互補 —
+        PC 不用一直問也能收到播放進度, 同時順帶證明設備還活著。
+        只在此處 (StreamTask 領域) 觸發, 不動網絡層。
+        """
+        try:
+            now = time.ticks_ms()
+            if time.ticks_diff(now, self._last_report) < 1000:
+                return
+            self._last_report = now
+            app = self.ctx.get("app")
+            ctrl = bus.get_service("net_bus_ctrl")
+            if app is None or ctrl is None or not ctrl.connected:
+                return
+            status_actions.on_status_get(
+                {"app": app, "send": ctrl.write},
+                {"query_type": 0},
+            )
+        except Exception as e:
+            get_log().error("[Stream] status push failed: {}".format(e))
+
     # ── 命令消費 ──────────────
     def _consume_cmds(self):
         s = bus.shared
@@ -163,6 +190,14 @@ class StreamTask(Task):
         play_mode = int(cmd.get("play_mode", 0) or 0)
         try:
             path = fs.resolve(file_name)[1]
+            # 🔧 重連/中途加入時可能已有開啟中的 handle (舊 stream 還在播) —
+            #    先關掉再重開, 否則反覆重連會把檔案描述子耗盡。
+            if self._fp is not None:
+                try:
+                    self._fp.close()
+                except Exception:
+                    pass
+                self._fp = None
             self._fp = open(path, "rb")
         except Exception as e:
             get_log().error("[Stream] 開檔失敗 {}: {}".format(file_name, e))
@@ -184,6 +219,22 @@ class StreamTask(Task):
         stream_actions._STREAM_STATE["frame_count"] = 0
         get_log().info("[Stream] load {} play_mode={}".format(path, play_mode))
 
+    # ── 檔內絕對幀號 (進度回報用) ──────────────
+    def _update_pos(self):
+        """commit 一幀後把目前檔內幀號寫進 _STREAM_STATE["pos_frame"]。
+
+        fp.tell() = (剛讀完那幀的下一位置) → 剛 commit 的幀號 = tell//frame_bytes - 1。
+        用絕對幀號而非 played_frames (RenderTask 的 session 計數, 暫停會歸零、
+        seek 後不重置) — PC 端顯示/自動續播計算才準。
+        """
+        try:
+            if self._fp is None or self._frame_bytes <= 0:
+                return
+            p = self._fp.tell() // self._frame_bytes
+            stream_actions._STREAM_STATE["pos_frame"] = max(0, p - 1)
+        except Exception:
+            pass
+
     def _do_load(self):
         view = self.hub.get_write_view()
         if view is None:
@@ -194,6 +245,7 @@ class StreamTask(Task):
             return
         self._fill_slot(view, n)
         self.hub.commit()
+        self._update_pos()
         stream_actions._STREAM_STATE["frame_count"] += 1
         self.state = _READY
         bus.shared["is_ready"] = True
@@ -241,6 +293,7 @@ class StreamTask(Task):
             return
         self._fill_slot(view, n)
         self.hub.commit()
+        self._update_pos()
         stream_actions._STREAM_STATE["frame_count"] += 1
         self.state = self._resume
         bus.shared["is_ready"] = True
@@ -271,6 +324,7 @@ class StreamTask(Task):
                 return
         self._fill_slot(view, n)
         self.hub.commit()
+        self._update_pos()
         stream_actions._STREAM_STATE["frame_count"] += 1
 
     def _reset(self):
@@ -308,6 +362,7 @@ class StreamTask(Task):
             self._do_seek()
         elif self.state == _PLAYING:
             self._do_play()
+            self._send_status_push()   # 🔧 播放中每秒主動回報進度 (0x1102)
 
     def on_stop(self):
         super().on_stop()
