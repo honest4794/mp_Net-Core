@@ -23,7 +23,7 @@ DEFAULT_CONFIG = {
     "max_workers": 50,
     "download_chunk_size": 1024 *2,
     "download_chunk_min": 1024,
-    "upload_chunk_size": 1024,
+    "upload_chunk_size": 4096,
     "upload_ack_timeout": 5.0,
     "upload_begin_timeout": 5.0,
     "upload_validation_timeout": 30.0,
