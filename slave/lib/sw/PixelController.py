@@ -137,7 +137,27 @@ class PixelStreamer:
             
             # 2. 硬體輸出
             ctrl.st_show()
-            
+
+    def clear_all(self):
+        """熄燈/停機：填中性值（燈=0 熄滅，motor=0x80 死區停），再推一幀到硬體。
+
+        不能全清 0 —— UART-412 的 0 = 全速正轉！中性值取各 controller 的
+        neutral_value（PixelController 無此屬性 → 0 = 熄燈；UartMotor = 0x80 停）。
+        與 stream_task._build_neutral() 同源。
+        """
+        buf = self.big_buffer
+        offs = self.offsets
+        for i, c in enumerate(self.controllers):
+            neutral = getattr(c, "neutral_value", 0)
+            off = offs[i]
+            for k in range(c.num_pixels):
+                o = off + (k << 2)
+                buf[o] = 0
+                buf[o + 1] = 0
+                buf[o + 2] = 0
+                buf[o + 3] = neutral
+        self.show_all()
+
     def close(self):
         for c in self.controllers:
             c.is_active = False

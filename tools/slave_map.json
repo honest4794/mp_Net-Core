@@ -17,6 +17,9 @@
     "loop_play": 0,
     "active_sync_fps": 0,
     "active_sync_interval_s": 10.0,
+    "progress_poll_interval_s": 1.0,
+    "reconnect_knock_interval_s": 10.0,
+    "join_retry_count": 3,
     "mapping": {
         "80F1B2D1F7DE": {
             "play_id": 0,
@@ -25,7 +28,8 @@
         },
         "80F1B2D1B758": {
             "play_id": 1,
-            "last_sha": "333c176a9114676a585084070ff674d000052cf7e07b8f2b3afefdd05d473857"
+            "last_sha": "03cce55ac573525fc7bcb965310e50e52e5231bceb40a8fd394ac2dbc75b5341",
+            "ip": "192.168.1.85"
         },
         "80F1B2D1F5F0": {
             "play_id": 2,
@@ -73,15 +77,18 @@
         },
         "80F1B2D1F5C8": {
             "play_id": 13,
-            "last_sha": "1c141db5ac40f194412c8044b7f3cb44c35865dd392427249ba684833ee87243"
+            "last_sha": "1c141db5ac40f194412c8044b7f3cb44c35865dd392427249ba684833ee87243",
+            "ip": "192.168.1.131"
         },
         "80F1B2D1B82A": {
             "play_id": 14,
-            "last_sha": "afb8a8967e28a7882d30d5906b4e403d16065d5b1fd94ecc4b55ad9f5bf8a3b3"
+            "last_sha": "8402ed5db3c6ea2770bb051f59ab2a330670937b765d89b59c6fdda99deb426d",
+            "ip": "192.168.1.127"
         },
         "80F1B2D1B75A": {
             "play_id": 15,
-            "last_sha": "9f42c676ec4d4af17ca7c200768e39a2904fde7ca76d3b4a24d3a7b022e832a6"
+            "last_sha": "9f42c676ec4d4af17ca7c200768e39a2904fde7ca76d3b4a24d3a7b022e832a6",
+            "ip": "192.168.1.87"
         },
         "80F1B2D1F530": {
             "play_id": 16,
@@ -133,7 +140,8 @@
         },
         "80F1B2D1F7B1": {
             "play_id": 28,
-            "last_sha": "263aea1f00aeeb6f74c733ef5898a74518b34b2b9238c01f3c5d83275b4d7b48"
+            "last_sha": "263aea1f00aeeb6f74c733ef5898a74518b34b2b9238c01f3c5d83275b4d7b48",
+            "ip": "192.168.1.33"
         },
         "80F1B2D1B75D": {
             "play_id": 29,
@@ -141,7 +149,8 @@
         },
         "80F1B2D1B820": {
             "play_id": 30,
-            "last_sha": "87e1a0c021ed0b1e075e484e259112d065dcde1f1ee0a2261d69115ccb57c26b"
+            "last_sha": "87e1a0c021ed0b1e075e484e259112d065dcde1f1ee0a2261d69115ccb57c26b",
+            "ip": "192.168.1.117"
         },
         "80F1B2D1B812": {
             "play_id": 31,
@@ -225,6 +234,11 @@
             "play_id": 1,
             "last_sha": "ad3d69fe7df1b754f3b87392b65be54b205d937aeaad2a76f693758f1a5f67e3",
             "ip": "10.10.1.26"
+        },
+        "E8F60AE0CC32": {
+            "play_id": 48,
+            "last_sha": "b1bb45c7a260268ba91a0a32ace37364dbeda3a494e27799779b17d4ff461235",
+            "ip": "192.168.1.35"
         }
     }
 }

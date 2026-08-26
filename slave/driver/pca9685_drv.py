@@ -6,10 +6,10 @@ pca9685_drv.py — PCA9685 PWM pixel 管理 (走 I2C)
 產物:    bus.register_service("pca9685_list", [...])
 
 address 特殊值:
-  "0x70" (112) — PCA9685 ALLCALL 廣播位址。直接註冊成一個 controller,
-                每幀 show() 寫入 0x70 = 對匯流排上所有 PCA9685 同時廣播。
   "0xFF" (255) — 自動掃描: i2c.scan() 找匯流排上所有 PCA9685, 排除 0x70
-                廣播位址, 逐個註冊 (之後加板子不用改 config)。
+                廣播位址, 逐個真實位址各建一個 controller, 對所有板子送出
+                相同內容 (之後加板子不用改 config)。
+  "0x70" (112) — PCA9685 ALLCALL 廣播位址, 不建議作為一般裝置位址。
 """
 from lib.sys.log_service import get_log
 from lib.hw.pca9685 import PCA9685
@@ -37,9 +37,8 @@ def _make_controller(pca, item):
 def _register_pca(i2c, addr, item, pca_list):
     """建立單一 PCA9685(位址 addr)並加入 pca_list。回傳 True/False。
 
-    使用者明確選擇「只接一顆 IC, 掃到就註冊」: 不做 probe 驗證,
-    掃描到任何非 0x70 位址都直接當 PCA9685 註冊並派送。
-    (若線上誤接了其他 I2C 裝置, 也會被當 PCA 寫入 — 需自行確認只有 PCA。)
+    每個位址各自一個 controller, 每幀 show() 對該位址個別寫入 64 bytes。
+    掃到就註冊 (只接 PCA9685, 不需 probe 擋其他 I2C 裝置)。
     """
     try:
         pca = PCA9685(i2c, address=addr)
@@ -52,21 +51,16 @@ def _register_pca(i2c, addr, item, pca_list):
 
 
 def _scan_and_register(i2c, item, pca_list):
-    """0xFF: 掃描匯流排, 逐個註冊真實位址的 PCA9685, 並在有實體板時加 0x70 廣播。
+    """0xFF: 掃描匯流排, 逐個真實位址各建一個 controller (排除 0x70)。
 
-    兩者是等效的「對所有板子下命令」:
-      - 逐個真實位址: 每台有自己的 controller, 寫入保證送達 (有回應)。
-      - 0x70 廣播:    PCA9685 ALLCALL 預設啟用, 對 0x70 寫入 = 所有板子
-                      同時收到 (scan 也會 ACK 0x70, 但把它當一般裝置逐個
-                      寫是錯的 — 它是廣播)。掃描時排除 0x70 避免重複,
-                      另外明確建立一個 0x70 廣播 controller。
+    每個掃到的位址一個 controller, 每幀 show() 對該位址個別寫入相同內容,
+    對所有板子送出相同 16 通道 (12-bit) 資料。這是「對所有板子下同一道命令」
+    最可靠的做法: 每個位址有 ACK、保證送達, 不依賴 ALLCALL 廣播。
 
-    真實位址 probe 讀 MODE1 (0x00): 讀得回來才視為 PCA9685, 避免把
-    EEPROM/感測器等誤註冊成 PWM 控制器。
-
-    0x70 廣播: 只有當「掃描到至少一台真實 PCA9685」時才建立 — 表示線上的
-    確有板子, 0x70 廣播才會被 ACK。線上完全沒板子時不建 0x70, 免得每幀
-    對不存在的位址刷 Show Error。
+    不採用 0x70 ALLCALL 廣播的原因: 廣播要能生效, 每顆晶片的 ALLCALL 位元
+    (MODE1 bit0) 都必須是 1。此位元上電預設 1, 但只要先前任何一次開機流程
+    對晶片寫過 MODE1=0x00/0x10 (例如舊版 setup()), 又沒斷電重啟, ALLCALL 就
+    會被關掉 → 0x70 不再 ACK (ENODEV), 廣播靜默失效。逐位址寫不受此影響。
     """
     try:
         found = [a for a in i2c.scan() if a != _PCA_ALL_CALL]
@@ -76,14 +70,8 @@ def _scan_and_register(i2c, item, pca_list):
     get_log().info("I2C Scan (excl 0x70): {}".format([hex(a) for a in found]))
     n_ok = 0
     for addr in found:
-        # 掃到就註冊 (只接一顆 IC, 不需要 probe 擋 EEPROM — 掃到即是目標)
         if _register_pca(i2c, addr, item, pca_list):
             n_ok += 1
-    # 有實體 PCA9685 才加 0x70 廣播 controller (線上沒板子就不建, 避免每幀 ENODEV)
-    if n_ok > 0:
-        if _register_pca(i2c, _PCA_ALL_CALL, item, pca_list):
-            n_ok += 1
-            get_log().info("PCA9685: +0x70 broadcast controller (ALLCALL)")
     get_log().info("PCA9685: registered {} via scan".format(n_ok))
 
 

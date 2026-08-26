@@ -166,7 +166,7 @@
     ]
   },
   "PCA9685": {
-    "enable": 0,
+    "enable": 1,
     "list": [
       {
         "GPIO": {"i2c": 0,"dArc": 0,"type": 0},"address": ["0xFF"]
