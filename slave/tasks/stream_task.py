@@ -61,6 +61,7 @@ class StreamTask(Task):
         self._cur_block = 0        # READY_ACK 回報用
         self._resume = _READY      # seek 完成後回到的狀態
         self._last_report = 0      # 🔧 主動回報播放進度節流 (ticks_ms)
+        self._report_ms = 1000     # 🔧 回報間隔 (ms) — 由 config System.heartbeat_interval 控制
 
     def on_start(self):
         super().on_start()
@@ -82,8 +83,16 @@ class StreamTask(Task):
         self._neutral_buf = self._build_neutral()
         self._mv_neutral = memoryview(self._neutral_buf)
 
-        get_log().info("[Stream] online | frame_bytes={} slot_bytes={}".format(
-            self._frame_bytes, total_bytes))
+        # 🔧 主動回報間隔: 直接吃 config 的 System.heartbeat_interval (ms)。
+        #    沒設定/0 → 預設 1000ms; 最小值 200ms 保護 (避免把 Core0 淹沒)。
+        try:
+            iv = int(sys_cfg.get("heartbeat_interval", 1000) or 0)
+        except Exception:
+            iv = 0
+        self._report_ms = max(200, iv) if iv > 0 else 1000
+
+        get_log().info("[Stream] online | frame_bytes={} slot_bytes={} report_ms={}".format(
+            self._frame_bytes, total_bytes, self._report_ms))
 
     # ── 中性值（與 PixelStreamer.clear_all() 同源）──────────────
     def _build_neutral(self):
@@ -126,17 +135,18 @@ class StreamTask(Task):
         except Exception as e:
             get_log().error("[Stream] READY_ACK 發送失敗: {}".format(e))
 
-    # ── 主動回報播放進度（0x1102, 每秒一次）──────────────
+    # ── 主動回報播放進度（0x1102, 間隔 = config System.heartbeat_interval）──
     def _send_status_push(self):
         """串流播放中主動推 0x1102 STATUS_RSP 給 master (含 stream_pos_frame)。
 
         這是「slave 主動回報」通道: 與 PC 端 0x1101 查詢 (PC 主動) 互補 —
         PC 不用一直問也能收到播放進度, 同時順帶證明設備還活著。
+        回報間隔由 config 的 System.heartbeat_interval (ms) 設定,
         只在此處 (StreamTask 領域) 觸發, 不動網絡層。
         """
         try:
             now = time.ticks_ms()
-            if time.ticks_diff(now, self._last_report) < 1000:
+            if time.ticks_diff(now, self._last_report) < self._report_ms:
                 return
             self._last_report = now
             app = self.ctx.get("app")
@@ -362,7 +372,7 @@ class StreamTask(Task):
             self._do_seek()
         elif self.state == _PLAYING:
             self._do_play()
-            self._send_status_push()   # 🔧 播放中每秒主動回報進度 (0x1102)
+            self._send_status_push()   # 🔧 播放中主動回報進度 (間隔=config heartbeat_interval)
 
     def on_stop(self):
         super().on_stop()
