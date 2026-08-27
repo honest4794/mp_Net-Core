@@ -27,7 +27,6 @@ class PCA9685:
 
     def setup(self):
         try:
-            self.i2c.writeto_mem(self.address, 0x00, b'\x00')
             self.freq(200)
         except Exception as e:
             print(f"PCA9685 Init Error: {e}")
@@ -35,8 +34,13 @@ class PCA9685:
     def freq(self, freq):
         try:
             prescale = int(25000000.0 / 4096.0 / freq + 0.5)
-            self.i2c.writeto_mem(self.address, 0x00, b'\x10') 
+            # 0x31 = SLEEP|AI|ALLCALL：進休眠以便寫 PRE_SCALE，同時「保留」ALLCALL(bit0)
+            # 與 auto-increment AI(bit5)。絕不寫 0x00/0x10 —— 那會把 ALLCALL 清掉，
+            # 之後 0x70 廣播位址就不再被 ACK (ENODEV)，且 AI 關閉時 show() 的 64 bytes
+            # 會塌在同一顆寄存器上寫錯。
+            self.i2c.writeto_mem(self.address, 0x00, b'\x31')
             self.i2c.writeto_mem(self.address, 0xFE, bytearray([prescale]))
+            # 0xA1 = RESTART|AI|ALLCALL：喚醒(SLEEP=0) + 開 auto-increment + 保留 ALLCALL。
             self.i2c.writeto_mem(self.address, 0x00, b'\xa1')
             time.sleep_us(500)
         except Exception as e:
