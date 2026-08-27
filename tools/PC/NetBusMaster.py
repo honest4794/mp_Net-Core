@@ -46,6 +46,37 @@ DEFAULT_CONFIG = {
     "join_retry_count": 3
 }
 
+# ==================== 垃圾檔過濾 (Python 快取 / macOS / Windows / 編輯器暫存) ====================
+JUNK_DIR_NAMES = {
+    "__pycache__",                 # Python bytecode cache
+    "__MACOSX",                    # macOS 解壓縮產物
+    ".Spotlight-V100",             # macOS Spotlight
+    ".Trashes",                    # macOS 垃圾桶
+    ".fseventsd",                  # macOS 檔案系統事件
+    "$RECYCLE.BIN",                # Windows 資源回收桶
+    "System Volume Information",   # Windows 系統還原
+}
+JUNK_FILE_NAMES = {
+    ".DS_Store",                   # macOS Finder 元資料
+    "Thumbs.db",                   # Windows 縮圖快取
+    "ehthumbs.db",                 # Windows 縮圖快取
+    "desktop.ini",                 # Windows 資料夾自訂
+}
+JUNK_FILE_PREFIXES = ("._", "~$")          # AppleDouble / MS Office 暫存
+JUNK_FILE_SUFFIXES = (".pyc", ".pyo", ".swp", ".swo", ".tmp")
+
+def is_junk_dir(name):
+    """判斷目錄名是否為常見垃圾目錄。"""
+    return name in JUNK_DIR_NAMES
+
+def is_junk_name(name):
+    """判斷檔名是否為常見垃圾檔 (Python 快取 / macOS / Windows / 編輯器暫存)。"""
+    if name in JUNK_FILE_NAMES:
+        return True
+    if name.startswith(JUNK_FILE_PREFIXES):
+        return True
+    return name.endswith(JUNK_FILE_SUFFIXES)
+
 # ==================== 跨平台輸入處理 ====================
 class InputHandler:
     def __init__(self):
@@ -486,6 +517,7 @@ class MonitorPanel:
             "離線": "\033[90m",
             "待機": "\033[96m",
             "傳輸中": "\033[93m",
+            "上傳中": "\033[93m",
             "下載中": "\033[93m",
             "播放中": "\033[92m",
             "暫停": "\033[95m",
@@ -508,7 +540,7 @@ class MonitorPanel:
             status_disp = status_disp[:6]
         status_str = f"{status_color}{status_disp:<6}{ConsoleUI.reset_color()}"
         
-        if monitor.status == "傳輸中" or monitor.status == "下載中" or monitor.transfer_label:
+        if monitor.status in ("傳輸中", "上傳中", "下載中") or monitor.transfer_label:
             progress_bar = ConsoleUI.draw_progress_bar(monitor.upload_progress, width=20)
             if monitor.ack_rtt_ms > 0:
                 speed_str = f"{monitor.upload_speed:>6.1f} KB/s │ TX {monitor.send_speed:>6.1f} │ ACK {monitor.ack_rtt_ms:>5.1f}ms"
@@ -788,7 +820,7 @@ class DeviceManager:
                 if not monitor:
                     continue
                 # 傳輸中/下載中/準備中/重啟中 → 強制餵狗 (等重啟回連時別標無響應)
-                if monitor.status in ["傳輸中", "下載中", "準備中", "重啟中"] or "Up " in monitor.status:
+                if monitor.status in ["傳輸中", "上傳中", "下載中", "準備中", "重啟中"]:
                     monitor.last_update = now
                     continue
 
@@ -1989,6 +2021,8 @@ class NetBusMaster:
             data = self._download_bytes(tid, "/sd/.delta.json", expected_size=None, status="Delta")
         except Exception:
             data = None
+        finally:
+            self.panel.update_device(tid, status="待機", transfer_label="")
         if not data:
             return {}
         try:
@@ -2046,6 +2080,7 @@ class NetBusMaster:
         if ch == 'c':
             ok_n, fail_n = self._run_confirm_or_undo(promoted, "confirm")
             print(f"✅ 已確認 {ok_n} 個檔案 (正式生效); 失敗 {fail_n}")
+            self._verify_promoted(promoted)
         elif ch == 'u':
             ok_n, fail_n = self._run_confirm_or_undo(promoted, "undo")
             print(f"♻️ 已復原 {ok_n} 個檔案; 失敗 {fail_n}")
@@ -2063,6 +2098,48 @@ class NetBusMaster:
         ok_n, fail_n = self._run_confirm_or_undo(promoted, "confirm")
         self._log_event("CONFIRM", f"批次直接確認 {ok_n} 成功 / {fail_n} 失敗")
         print(f"✅ 已確認 {ok_n} 個檔案; 失敗 {fail_n}")
+        self._verify_promoted(promoted)
+
+    def _verify_promoted(self, promoted):
+        """promote + confirm 後的驗證閉環: 逐一查遠端 sha 對本地 sha, 並下 delta
+        確認 pending 已清空。固件更新講究「馬上檢查哈希表 + delta」, 避免快取/殘留
+        pending 讓「看起來成功」但其實 root 沒落地或 .bak 沒清。
+        """
+        if not promoted:
+            return
+        remote_to_local = {r: l for l, r in getattr(self, "last_upload_files", [])}
+        print("\n🔎 [Verify] promote 後檢查遠端哈希 + delta...")
+        for tid, paths in promoted.items():
+            if isinstance(paths, dict):
+                paths = list(paths.keys())
+            if tid not in self.slaves:
+                continue
+            for r in paths:
+                l = remote_to_local.get(r)
+                if not l or not os.path.isfile(l):
+                    print(f"  ⚠️ [{tid}] {r}: 找不到本地來源, 略過 sha 比對")
+                    continue
+                local_sha = self._calc_local_sha(l)
+                remote_sha = self._query_remote_sha(tid, r)
+                if remote_sha is None:
+                    print(f"  ❌ [{tid}] {r}: 遠端 sha 查詢失敗")
+                    self._log_event("FAIL", f"promote 驗證 sha 查詢失敗 {r}", device_id=tid)
+                elif remote_sha != local_sha:
+                    print(f"  ❌ [{tid}] {r}: 哈希不符 (remote {remote_sha.hex()[:8]} != local {local_sha.hex()[:8]})")
+                    self._log_event("FAIL", f"promote 驗證哈希不符 {r}", device_id=tid)
+                else:
+                    print(f"  ✅ [{tid}] {r}: 哈希一致")
+        print("🔎 [Verify] 檢查 delta pending 是否已清空...")
+        for tid in promoted:
+            if tid not in self.slaves:
+                continue
+            pend = self._download_remote_delta(tid)
+            if pend:
+                shown = ", ".join(sorted(pend)[:5])
+                print(f"  ⚠️ [{tid}]: 仍有 {len(pend)} 個 pending 未清 ({shown})")
+                self._log_event("FAIL", f"promote 驗證 pending 未清 ({len(pend)})", device_id=tid)
+            else:
+                print(f"  ✅ [{tid}]: pending 已清空")
 
     # ==================== 重啟確認流程 (0x100F REBOOT) ====================
     def _do_reboot(self, chosen, wait_seconds=90):
@@ -2232,8 +2309,8 @@ class NetBusMaster:
 
         self.panel.update_device(
             tid,
-            status="傳輸中",
-            transfer_label=f"Up {file_idx}/{total_files}",
+            status="上傳中",
+            transfer_label=f"上傳 {file_idx}/{total_files}",
             upload_progress=0,
             uploaded_bytes=start_offset,
             total_bytes=total_len,
@@ -2379,8 +2456,8 @@ class NetBusMaster:
 
         self.panel.update_device(
             target,
-            status="傳輸中",
-            transfer_label=status,
+            status="下載中",
+            transfer_label=status if status.startswith("下載") else f"下載 {status}",
             uploaded_bytes=0,
             total_bytes=expected_size,
             upload_start_time=time.time(),
@@ -2560,7 +2637,7 @@ class NetBusMaster:
                                 return
                             last_err = str(e)
                             # 🔧 狀態保持「傳輸中」, 重試資訊放 transfer_label (panel 才有進度條)
-                            self.panel.update_device(tid, status="傳輸中", transfer_label=f"Retry {retry_count + 1} {r_path[:16]}")
+                            self.panel.update_device(tid, status="上傳中", transfer_label=f"上傳重試 {retry_count + 1} {r_path[:16]}")
                             time.sleep(1)
                     if not ok:
                         _record(tid, r_path, "fail", last_err)
@@ -2784,9 +2861,10 @@ class NetBusMaster:
             base_dir = os.path.abspath(local_input)
             print(f"\n🔍 掃描 {local_input}...")
             for root, dirs, files in os.walk(base_dir):
-                if "__pycache__" in root: continue
+                dirs[:] = [d for d in dirs if not is_junk_dir(d)]
                 for file in files:
-                    if file.endswith(".pyc"): continue
+                    if is_junk_name(file):
+                        continue
                     full_path = os.path.join(root, file)
                     rel_path = os.path.relpath(full_path, base_dir)
                     remote_path = ("/" + rel_path.replace("\\", "/")).replace("//", "/")
@@ -3067,15 +3145,14 @@ class NetBusMaster:
         self.panel.start()
 
     def _collect_firmware_files(self):
-        """掃描本地 slave 目錄, 回傳 [(local_path, remote_path), ...] (不含 config.json / .pyc)。"""
+        """掃描本地 slave 目錄, 回傳 [(local_path, remote_path), ...] (過濾垃圾檔)。"""
         slave_dir = os.path.join(PROJECT_ROOT, "slave")
         files_to_upload = []
         for root, dirs, files in os.walk(slave_dir):
-            # Skip __pycache__
-            if "__pycache__" in root:
-                continue
+            # 修剪垃圾目錄 (Python 快取 / macOS / Windows)
+            dirs[:] = [d for d in dirs if not is_junk_dir(d)]
             for file in files:
-                if file == "config.json" or file.endswith(".pyc"):
+                if file == "config.json" or is_junk_name(file):
                     continue
                 full_path = os.path.join(root, file)
                 rel_path = os.path.relpath(full_path, slave_dir)
@@ -3085,18 +3162,25 @@ class NetBusMaster:
 
     # ==================== 固件更新: manifest 比對 + 逐檔差異上傳 ====================
     def _calc_local_sha(self, local_path):
-        """計算本地檔案 sha256 (bytes)。用快取避免多台設備重複算同一檔。"""
+        """計算本地檔案 sha256 (bytes)。快取以 (路徑, mtime, size) 為鍵, 檔案一改
+        就自動失效; 否則本地改檔後再上傳, 比對仍拿舊 sha → 漏傳該更新的檔。"""
         cache = getattr(self, "_local_sha_cache", None)
         if cache is None:
             cache = self._local_sha_cache = {}
-        if local_path in cache:
-            return cache[local_path]
+        try:
+            st = os.stat(local_path)
+            sig = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            sig = None
+        key = (local_path, sig)
+        if key in cache:
+            return cache[key]
         h = hashlib.sha256()
         with open(local_path, "rb") as f:
             for chunk in iter(lambda: f.read(65536), b""):
                 h.update(chunk)
         digest = h.digest()
-        cache[local_path] = digest
+        cache[key] = digest
         return digest
 
     def _download_remote_manifest(self, tid):
@@ -3111,6 +3195,7 @@ class NetBusMaster:
             data = None
         finally:
             self._transfer_end()
+            self.panel.update_device(tid, status="待機", transfer_label="")
         if not data:
             return None
         try:
@@ -3182,7 +3267,9 @@ class NetBusMaster:
         print(f"\n🔍 本地固件 {len(files_to_upload)} 個文件; 目標設備 {len(targets)} 台")
         print("📡 下載設備 manifest (哈希表) 並比對, 找出需要更新的檔案...")
 
-        self._firmware_manifest_cache = getattr(self, "_firmware_manifest_cache", {})
+        # 🔧 每次固件更新都重新下載 manifest (哈希表)。保留舊值會在「上傳後再跑一次」
+        #    時拿到過期快取, 比對永遠顯示「全部一致」。
+        self._firmware_manifest_cache = {}
         diff_by_target = {}   # tid -> [(local_path, remote_path)]
         for idx, tid in enumerate(targets, 1):
             print(f"  [{idx}/{len(targets)}] {tid}: 下載 manifest + 比對 sha...")
@@ -3265,6 +3352,7 @@ class NetBusMaster:
                 self.panel.update_device(tid, status="完成", transfer_label="", upload_progress=100)
         finally:
             self._transfer_end()
+        self.last_upload_files = [(l_path, r_path)]
         if promoted:
             if confirm_mode == "auto":
                 self._auto_confirm_promoted(promoted)
@@ -4217,7 +4305,7 @@ class NetBusMaster:
                 if tid not in final_targets:
                     self.panel.update_device(tid, status="待機", transfer_label="", upload_progress=100)
                 else:
-                    self.panel.update_device(tid, status="傳輸中", transfer_label="Deploy", upload_progress=0)
+                    self.panel.update_device(tid, status="上傳中", transfer_label="上傳 data.bin", upload_progress=0)
             
             max_workers = self.config.get("max_workers", 50)
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -4248,6 +4336,11 @@ class NetBusMaster:
             raise Exception("無數據或離線")
 
         local_sha = self._upload_bytes(tid, data, "/data.bin", file_idx=1, total_files=1, file_id=1)
+        # 🔧 播放數據常改, 不該進「3 次重啟自動回滾」保護帶: 上傳完立即 confirm
+        #    (清 .bak + pending)。否則 /data.bin 的備份會留著, 3 次開機後被靜默還原成舊版。
+        if not self._confirm_file(tid, "/data.bin"):
+            self._log_event("FAIL", "data.bin 確認失敗 (pending 未清, 可能 3 次重啟後回滾)", device_id=tid)
+            print(f"  ⚠️ [{tid}] data.bin 上傳成功但確認失敗 (pending 未清)")
         self.config["mapping"][tid]["last_sha"] = local_sha.hex()
         self.save_config()
     
