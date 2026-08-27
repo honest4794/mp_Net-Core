@@ -1,0 +1,4 @@
+interface:
+  display_name: "FastLED Project Guide"
+  short_description: "Project docs, hardware, protocols, and onboarding"
+  default_prompt: "Use $fastled-project-guide to find the right project docs and explain concepts in simple Traditional Chinese."

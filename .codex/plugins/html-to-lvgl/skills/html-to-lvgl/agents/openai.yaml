@@ -1,0 +1,4 @@
+interface:
+  display_name: "HTML to LVGL"
+  short_description: "Port web UI references into LVGL"
+  default_prompt: "Use $html-to-lvgl to convert this HTML or UI reference into an LVGL plan."

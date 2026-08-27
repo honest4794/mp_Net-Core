@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>storyMode_signals RGB / PWM 時間表</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; color: #1f2933; }
+    h1 { margin-bottom: 8px; }
+    .meta { color: #52606d; margin-bottom: 24px; }
+    table { border-collapse: collapse; width: 100%; margin: 18px 0 28px; }
+    th, td { border: 1px solid #d9e2ec; padding: 10px 12px; vertical-align: top; }
+    th { background: #f0f4f8; text-align: left; }
+    code { background: #f5f7fa; padding: 1px 4px; border-radius: 3px; }
+    .num { white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <h1>storyMode_signals RGB / PWM 時間表</h1>
+  <div class="meta">來源：<code>storyMode_signals.cpp</code>、<code>storyMode_parameter.cpp</code>，以及 <code>platformio_local.ini</code> 的 <code>STORYMODE_SIGNALS_TOTAL_SECONDS=32</code>。</div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>開始</th>
+        <th>結束</th>
+        <th>State</th>
+        <th>RGB</th>
+        <th>PWM / PCA</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="num">0:00</td>
+        <td class="num">0:00</td>
+        <td><code>MODE_SIGNALS_INIT</code></td>
+        <td>RGB1/2/3/4/7/8/9/10/11/12 全部 <code>rgbOff</code>。</td>
+        <td><code>chInitialStateAll()</code>，所有 PCA channel 回初始狀態。</td>
+      </tr>
+      <tr>
+        <td class="num">0:00</td>
+        <td class="num">0:02</td>
+        <td><code>MODE_SIGNALS_WHITEBG</code></td>
+        <td>無持續 RGB render，只保留初始化後的 off 狀態。</td>
+        <td>無持續 PWM render。</td>
+      </tr>
+      <tr>
+        <td class="num">0:02</td>
+        <td class="num">0:32</td>
+        <td><code>MODE_SIGNALS_OPEN_LEGS</code></td>
+        <td>依 slave 直接呼叫 <code>SpecificColorPattern</code>：Slave 3 RGB4、Slave 4/5 RGB4、Slave 2/6/9/10 RGB12/RGB10/RGB8、Slave 7/8 RGB4、Slave 11 RGB4；Slave 12/14 為 platform render。</td>
+        <td>Slave 3 PWM1 CH0/1/2/7/8 低亮；Slave 4/5 PWM0 CH9-11 on、CH14 <code>chValcanGun</code>、CH15 <code>chFlashAlternativeV2</code>；Slave 7/8 PWM0 CH0/1/4/5/7/8 低亮；Slave 11 backpack signal markers；Slave 12 platform PCA signal。</td>
+      </tr>
+      <tr>
+        <td class="num">0:32</td>
+        <td class="num">0:32</td>
+        <td><code>MODE_SIGNALS_END</code></td>
+        <td>RGB1/2/3/4/7/8/9/10/11/12 全部 <code>rgbOff</code>。</td>
+        <td><code>chInitialStateAll()</code>。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Slave / Effect 對照</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Slave</th>
+        <th>RGB</th>
+        <th>PWM / PCA</th>
+        <th>備註</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>3</td><td>RGB4 前 12 顆使用 <code>slave3_signals_rgb4_specificColorIndex</code> / override。</td><td>PWM1 CH0/1/2/7/8 低亮。</td><td>胸、腰、裙甲 signal。</td></tr>
+      <tr><td>4 / 5</td><td>RGB4 前 4 顆使用 <code>slave45_signals_rgb4_specificColorIndex</code> / override。</td><td>PWM0 CH2-7 off，CH9-11 on，CH12/13 off，CH14 vulcan，CH15 alternative flash。</td><td>左右手 signal。</td></tr>
+      <tr><td>2 / 6 / 9 / 10</td><td>RGB12/RGB10/RGB8 前 10 顆使用 <code>slave2_signal_greenIdx</code> 組成 green signal。</td><td>無本地 PCA signal render。</td><td>funnel signal；不再控制 motor。</td></tr>
+      <tr><td>7 / 8</td><td>RGB4 前 12 顆使用 <code>slave78_signals_rgb1_specificColorIndex</code> / override。</td><td>PWM0 CH0/1/4/5/7/8 低亮。</td><td>左右腳 signal。</td></tr>
+      <tr><td>11</td><td>RGB4 前 10 顆使用 <code>slave2_signal_greenIdx</code> 組成 backpack signal。</td><td>PWM0 多數低亮、CH8 off；PWM1 CH0 breathing flash，CH6/7 低亮，其餘 off。</td><td>backpack signal；不再控制 DC motor。</td></tr>
+      <tr><td>1 / 13</td><td>無本地 signal render。</td><td>無本地 signal render。</td><td>平台 group，原始 signal mode 無本地 render。</td></tr>
+      <tr><td>12</td><td>無本地 RGB signal render。</td><td>PWM0-PWM5 CH0-5 vulcan flash，CH6-11 steady，CH12-15 off。</td><td>平台 PCA signal。</td></tr>
+      <tr><td>14</td><td>RGB1/RGB2/RGB3/RGB4 使用 <code>randomFillAll_V2</code> 灰白 signal fill。</td><td>無本地 PCA signal render。</td><td>平台 RGB signal。</td></tr>
+    </tbody>
+  </table>
+</body>
+</html>

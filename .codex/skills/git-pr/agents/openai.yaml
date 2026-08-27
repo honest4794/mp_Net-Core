@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git PR (cherry-pick to dev)"
+  short_description: "Extract a single feature and PR it onto the dev branch"
+  default_prompt: "Use $git-pr to extract a single feature from the current branch, cherry-pick it onto dev, and open a PR. Always target dev; ask which feature first."

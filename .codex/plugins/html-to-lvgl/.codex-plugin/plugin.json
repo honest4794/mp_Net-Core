@@ -1,0 +1,19 @@
+{
+  "name": "html-to-lvgl",
+  "version": "0.1.0",
+  "description": "Convert HTML UI references into LVGL migration inventories and embedded UI plans.",
+  "author": {
+    "name": "Servo Test local tooling"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "HTML to LVGL",
+    "shortDescription": "Port web UI references into LVGL",
+    "longDescription": "Adds a local MCP server and skill for converting HTML, CSS, screenshots, and simulator ColorPicker UI references into LVGL widget inventories, Figma handoff notes, and ESP32 Touch LCD implementation plans.",
+    "developerName": "Servo Test local tooling",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read"],
+    "defaultPrompt": "Convert this HTML ColorPicker UI into an LVGL plan."
+  },
+  "mcpServers": "./.mcp.json"
+}

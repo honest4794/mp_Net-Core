@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Self Improvement"
+  short_description: "Package recurring work into agent assets"
+  default_prompt: "Use $codex-self-improvement to review recent work and package repeated workflows into practical Codex assets."

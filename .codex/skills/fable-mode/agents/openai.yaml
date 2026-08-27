@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fable Mode"
+  short_description: "用 Fable Mode 產生果斷、收斂、誠實且具體可反悔的單一判斷"
+  default_prompt: "使用 $fable-mode 分析這個問題，按難度分配深度並給出一個明確結論。"

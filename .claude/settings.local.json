@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mv:*)",
+      "Bash(rg:*)",
+      "Bash(grep:*)",
+      "Bash(mkdir:*)",
+      "Bash(sed:*)",
+      "Bash(tree:*)",
+      "Bash(pio run:*)",
+      "Bash(platformio run:*)",
+      "Bash(~/.platformio/penv/bin/platformio run -e master)",
+      "Bash(~/.platformio/penv/bin/platformio run -e slave2)",
+      "Bash(ls:*)",
+      "Bash(~/.platformio/penv/bin/platformio run -e master --silent)",
+      "Bash(~/.platformio/penv/bin/platformio run -e slave2 --silent)",
+      "Bash(git rm:*)",
+      "Bash(rm:*)",
+      "Bash(~/.platformio/penv/bin/platformio run -e master -e slave2 --silent)",
+      "Bash(chmod:*)",
+      "Bash(/Users/angela/fastLED/clean_spiffs.sh:*)",
+      "Bash(find:*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git *)",
+      "Bash(python3 -c \"print\\(f'0.5ms: {0.5/20*4096:.1f}'\\); print\\(f'2.5ms: {2.5/20*4096:.1f}'\\)\")",
+      "Bash(mv \"/Users/all.are.mathematics/My Documents/FastLED project/Project Documents/1_60可動海牛 \" \"/Users/all.are.mathematics/My Documents/FastLED project/Project Documents/1_60可動海牛\")",
+      "Read(//Users/all.are.mathematics/My Documents/FastLED project/Project Documents/**)"
+    ],
+    "deny": []
+  }
+}

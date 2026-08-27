@@ -1,0 +1,15 @@
+interface:
+  display_name: "Figma to LVGL Touch LCD"
+  short_description: "Port Figma/HTML ColorPicker to LVGL"
+  default_prompt: "Use $figma-to-lvgl-touchlcd to port the Touch LCD ColorPicker design into LVGL v8."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "figma"
+      description: "Official Figma MCP design context server"
+      transport: "streamable_http"
+      url: "https://mcp.figma.com/mcp"
+    - type: "mcp"
+      value: "html-to-lvgl"
+      description: "Repo-local HTML inventory and LVGL mapping helper"
