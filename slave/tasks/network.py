@@ -144,20 +144,25 @@ class NetworkTask(Task):
                 "ctrl_bus": self.ctrl_bus,
                 "on_connect": self._on_connect_wrapper,
             }
+            # 🔧 還原原設計: 無條件先 poll discovery_bus (UDP 敲門), 再視連線狀態
+            #    poll ctrl_bus (WS)。之前誤改成「連線中只 poll ctrl / 離線才 poll
+            #    discovery」→ 半開連線(對面靜默消失)時 slave 的 connected 卡在 True,
+            #    永遠不讀 UDP, master 敲門叫不回。DISCOVER 收到後 on_connect_request
+            #    會依 connected+peer 自行判斷是否要重連。
+            if time.ticks_diff(now, self._last_discv_poll) > 250:
+                self._last_discv_poll = now
+                try:
+                    self.discovery_bus.poll(**ctx_extra)
+                    self.success += 1
+                except Exception as e:
+                    get_log().error("Discovery Poll Error: {}".format(e))
+
             if self.ctrl_bus.connected:
                 try:
                     self.ctrl_bus.poll()
                     self.success += 1
                 except Exception as e:
                     get_log().error("Ctrl Bus Poll Error: {}".format(e))
-            else:
-                if time.ticks_diff(now, self._last_discv_poll) > 250:
-                    self._last_discv_poll = now
-                    try:
-                        self.discovery_bus.poll(**ctx_extra)
-                        self.success += 1
-                    except Exception as e:
-                        get_log().error("Discovery Poll Error: {}".format(e))
 
     def on_stop(self):
         super().on_stop()

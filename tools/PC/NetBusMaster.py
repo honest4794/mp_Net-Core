@@ -7,6 +7,7 @@ import struct
 import json
 import copy
 import csv
+import shutil
 import errno
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -135,6 +136,17 @@ PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 os.chdir(SCRIPT_DIR)
+
+# 🔧 輔助檔案集中存放:
+#   slave_map.json 與本程式同目錄 (tools/PC/); 其餘輔助檔案 (log/下載/profile) 放 data/
+CONFIG_PATH = os.path.join(SCRIPT_DIR, "slave_map.json")
+DATA_DIR = os.path.join(SCRIPT_DIR, "data")
+LOG_DIR = os.path.join(DATA_DIR, "logs")
+DOWNLOAD_DIR = os.path.join(DATA_DIR, "downloads")
+PROFILE_DIR = os.path.join(DATA_DIR, "profiles")
+BINS_DIR = os.path.join(DATA_DIR, "bins")
+for _d in (DATA_DIR, LOG_DIR, DOWNLOAD_DIR, PROFILE_DIR, BINS_DIR):
+    os.makedirs(_d, exist_ok=True)
 
 # ==================== 協議層導入 ====================
 try:
@@ -434,7 +446,9 @@ class MonitorPanel:
             sys.stdout.write("\033[H\033[2J\033[3J")
             
             title = "╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗"
-            subtitle = f"║  🎬 NetBus Master Monitor  │  Devices: {len(self.monitors)}  │  Time: {datetime.now().strftime('%H:%M:%S')}                                 ║"
+            offline_n = sum(1 for m in self.monitors.values() if m.status in ("離線", "無響應"))
+            _left = f"║  🎬 NetBus Master Monitor  │  Devices: {len(self.monitors)}  │  離線/無響應: {offline_n}  │  Time: {datetime.now().strftime('%H:%M:%S')}"
+            subtitle = _left + " " * max(1, 118 - len(_left) - 1) + "║"
             divider = "╠════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╣"
             
             # 使用列表構建輸出緩衝區，一次性打印以減少閃爍
@@ -577,7 +591,8 @@ class DeviceManager:
         self.slaves = {}  # {device_id: {conn, addr, parser, ...}}
         self.lock = threading.Lock()
         self.running = True
-        self._knock_last = {}   # 🔧 自動敲門節流: {ip: last_knock_ts}
+        self._knock_last = {}           # 🔧 自動敲門節流: {ip: last_knock_ts}
+        self._offline_knocked = set()   # 🔧 目前已知離線/無響應的設備 (只在集合變化時印摘要)
         
         # 啟動健康檢查線程
         self.health_thread = threading.Thread(target=self._health_check_loop, daemon=True)
@@ -624,6 +639,12 @@ class DeviceManager:
                 "remote_exists": 0,
                 "remote_sha": None,
                 "remote_size": 0,
+                "remote_pending": 0,                 # 🔧 FILE_QUERY_RSP 的 pending 旗標 (.bak 待確認)
+                "partial_event": threading.Event(),  # 🔧 0x200F FILE_PARTIAL_RSP (斷點續傳查詢)
+                "partial_partial": 0,                # 🔧 是否有斷點 (.tmp + delta.partial)
+                "partial_written": 0,                # 🔧 已寫入位元組 (續傳起點)
+                "partial_total": 0,                  # 🔧 續傳 session 的總大小
+                "partial_sha": None,                 # 🔧 續傳 session 的 sha256
                 "read_data": None,
                 "read_offset": 0,
                 "last_seen": time.time()  # 用於內部連接保活檢查
@@ -697,6 +718,8 @@ class DeviceManager:
         interval = float(master.config.get("reconnect_knock_interval_s", 10.0))
         interval = max(5.0, interval)
         now = time.time()
+
+        offline_now = set()
         for cid, info in mapping.items():
             if not isinstance(info, dict):
                 continue
@@ -708,16 +731,33 @@ class DeviceManager:
             # 已連線且非離線/無響應 → 不需要敲門
             if node is not None and (mon is None or mon.status not in ("離線", "無響應")):
                 continue
+            offline_now.add(cid)
             last = self._knock_last.get(ip, 0.0)
             if now - last >= interval:
                 self._knock_last[ip] = now
-                if master._knock_ip(ip, cid):
-                    print(f"🔔 [Health] {cid} ({ip}) 離線/無響應 → 自動敲門叫回...")
+                master._knock_ip(ip, cid)
+
         # 清理長期不在 mapping 的節流紀錄 (防無限增長)
         known_ips = {str(v.get("ip", "")) for v in mapping.values() if isinstance(v, dict)}
         for ip in list(self._knock_last.keys()):
             if ip not in known_ips:
                 self._knock_last.pop(ip, None)
+
+        # 🔧 只在「離線集合變化」時印一次摘要, 不再每 10 秒對每台設備刷一行洗版。
+        #    穩定離線期間不重複輸出; 設備回到在線時回報一次「已回連」。
+        prev = self._offline_knocked
+        if offline_now != prev:
+            new_off = offline_now - prev
+            back = prev - offline_now
+            if new_off:
+                names = ", ".join(sorted(new_off))
+                print(f"🔔 [Health] 離線/無響應 {len(new_off)} 台 → 自動敲門叫回: {names}")
+                master._log_event("KNOCK", f"離線/無響應 {len(new_off)} 台: {names}")
+            if back:
+                names = ", ".join(sorted(back))
+                print(f"✅ [Health] 已回連 {len(back)} 台: {names}")
+                master._log_event("RECOVER", f"已回連 {len(back)} 台: {names}")
+            self._offline_knocked = offline_now
 
     def _health_check_loop(self):
         """每 5 秒檢查一次設備健康狀態 (主動探測版)。
@@ -782,8 +822,8 @@ class DeviceManager:
 class NetBusMaster:
     def __init__(self, config_file=None):
         if config_file is None:
-            # 配置檔固定在 tools/ 目錄下 (相對腳本所在位置向上層)
-            config_file = os.path.join(SCRIPT_DIR, "..", "slave_map.json")
+            # 配置檔與本程式同目錄 (tools/PC/slave_map.json)
+            config_file = CONFIG_PATH
         self.store = SchemaStore(dir_path=f"{PROJECT_ROOT}/slave/schema")
         # 🔧 修復: 建立 dispatch/field 緩衝, 否則 decode 只會回 _name/_cmd
         # (0x1102 心跳、0x2002/0x2006 檔案傳輸、0x3102/0x3108 配對… 全部解不出欄位)
@@ -820,6 +860,8 @@ class NetBusMaster:
         
         self.config_file = config_file
         self.config = copy.deepcopy(DEFAULT_CONFIG)
+        self._migrate_legacy_config()
+        self._migrate_legacy_data()
         self.load_config()
         self.selected_targets = []
         self.prepared_data = {}
@@ -833,7 +875,71 @@ class NetBusMaster:
         self._load_metadata_only()
         
         threading.Thread(target=self.start_ws_server, daemon=True).start()
-    
+
+    def _migrate_legacy_config(self):
+        """把舊版 tools/slave_map.json 遷移到 tools/PC/slave_map.json (與本程式同目錄)。
+
+        只在「新位置不存在、舊位置存在」時搬移一次; 舊檔保留不刪, 以免誤刪。
+        """
+        if os.path.exists(self.config_file):
+            return
+        legacy = os.path.join(SCRIPT_DIR, "..", "slave_map.json")
+        if os.path.exists(legacy):
+            try:
+                shutil.copy2(legacy, self.config_file)
+                print(f"📦 [Config] 已遷移舊設定: {legacy} → {self.config_file}")
+            except Exception as e:
+                print(f"⚠️ [Config] 遷移失敗: {e}")
+
+    def _migrate_legacy_data(self):
+        """把舊版 tools/PC/ 下的輔助檔案遷移到 data/ 集中存放。
+
+        涵蓋 bins/ (切分動畫)、latency_log.csv、download/、profiles/;
+        只在「目標不存在、來源存在」時搬移, 不覆蓋既有資料。
+        """
+        mig = [
+            (os.path.join(SCRIPT_DIR, "bins"), BINS_DIR),
+            (os.path.join(SCRIPT_DIR, "download"), DOWNLOAD_DIR),
+            (os.path.join(SCRIPT_DIR, "profiles"), PROFILE_DIR),
+        ]
+        for src_dir, dst_dir in mig:
+            if not os.path.isdir(src_dir):
+                continue
+            try:
+                for name in os.listdir(src_dir):
+                    s = os.path.join(src_dir, name)
+                    d = os.path.join(dst_dir, name)
+                    if not os.path.exists(d):
+                        shutil.move(s, d)
+            except Exception as e:
+                print(f"⚠️ [Data] 遷移 {src_dir} 失敗: {e}")
+        # 單一 CSV
+        legacy_csv = os.path.join(SCRIPT_DIR, "latency_log.csv")
+        if os.path.isfile(legacy_csv):
+            dst_csv = os.path.join(LOG_DIR, "latency_log.csv")
+            if not os.path.exists(dst_csv):
+                try:
+                    shutil.move(legacy_csv, dst_csv)
+                except Exception as e:
+                    print(f"⚠️ [Data] 遷移 latency_log.csv 失敗: {e}")
+
+    def _log_event(self, level, message, device_id=""):
+        """寫入輔助 log (data/logs/), 記錄關鍵事件 (上傳/下載/還原/確認 的成功與失敗)。
+
+        每次啟動依日期分檔; 與延遲 CSV 分開, 這是純文字 log。
+        """
+        try:
+            log_path = os.path.join(LOG_DIR, f"{datetime.now().strftime('%Y%m%d')}.log")
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            line = f"[{ts}] [{level}]"
+            if device_id:
+                line += f" [{device_id}]"
+            line += f" {message}\n"
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception:
+            pass
+
     def load_config(self):
         """載入配置，支持熱更新，並自動補全缺失的默認值"""
         needs_save = False
@@ -1386,7 +1492,18 @@ class NetBusMaster:
                 self.slaves[cid]["remote_exists"] = args["exists"]
                 self.slaves[cid]["remote_sha"] = args["sha256"]
                 self.slaves[cid]["remote_size"] = args["size"]
+                self.slaves[cid]["remote_pending"] = args.get("pending", 0)
                 self.slaves[cid]["query_event"].set()
+
+        elif cmd == 0x200F:
+            # 🔧 FILE_PARTIAL_RSP: 斷點續傳查詢回應 (partial/written/total_size/sha256)
+            if cid in self.slaves:
+                node = self.slaves[cid]
+                node["partial_partial"] = args.get("partial", 0)
+                node["partial_written"] = args.get("written", 0)
+                node["partial_total"] = args.get("total_size", 0)
+                node["partial_sha"] = args.get("sha256")
+                node["partial_event"].set()
 
         elif cmd == 0x2010:
             # 🔧 FILE_ERROR_RSP: 檔案操作失敗 (promote/upload 錯誤)
@@ -1478,6 +1595,9 @@ class NetBusMaster:
         """
         try:
             path = self.config.get("latency_log_file", "latency_log.csv")
+            # 🔧 裸檔名 (非絕對/相對路徑) 統一歸到 data/logs/
+            if not os.path.isabs(path):
+                path = os.path.join(LOG_DIR, path)
             is_new = not os.path.exists(path)
             with open(path, "a", encoding="utf-8", newline="") as f:
                 w = csv.writer(f)
@@ -1520,7 +1640,7 @@ class NetBusMaster:
             if ask_note:
                 note = input("  📝 備註 (Enter=無): ").strip()
             self._log_latency(rows, note=note)
-            print(f"💾 已紀錄 {len(rows)} 筆 → {self.config.get('latency_log_file', 'latency_log.csv')}")
+            print(f"💾 已紀錄 {len(rows)} 筆 → {os.path.join(LOG_DIR, self.config.get('latency_log_file', 'latency_log.csv'))}")
 
     def _get_mode_name(self, cid, mode_id):
         """查詢單一本地燈效模式的名稱 (0x3107→0x3108), 失敗回 '?'。"""
@@ -1583,7 +1703,7 @@ class NetBusMaster:
 
     # ==================== 每 id 一個 Profile (profiles/<id>.json) ====================
     def _profile_path(self, cid):
-        profiles_dir = os.path.join(os.getcwd(), "profiles")
+        profiles_dir = PROFILE_DIR
         os.makedirs(profiles_dir, exist_ok=True)
         safe = cid.replace(":", "_")
         return os.path.join(profiles_dir, f"{safe}.json")
@@ -1662,7 +1782,7 @@ class NetBusMaster:
             print("      可播放模式: (無/未查詢)")
         files = profile.get("files") or []
         if files:
-            print(f"      檔案 {len(files)} 個 (存於 download/{cid}/):")
+            print(f"      檔案 {len(files)} 個 (存於 data/downloads/{cid}/):")
             for p in files[:20]:
                 print(f"        - {p}")
             if len(files) > 20:
@@ -1687,6 +1807,9 @@ class NetBusMaster:
         print("  2. Config 編輯器")
         print("  3. 刪除文件")
         print("  4. 重建文件索引 (Scan)")
+        print("  5. 還原/確認 (.bak 備份回滾)")
+        print("  6. 重試失敗/續傳 (斷點續傳)")
+        print("  7. 軟重啟設備 (0x100F Reboot)")
         print("  q. 返回")
         
         choice = input("\n👉 請選擇: ").strip().lower()
@@ -1701,6 +1824,12 @@ class NetBusMaster:
             self._delete_file()
         elif choice == '4':
             self._scan_files()
+        elif choice == '5':
+            self._restore_or_confirm()
+        elif choice == '6':
+            self._retry_failed_uploads()
+        elif choice == '7':
+            self._soft_reboot_devices()
         elif choice == 'q':
             self.panel.start()
             return
@@ -1821,10 +1950,91 @@ class NetBusMaster:
         self.send_pkt([tid], 0x200A, {"path": remote_path})
         return node["query_event"].wait(timeout=wait)
 
+    def _confirm_path_batch(self, tids, remote_path, wait=3.0):
+        """廣播 0x2008 FILE_CONFIRM 給多台設備 (同時發送), 回傳 {tid: bool}。"""
+        nodes = {}
+        for tid in tids:
+            node = self.slaves.get(tid)
+            if node:
+                node["query_event"].clear()
+                nodes[tid] = node
+        if not nodes:
+            return {}
+        self.send_pkt(list(nodes.keys()), 0x2008, {"path": remote_path})
+        return {tid: node["query_event"].wait(timeout=wait) for tid, node in nodes.items()}
+
+    def _undo_path_batch(self, tids, remote_path, wait=3.0):
+        """廣播 0x200A FILE_UNDO 給多台設備 (同時發送), 回傳 {tid: bool}。"""
+        nodes = {}
+        for tid in tids:
+            node = self.slaves.get(tid)
+            if node:
+                node["query_event"].clear()
+                nodes[tid] = node
+        if not nodes:
+            return {}
+        self.send_pkt(list(nodes.keys()), 0x200A, {"path": remote_path})
+        return {tid: node["query_event"].wait(timeout=wait) for tid, node in nodes.items()}
+
+    def _download_remote_delta(self, tid):
+        """下載設備的 /sd/.delta.json → pending dict {path: {...}}。失敗/無 pending 回 {}。
+
+        pending 是「已 promote 待確認」的權威紀錄 (含 .bak 備份), 一次下載即可知道
+        該設備有哪些檔案可還原/確認, 不必逐檔查詢。無 panel 包裝, 可並行呼叫。
+        """
+        node = self.slaves.get(tid)
+        if not node:
+            return {}
+        try:
+            data = self._download_bytes(tid, "/sd/.delta.json", expected_size=None, status="Delta")
+        except Exception:
+            data = None
+        if not data:
+            return {}
+        try:
+            obj = json.loads(data.decode("utf-8"))
+        except Exception:
+            return {}
+        return obj.get("pending", {}) or {}
+
+    def _run_confirm_or_undo(self, promoted, action):
+        """依路徑分組後「廣播」confirm/undo 給所有受影響設備 (同時發送, 不逐台串行)。
+
+        promoted: {tid: [remote_path, ...]} 或 {tid: {path: rec}}; action: "confirm"|"undo"。
+        回傳 (成功數, 失敗數)。
+        """
+        path_to_tids = {}
+        for tid, paths in promoted.items():
+            if isinstance(paths, dict):
+                paths = list(paths.keys())
+            for p in paths:
+                path_to_tids.setdefault(p, []).append(tid)
+        if not path_to_tids:
+            return 0, 0
+        ok_n = fail_n = 0
+        verb = "確認" if action == "confirm" else "還原"
+        level = "CONFIRM" if action == "confirm" else "UNDO"
+        total = len(path_to_tids)
+        for i, (path, tids) in enumerate(path_to_tids.items(), 1):
+            if action == "confirm":
+                res = self._confirm_path_batch(tids, path)
+            else:
+                res = self._undo_path_batch(tids, path)
+            got = sum(1 for ok in res.values() if ok)
+            ok_n += got
+            fail_n += len(res) - got
+            for tid, ok in res.items():
+                if not ok:
+                    print(f"  ⚠️ [{tid}] {verb}失敗: {path}")
+                self._log_event(level if ok else "FAIL", f"{verb} {path}" + ("" if ok else " (失敗)"), device_id=tid)
+            print(f"  [{i}/{total}] {path}: {verb} {len(res)} 台 ({got} 成功)")
+        return ok_n, fail_n
+
     def _prompt_confirm_promoted(self, promoted):
         """批次 promote 後的手動確認: c=確認全部 / u=復原全部 / Enter=暫不確認。
 
         未確認的檔案保留 pending, MCU 會在 3 次重啟後自動復原 (回滾舊版)。
+        確認/復原以「路徑分組廣播」到所有設備, 同時發送。
         """
         total = sum(len(v) for v in promoted.values())
         print(f"\n📢 [Promote] {total} 個檔案已搬到 root (舊檔已備份 .bak), 等待確認:")
@@ -1834,68 +2044,29 @@ class NetBusMaster:
         print("   [Enter] 暫不確認 (保留 pending, 由 MCU 3 次重啟自動判斷)")
         ch = input("👉 請選擇: ").strip().lower()
         if ch == 'c':
-            ok_n = fail_n = 0
-            for tid, paths in promoted.items():
-                for p in paths:
-                    if self._confirm_file(tid, p):
-                        ok_n += 1
-                    else:
-                        fail_n += 1
-                        print(f"  ⚠️ [{tid}] 確認失敗: {p}")
+            ok_n, fail_n = self._run_confirm_or_undo(promoted, "confirm")
             print(f"✅ 已確認 {ok_n} 個檔案 (正式生效); 失敗 {fail_n}")
         elif ch == 'u':
-            ok_n = fail_n = 0
-            for tid, paths in promoted.items():
-                for p in paths:
-                    if self._undo_file(tid, p):
-                        ok_n += 1
-                    else:
-                        fail_n += 1
-                        print(f"  ⚠️ [{tid}] 復原失敗: {p}")
+            ok_n, fail_n = self._run_confirm_or_undo(promoted, "undo")
             print(f"♻️ 已復原 {ok_n} 個檔案; 失敗 {fail_n}")
         else:
             print("ℹ️ 暫不確認 — MCU 將在 3 次重啟後自動復原未確認的檔案")
             print("   (之後可再用 Step 0 檔案管理 或本工具的確認/復原指令處理)")
 
-    # ==================== 重啟確認流程 (0x100F REBOOT) ====================
-    def _reboot_and_confirm(self, targets=None, wait_seconds=90):
-        """🔧 上傳/更新後的重啟確認流程 (逐台選擇 + 等待回連 + 確認新韌體生效)。
+    def _auto_confirm_promoted(self, promoted):
+        """批次 promote 後「直接確認」: 對有信心的上傳立即 confirm (刪 .bak, 正式生效)。
 
-        固件/關鍵配置要重啟才會生效; 上傳完成後讓用戶自己選擇:
-          [a] 全部重啟 / [n] 挑選幾台 / [Enter] 暫不重啟
-        重啟後等待設備自動連回 (slave 開機會依紀錄的 master IP 自動連線),
-        逐台回報, 並查詢狀態確認設備真的活著。
+        供使用者選擇「直接確認」模式時呼叫; 以路徑分組廣播, 同時發送。
         """
-        targets = [t for t in (targets or self.selected_targets) if t in self.slaves]
-        if not targets:
-            print("⚠️ 無在線設備可重啟")
-            return
+        total = sum(len(v) for v in promoted.values())
+        print(f"\n✅ [Promote] 直接確認 {total} 個檔案 (正式生效, 刪 .bak)...")
+        ok_n, fail_n = self._run_confirm_or_undo(promoted, "confirm")
+        self._log_event("CONFIRM", f"批次直接確認 {ok_n} 成功 / {fail_n} 失敗")
+        print(f"✅ 已確認 {ok_n} 個檔案; 失敗 {fail_n}")
 
-        print("\n🔁 [Reboot] 重啟設備讓新韌體/配置生效:")
-        for i, tid in enumerate(targets):
-            print(f"   {i+1}. {tid}")
-        ch = input("👉 [a] 全部重啟 / [n] 挑選部分 / [Enter] 暫不重啟: ").strip().lower()
-        if ch == "":
-            print("ℹ️ 暫不重啟 (之後可再更新確認)")
-            return
-        chosen = targets
-        if ch == "n":
-            chosen = []
-            sel = input("👉 輸入編號 (逗號分隔, 例: 1,3): ").strip()
-            try:
-                for part in sel.replace("，", ",").split(","):
-                    idx = int(part.strip()) - 1
-                    if 0 <= idx < len(targets):
-                        chosen.append(targets[idx])
-            except Exception:
-                print("❌ 輸入無效")
-                return
-        elif ch != "a":
-            print("❌ 無效選擇")
-            return
-        if not chosen:
-            print("ℹ️ 未選擇任何設備")
-            return
+    # ==================== 重啟確認流程 (0x100F REBOOT) ====================
+    def _do_reboot(self, chosen, wait_seconds=90):
+        """對 chosen 設備送出 0x100F 軟重啟, 等待回連並逐台回報。"""
 
         # 記下舊連線身份, 之後判斷「是否真的重啟回連」(新 socket)
         old_conns = {}
@@ -1957,7 +2128,73 @@ class NetBusMaster:
                     self.panel.update_device(tid, status="離線")
         print("💡 提示: 重啟後 slave 開機自動連 master; 若未回連請用 Step 1 掃描/敲門。")
 
-    def _upload_bytes(self, tid, data, remote_path, file_idx=1, total_files=1, file_id=None):
+    def _reboot_and_confirm(self, targets=None, wait_seconds=90, default_yes=True):
+        """🔧 重啟確認流程 (預設「是」= 全部軟重啟)。
+
+        固件/關鍵配置要重啟才會生效; 上傳完成後:
+          [Enter/是] 全部軟重啟 (預設)
+          [n] 挑選幾台
+          [q/否] 暫不重啟
+        重啟後等待設備自動連回, 逐台回報並查詢狀態確認設備真的活著。
+        """
+        targets = [t for t in (targets or self.selected_targets) if t in self.slaves]
+        if not targets:
+            print("⚠️ 無在線設備可重啟")
+            return
+
+        print("\n🔁 [Reboot] 軟重啟設備讓新韌體/配置生效:")
+        for i, tid in enumerate(targets):
+            print(f"   {i+1}. {tid}")
+        hint = "👉 [Enter] 是/全部重啟" if default_yes else "👉 [a] 全部重啟"
+        ch = input(f"{hint} / [n] 挑選部分 / [q] 否: ").strip().lower()
+        if ch == "q":
+            print("ℹ️ 暫不重啟 (之後可用選單的「軟重啟設備」)")
+            return
+        chosen = targets
+        if ch == "n":
+            chosen = []
+            sel = input("👉 輸入編號 (逗號分隔, 例: 1,3): ").strip()
+            try:
+                for part in sel.replace("，", ",").split(","):
+                    idx = int(part.strip()) - 1
+                    if 0 <= idx < len(targets):
+                        chosen.append(targets[idx])
+            except Exception:
+                print("❌ 輸入無效")
+                return
+        elif ch not in ("", "a", "y", "yes"):
+            print("❌ 無效選擇")
+            return
+        if not chosen:
+            print("ℹ️ 未選擇任何設備")
+            return
+
+        self._do_reboot(chosen, wait_seconds=wait_seconds)
+
+    def _soft_reboot_devices(self):
+        """獨立「軟重啟設備」按鈕: 對選定設備送出 0x100F 並等待回連。"""
+        targets = [t for t in self.selected_targets if t in self.slaves]
+        if not targets:
+            print("⚠️ 無在線設備可重啟 (請先 Step 1 選擇/掃描)")
+            return
+        self._reboot_and_confirm(targets=targets, default_yes=True)
+
+    def _query_partial(self, tid, remote_path, timeout=3.0):
+        """查詢 slave 上的斷點續傳進度 (0x200E FILE_PARTIAL_QUERY → 0x200F FILE_PARTIAL_RSP)。
+
+        回傳 (partial, written, total_size, sha256) 或 None (逾時/離線)。
+        """
+        node = self.slaves.get(tid)
+        if not node:
+            return None
+        node["partial_event"].clear()
+        self.send_pkt([tid], 0x200E, {"path": remote_path})
+        if not node["partial_event"].wait(timeout=timeout):
+            return None
+        return (node["partial_partial"], node["partial_written"],
+                node["partial_total"], node["partial_sha"])
+
+    def _upload_bytes(self, tid, data, remote_path, file_idx=1, total_files=1, file_id=None, resume=True):
         node = self.slaves.get(tid)
         if not node:
             raise Exception("Device Offline")
@@ -1977,12 +2214,28 @@ class NetBusMaster:
         if file_id is None:
             file_id = int(file_idx)
 
+        # 🔧 斷點續傳: 上次中斷留下的 .tmp 若與本次檔案身分 (大小 + sha) 一致,
+        #    直接從已寫入處續傳, 不必從頭重傳 (快速恢復中斷的上傳)。
+        start_offset = 0
+        if resume and total_len > 0:
+            try:
+                pinfo = self._query_partial(tid, remote_path)
+                if pinfo:
+                    partial, written, ptotal, psha = pinfo
+                    if partial and written > 0 and ptotal == total_len and psha == local_sha:
+                        aligned = (written // chunk_size) * chunk_size if chunk_size else 0
+                        if aligned > 0 and aligned < total_len:
+                            start_offset = aligned
+                            print(f"♻️ [Resume] {tid} {remote_path} 續傳 @ {aligned}/{total_len}")
+            except Exception:
+                pass
+
         self.panel.update_device(
             tid,
             status="傳輸中",
             transfer_label=f"Up {file_idx}/{total_files}",
             upload_progress=0,
-            uploaded_bytes=0,
+            uploaded_bytes=start_offset,
             total_bytes=total_len,
             upload_start_time=time.time()
         )
@@ -2007,7 +2260,7 @@ class NetBusMaster:
 
         start_time = time.time()
         last_t = time.perf_counter()
-        last_done = 0
+        last_done = start_offset
         speed_ema = 0.0
         send_speed_ema = 0.0
         ack_ms_ema = 0.0
@@ -2015,7 +2268,7 @@ class NetBusMaster:
         ack_total = 0.0
         retry_count = self._cfg_int("transfer_retry_count", 3)
 
-        for off in range(0, total_len, chunk_size):
+        for off in range(start_offset, total_len, chunk_size):
             if self.transfer_cancel.is_set():
                 raise Exception("已停止")
             chunk = data[off : off + chunk_size]
@@ -2235,12 +2488,28 @@ class NetBusMaster:
             return False
         return True
 
-    def _run_upload_batch(self, files_to_upload, targets=None):
+    def _run_upload_batch(self, files_to_upload, targets=None, confirm_mode="prompt"):
         if targets is None:
             targets = self.selected_targets
 
         if not targets:
             return
+
+        # 🔧 正規化: files_to_upload 可以是「全部設備同一份清單」(list),
+        #    也可以是「每台設備各自的差異清單」(dict {tid: [(l, r), ...]})。
+        if isinstance(files_to_upload, dict):
+            files_by_target = {t: list(files_to_upload.get(t, [])) for t in targets}
+            seen = set()
+            union = []
+            for t in targets:
+                for l, r in files_by_target.get(t, []):
+                    if r not in seen:
+                        seen.add(r)
+                        union.append((l, r))
+            self.last_upload_files = union
+        else:
+            files_by_target = {t: list(files_to_upload) for t in targets}
+            self.last_upload_files = list(files_to_upload)
 
         self._transfer_begin()
 
@@ -2250,35 +2519,67 @@ class NetBusMaster:
         max_workers = self.config.get("max_workers", 10)
         promoted = {}   # tid -> [root_paths]
         promoted_lock = threading.Lock()
+        results = {}    # tid -> [(remote_path, status, err)]
+        results_lock = threading.Lock()
+
+        def _record(tid, path, status, err=""):
+            with results_lock:
+                results.setdefault(tid, []).append((path, status, err))
+            # 🔧 關鍵事件寫入 log (成功/失敗/略過)
+            if status == "ok":
+                self._log_event("OK", f"上傳成功 {path}", device_id=tid)
+            elif status == "fail":
+                self._log_event("FAIL", f"上傳失敗 {path}: {err}", device_id=tid)
+            else:
+                self._log_event("SKIP", f"上傳略過 {path}: {err or '已停止'}", device_id=tid)
 
         def _task(tid):
+            local_files = files_by_target.get(tid, [])
             local_promoted = []
             try:
-                for i, (l_path, r_path) in enumerate(files_to_upload):
+                for i, (l_path, r_path) in enumerate(local_files):
                     if self.transfer_cancel.is_set():
-                        raise Exception("已停止")
-                    retry_count = 0
-                    while retry_count < 3:
+                        _record(tid, r_path, "skip", "已停止")
+                        continue
+                    ok = False
+                    last_err = ""
+                    # 🔧 block 級重試之後, 檔案級重試 3 次; 失敗「記下並繼續」下一個檔案,
+                    #    不再讓單一檔案中斷整台設備的其餘上傳。
+                    for retry_count in range(3):
+                        if self.transfer_cancel.is_set():
+                            break
                         try:
                             with open(l_path, "rb") as f:
                                 data = f.read()
-                            self._upload_bytes(tid, data, r_path, file_idx=i + 1, total_files=len(files_to_upload))
+                            self._upload_bytes(tid, data, r_path, file_idx=i + 1, total_files=len(local_files))
+                            ok = True
                             break
                         except Exception as e:
-                            if str(e) == "已停止":
-                                raise
-                            retry_count += 1
-                            if retry_count >= 3:
-                                raise e
+                            if str(e) == "已停止" or self.transfer_cancel.is_set():
+                                _record(tid, r_path, "skip", "已停止")
+                                return
+                            last_err = str(e)
                             # 🔧 狀態保持「傳輸中」, 重試資訊放 transfer_label (panel 才有進度條)
-                            self.panel.update_device(tid, status="傳輸中", transfer_label=f"Retry {retry_count} {r_path[:16]}")
+                            self.panel.update_device(tid, status="傳輸中", transfer_label=f"Retry {retry_count + 1} {r_path[:16]}")
                             time.sleep(1)
+                    if not ok:
+                        _record(tid, r_path, "fail", last_err)
+                        continue
                     # 🔧 root 目標: 上傳到 /sd 暫存後, 搬到 root (自動 .bak 備份 + pending)
                     #    /sd/... 開頭的路徑表示本來就在 /sd, 不搬運 (例如 data.bin 走 deploy 不在此)
-                    if not self.transfer_cancel.is_set() and not r_path.startswith("/sd"):
+                    if not r_path.startswith("/sd"):
                         if self._promote_file(tid, r_path):
                             local_promoted.append(r_path)
-                self.panel.update_device(tid, status="完成", transfer_label="", upload_progress=100)
+                            _record(tid, r_path, "ok", "已 promote")
+                        else:
+                            _record(tid, r_path, "fail", "promote 失敗")
+                    else:
+                        _record(tid, r_path, "ok", "")
+                fails = [p for p, s, _ in results.get(tid, []) if s == "fail"]
+                if fails:
+                    self.panel.update_device(tid, status="錯誤", transfer_label="", error_msg=f"{len(fails)} 檔失敗")
+                else:
+                    self.panel.update_device(tid, status="完成", transfer_label="", upload_progress=100)
             except Exception as e:
                 if str(e) == "已停止" or self.transfer_cancel.is_set():
                     self.panel.update_device(tid, status="已停止", transfer_label="", error_msg="")
@@ -2294,9 +2595,133 @@ class NetBusMaster:
                 f.result()
         self._transfer_end()
 
-        # 🔧 手動確認: promote 後等使用者確認; 未確認的 MCU 會在 3 次重啟後自動復原
+        self.last_upload_results = results
+
+        # 🔧 每台設備逐檔上傳結果報告 (成功/失敗/略過), 解決「不知道更新了什麼」的問題
+        self._print_upload_summary(results)
+
+        # 🔧 promote 後的確認: auto=直接確認 / prompt=手動確認 / none=保留 pending
         if promoted:
-            self._prompt_confirm_promoted(promoted)
+            if confirm_mode == "auto":
+                self._auto_confirm_promoted(promoted)
+            elif confirm_mode == "prompt":
+                self._prompt_confirm_promoted(promoted)
+
+    def _print_upload_summary(self, results):
+        """列印上傳結果報告: 每台設備每個檔案的 成功/失敗/略過 狀態。"""
+        if not results:
+            print("\nℹ️ 無上傳結果")
+            return
+        total_ok = total_fail = total_skip = 0
+        print("\n" + "=" * 70)
+        print("📊 [上傳結果報告]")
+        print("=" * 70)
+        for tid in sorted(results.keys()):
+            rows = results[tid]
+            ok_n = sum(1 for _, s, _ in rows if s == "ok")
+            fail_n = sum(1 for _, s, _ in rows if s == "fail")
+            skip_n = sum(1 for _, s, _ in rows if s == "skip")
+            total_ok += ok_n; total_fail += fail_n; total_skip += skip_n
+            mark = "✅" if fail_n == 0 else ("⚠️" if ok_n > 0 else "❌")
+            print(f"\n{mark} {tid}: 成功 {ok_n} / 失敗 {fail_n} / 略過 {skip_n}")
+            for path, status, err in rows:
+                if status == "ok":
+                    print(f"    ✅ {path}")
+                elif status == "skip":
+                    print(f"    ⏭  {path} (略過)")
+                else:
+                    print(f"    ❌ {path}  — {err}")
+        print("-" * 70)
+        print(f"📈 合計: 成功 {total_ok} / 失敗 {total_fail} / 略過 {total_skip}")
+        if total_fail:
+            print("💡 失敗的檔案已支援斷點續傳; 可用「6. 重試失敗/續傳」接續上傳。")
+        print("=" * 70)
+
+    def _restore_or_confirm(self):
+        """獨立還原/確認功能: 直接下載每台設備的 delta 紀錄 (pending), 找出 .bak 待確認檔案。
+
+        一次下載 /sd/.delta.json 就拿到 pending 清單 (含 .bak 備份), 不必逐檔查詢;
+        確認/還原以路徑分組廣播到所有設備, 同時發送。
+        """
+        targets = [t for t in self.selected_targets if t in self.slaves]
+        if not targets:
+            print("⚠️ 無在線設備 (請先 Step 1 選擇/掃描)")
+            return
+
+        print(f"\n🔍 下載各設備的 delta 紀錄 (pending 清單) — {len(targets)} 台...")
+        pending_map = {}   # tid -> {path: rec}
+        with ThreadPoolExecutor(max_workers=min(8, len(targets))) as ex:
+            futs = {ex.submit(self._download_remote_delta, tid): tid for tid in targets}
+            for f in futs:
+                tid = futs[f]
+                try:
+                    pend = f.result() or {}
+                except Exception:
+                    pend = {}
+                pending_map[tid] = pend
+                n = len(pend)
+                print(f"  {'⚠️' if n else '✅'} {tid}: {n} 個待確認" if n else f"  ✅ {tid}: 無待確認")
+
+        total_pending = sum(len(v) for v in pending_map.values())
+        if total_pending == 0:
+            print("ℹ️ 沒有待確認的檔案 (.bak 備份不存在或已確認)")
+            return
+
+        print(f"\n♻️ [還原/確認] 發現 {total_pending} 個待確認檔案 (.bak 備份存在):")
+        for tid, pend in pending_map.items():
+            if not pend:
+                continue
+            print(f"  {tid}:")
+            for p in sorted(pend.keys()):
+                print(f"    - {p}")
+        print("  [u] 還原全部 (回滾到 .bak 舊版)")
+        print("  [c] 確認全部 (保留新檔, 刪除 .bak)")
+        print("  [Enter] 返回")
+        ch = input("👉 請選擇: ").strip().lower()
+        if ch == 'u':
+            ok_n, fail_n = self._run_confirm_or_undo(pending_map, "undo")
+            print(f"♻️ 已還原 {ok_n} 個檔案; 失敗 {fail_n}")
+        elif ch == 'c':
+            ok_n, fail_n = self._run_confirm_or_undo(pending_map, "confirm")
+            print(f"✅ 已確認 {ok_n} 個檔案; 失敗 {fail_n}")
+
+    def _retry_failed_uploads(self):
+        """重試上次上傳失敗的檔案 (斷點續傳), 先敲門叫回離線設備再續傳。"""
+        files = getattr(self, "last_upload_files", None)
+        results = getattr(self, "last_upload_results", None)
+        if not files or not results:
+            print("ℹ️ 尚無上次上傳紀錄 (請先執行「1. 固件全量更新」)")
+            return
+
+        failed_paths = set()
+        failed_tids = set()
+        for tid, rows in results.items():
+            for path, status, _ in rows:
+                if status == "fail":
+                    failed_paths.add(path)
+                    failed_tids.add(tid)
+        if not failed_paths:
+            print("✅ 上次上傳無失敗檔案")
+            return
+
+        path_map = {r: l for l, r in files}
+        failed_files = [(path_map[r], r) for r in sorted(failed_paths) if r in path_map]
+        if not failed_files:
+            print("ℹ️ 失敗檔案已不在本地 slave 目錄中, 無法重試")
+            return
+
+        # 🔧 先敲門把離線設備叫回 (IP 紀錄), 之後斷點續傳接續中斷處
+        print(f"🔔 先敲門叫回離線設備, 再續傳 {len(failed_files)} 個失敗檔案...")
+        self._knock_recorded_devices(wait=8)
+
+        retry_tids = [t for t in sorted(failed_tids) if t in self.slaves]
+        if not retry_tids:
+            print("⚠️ 失敗的設備目前都未在線, 請先用 Step 1 掃描/敲門")
+            return
+
+        print(f"🔁 [Retry] 續傳 → 設備 {len(retry_tids)} 台 / 檔案 {len(failed_files)} 個")
+        self._log_event("RETRY", f"重試失敗續傳: {len(retry_tids)} 台設備 / {len(failed_files)} 個檔案")
+        self._run_upload_batch(failed_files, targets=retry_tids, confirm_mode="auto")
 
     def _upload_generic_file(self, tid, local_path, remote_path, file_idx=1, total_files=1):
         try:
@@ -2462,7 +2887,7 @@ class NetBusMaster:
             return
             
         # 下載目錄
-        save_dir = os.path.join(os.getcwd(), "download", target.replace(":", "_"))
+        save_dir = os.path.join(DOWNLOAD_DIR, target.replace(":", "_"))
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
             
@@ -2503,6 +2928,9 @@ class NetBusMaster:
                 if not ok:
                     fail_count += 1
                     print(f"  ⚠️ {r_path}: 下載失敗, 已重試 {file_retry} 次: {last_err or '未知'} (跳過)")
+                    self._log_event("FAIL", f"下載失敗 {r_path}: {last_err or '未知'}", device_id=target)
+                else:
+                    self._log_event("OK", f"下載成功 {r_path}", device_id=target)
 
             if self.transfer_cancel.is_set():
                 self.panel.update_device(target, status="已停止", transfer_label="", upload_progress=0)
@@ -2533,7 +2961,7 @@ class NetBusMaster:
             self.panel.start()
             return
 
-        print(f"\n📦 [批次備份] 將下載 {len(targets)} 個設備的全部檔案 → download/<device_id>/")
+        print(f"\n📦 [批次備份] 將下載 {len(targets)} 個設備的全部檔案 → data/downloads/<device_id>/")
         confirm = input("👉 確認? (y/n): ").lower()
         if confirm != 'y':
             self.panel.start()
@@ -2580,7 +3008,7 @@ class NetBusMaster:
                 continue
 
             paths = sorted(manifest.keys())
-            save_dir = os.path.join(os.getcwd(), "download", target.replace(":", "_"))
+            save_dir = os.path.join(DOWNLOAD_DIR, target.replace(":", "_"))
             os.makedirs(save_dir, exist_ok=True)
             print(f"  📄 {len(paths)} 個檔案 → {save_dir}")
 
@@ -2614,8 +3042,10 @@ class NetBusMaster:
                             time.sleep(1)
                     if ok:
                         done += 1
+                        self._log_event("OK", f"備份下載成功 {r_path}", device_id=target)
                     else:
                         print(f"  ⚠️ {r_path}: 下載失敗, 已重試 {file_retry} 次 (跳過)")
+                        self._log_event("FAIL", f"備份下載失敗 {r_path}", device_id=target)
             finally:
                 self._transfer_end()
 
@@ -2625,7 +3055,7 @@ class NetBusMaster:
 
             # 3. Profile (模式/狀態/延遲 + 檔案清單)
             if self._save_profile(target, manifest):
-                print(f"  💾 Profile 已存: profiles/{target.replace(':', '_')}.json")
+                print(f"  💾 Profile 已存: data/profiles/{target.replace(':', '_')}.json")
                 ok_count += 1
             else:
                 fail_count += 1
@@ -2636,95 +3066,264 @@ class NetBusMaster:
         input("\n按 Enter 返回...")
         self.panel.start()
 
-    def _update_firmware_files(self):
+    def _collect_firmware_files(self):
+        """掃描本地 slave 目錄, 回傳 [(local_path, remote_path), ...] (不含 config.json / .pyc)。"""
         slave_dir = os.path.join(PROJECT_ROOT, "slave")
         files_to_upload = []
-        
-        print("\n🔍 掃描本地固件文件...")
         for root, dirs, files in os.walk(slave_dir):
             # Skip __pycache__
             if "__pycache__" in root:
                 continue
-                
             for file in files:
                 if file == "config.json" or file.endswith(".pyc"):
                     continue
-                
                 full_path = os.path.join(root, file)
                 rel_path = os.path.relpath(full_path, slave_dir)
                 remote_path = "/" + rel_path.replace("\\", "/")
                 files_to_upload.append((full_path, remote_path))
-                
-        print(f"📦 找到 {len(files_to_upload)} 個文件:")
-        
-        # 使用 Tree 格式顯示
-        # 1. 構建目錄樹結構
-        tree = {}
-        for _, remote_path in files_to_upload:
-            parts = remote_path.strip('/').split('/')
-            current = tree
-            for part in parts:
-                if part not in current:
-                    current[part] = {}
-                current = current[part]
-        
-        # 2. 遞歸打印樹
-        def print_tree(node, prefix=""):
-            # 分離文件和目錄
-            # 這裡簡單假設沒有子節點的就是文件
-            # 但其實上面構建時，文件也是空字典，所以需要區分
-            # 更好的方法是遍歷 files_to_upload 來標記文件
-            
-            # 重新構建帶標記的樹
-            # node: {name: {children..., __is_file__: bool}}
-            
-            # 分組：文件在前，文件夾在後 (或相反，根據用戶喜好)
-            # 這裡我們讓文件夾在前，文件在後，類似 VS Code 資源管理器
-            keys = sorted(node.keys())
-            folders = [k for k in keys if k != "__is_file__" and not node[k].get("__is_file__", False)]
-            files = [k for k in keys if k != "__is_file__" and node[k].get("__is_file__", False)]
-            
-            sorted_keys = folders + files
-            
-            for i, key in enumerate(sorted_keys):
-                is_last = (i == len(sorted_keys) - 1)
-                connector = "└── " if is_last else "├── "
-                
-                is_file = node[key].get("__is_file__", False)
-                icon = "📄" if is_file else "📁"
-                
-                print(f"{prefix}{connector}{icon} {key}")
-                
-                child_prefix = prefix + ("    " if is_last else "│   ")
-                if not is_file:
-                    print_tree(node[key], child_prefix)
+        return files_to_upload
 
-        # Re-build tree with file markers
-        tree_marked = {}
-        for _, remote_path in files_to_upload:
-            parts = remote_path.strip('/').split('/')
-            current = tree_marked
-            for i, part in enumerate(parts):
-                if part not in current:
-                    current[part] = {}
-                
-                if i == len(parts) - 1:
-                    current[part]["__is_file__"] = True
-                
-                current = current[part]
-                
-        print_tree(tree_marked)
-            
-        confirm = input("\n👉 確認上傳到所有選定設備? (y/n): ").lower()
-        if confirm != 'y':
+    # ==================== 固件更新: manifest 比對 + 逐檔差異上傳 ====================
+    def _calc_local_sha(self, local_path):
+        """計算本地檔案 sha256 (bytes)。用快取避免多台設備重複算同一檔。"""
+        cache = getattr(self, "_local_sha_cache", None)
+        if cache is None:
+            cache = self._local_sha_cache = {}
+        if local_path in cache:
+            return cache[local_path]
+        h = hashlib.sha256()
+        with open(local_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        digest = h.digest()
+        cache[local_path] = digest
+        return digest
+
+    def _download_remote_manifest(self, tid):
+        """下載設備的 manifest.json → {remote_path: sha_hex}。失敗回 None。"""
+        node = self.slaves.get(tid)
+        if not node:
+            return None
+        self._transfer_begin()
+        try:
+            data = self._download_bytes(tid, "/manifest.json", expected_size=None, status="Manifest")
+        except Exception:
+            data = None
+        finally:
+            self._transfer_end()
+        if not data:
+            return None
+        try:
+            obj = json.loads(data.decode("utf-8"))
+        except Exception:
+            return None
+        result = {}
+        for p, info in obj.items():
+            if isinstance(info, dict) and "h" in info:
+                result[p] = info["h"]
+            elif isinstance(info, dict) and "sha256" in info:
+                result[p] = info["sha256"]
+        return result
+
+    def _query_remote_sha(self, tid, remote_path, timeout=2.0):
+        """查詢單一遠端檔案的 sha256 (bytes) 或 None (不存在/逾時)。"""
+        node = self.slaves.get(tid)
+        if not node:
+            return None
+        node["query_event"].clear()
+        node["remote_sha"] = None
+        node["remote_exists"] = 0
+        self.send_pkt([tid], 0x2005, {"path": remote_path})
+        if not node["query_event"].wait(timeout=timeout):
+            return None
+        if not node.get("remote_exists", 0):
+            return None
+        return node.get("remote_sha")
+
+    def _build_firmware_diff(self, tid, files_to_upload):
+        """依設備 manifest 比對本地/遠端, 回傳每台設備的差異清單。
+
+        優先下載 manifest.json 一次拿到所有遠端 sha (快); 失敗時回退到逐檔查詢。
+        回傳 dict: {tid: [(local_path, remote_path), ...]} — 只含「不同/遠端缺」的檔案。
+        """
+        # 快取每台設備的 manifest sha 表
+        if not hasattr(self, "_firmware_manifest_cache"):
+            self._firmware_manifest_cache = {}
+        man = self._firmware_manifest_cache.get(tid)
+        if man is None:
+            man = self._download_remote_manifest(tid)
+            self._firmware_manifest_cache[tid] = man if man is not None else {}
+
+        diff = []
+        if man:
+            # 用 manifest 快表比對 (sh: hex 字串 vs local digest hex)
+            for l_path, r_path in files_to_upload:
+                local_hex = self._calc_local_sha(l_path).hex()
+                remote_hex = man.get(r_path)
+                if remote_hex is None or remote_hex != local_hex:
+                    diff.append((l_path, r_path))
+        else:
+            # 無 manifest → 逐檔查詢 sha
+            print(f"  ⚠️ [{tid}] 無 manifest, 逐檔查詢 sha (較慢)...")
+            for l_path, r_path in files_to_upload:
+                local_sha = self._calc_local_sha(l_path)
+                remote_sha = self._query_remote_sha(tid, r_path)
+                if remote_sha is None or remote_sha != local_sha:
+                    diff.append((l_path, r_path))
+        return diff
+
+    def _update_firmware_files(self):
+        files_to_upload = self._collect_firmware_files()
+        targets = [t for t in self.selected_targets if t in self.slaves]
+        if not targets:
+            print("⚠️ 無在線設備 (請先 Step 1 選擇/掃描)")
             return
 
-        self._run_upload_batch(files_to_upload, targets=self.selected_targets)
-                
+        print(f"\n🔍 本地固件 {len(files_to_upload)} 個文件; 目標設備 {len(targets)} 台")
+        print("📡 下載設備 manifest (哈希表) 並比對, 找出需要更新的檔案...")
+
+        self._firmware_manifest_cache = getattr(self, "_firmware_manifest_cache", {})
+        diff_by_target = {}   # tid -> [(local_path, remote_path)]
+        for idx, tid in enumerate(targets, 1):
+            print(f"  [{idx}/{len(targets)}] {tid}: 下載 manifest + 比對 sha...")
+            diff_by_target[tid] = self._build_firmware_diff(tid, files_to_upload)
+
+        total_diff = sum(len(v) for v in diff_by_target.values())
+        print("\n📊 [比對結果]")
+        for tid in targets:
+            d = diff_by_target[tid]
+            if not d:
+                print(f"  ✅ {tid}: 無需更新 (全部一致)")
+            else:
+                print(f"  ⚠️ {tid}: {len(d)} 個檔案需要更新")
+                for _, r in d:
+                    print(f"      - {r}")
+
+        if total_diff == 0:
+            print("\n✅ 所有設備的固件都與本地一致, 無需上傳")
+            return
+
+        print("\n👉 請選擇上傳方式:")
+        print("  [Enter] 全部更新 (只傳差異 + 直接確認 + 軟重啟) ← 預設")
+        print("  [c] 全部更新 (只傳差異 + 手動確認)")
+        print("  [s] 逐檔上傳 (一個一個來, 每檔即時進度 + 直接確認)")
+        print("  [1] 挑選單一檔案上傳到全部設備")
+        print("  [q] 返回")
+        ch = input("👉 請選擇: ").strip().lower()
+
+        if ch == "q":
+            return
+        elif ch == "c":
+            self._run_upload_batch(diff_by_target, targets=targets, confirm_mode="prompt")
+        elif ch == "s":
+            self._upload_files_sequential(diff_by_target, targets=targets)
+            return
+        elif ch == "1":
+            self._upload_single_file_interactive(files_to_upload, targets=targets)
+            return
+        elif ch in ("", "a", "y", "yes"):
+            self._run_upload_batch(diff_by_target, targets=targets, confirm_mode="auto")
+        else:
+            print("❌ 無效選擇")
+            return
+
         time.sleep(1)
         print("\n✅ 固件更新完成")
-        # 🔧 固件要重啟才會生效 → 讓用戶選擇重啟並確認回連
-        self._reboot_and_confirm(targets=self.selected_targets)
+        # 🔧 預設軟重啟 (直接確認已在上傳流程內處理)
+        self._reboot_and_confirm(targets=targets, default_yes=True)
+
+    def _upload_single_file_to_targets(self, l_path, r_path, targets, confirm_mode="auto"):
+        """上傳單一檔案到多台設備 (逐台, 每台即時進度), 之後 promote + 確認。"""
+        try:
+            with open(l_path, "rb") as f:
+                data = f.read()
+        except Exception as e:
+            print(f"  ❌ 讀取本地檔案失敗: {e}")
+            return
+
+        self._transfer_begin()
+        promoted = {}
+        try:
+            for i, tid in enumerate(targets, 1):
+                if self.transfer_cancel.is_set():
+                    break
+                self.panel.update_device(tid, status="準備中", transfer_label=f"{r_path[:16]}", upload_progress=0)
+                try:
+                    self._upload_bytes(tid, data, r_path, file_idx=i, total_files=len(targets))
+                except Exception as e:
+                    self.panel.update_device(tid, status="錯誤", transfer_label="", error_msg=str(e))
+                    print(f"  ❌ {tid} {r_path}: {e}")
+                    continue
+                if not r_path.startswith("/sd"):
+                    if self._promote_file(tid, r_path):
+                        promoted.setdefault(tid, []).append(r_path)
+                        print(f"  ✅ {tid} {r_path}: 上傳 + promote 完成")
+                    else:
+                        print(f"  ⚠️ {tid} {r_path}: promote 失敗")
+                else:
+                    print(f"  ✅ {tid} {r_path}: 上傳完成")
+                self.panel.update_device(tid, status="完成", transfer_label="", upload_progress=100)
+        finally:
+            self._transfer_end()
+        if promoted:
+            if confirm_mode == "auto":
+                self._auto_confirm_promoted(promoted)
+            else:
+                self._prompt_confirm_promoted(promoted)
+
+    def _upload_files_sequential(self, diff_by_target, targets):
+        """逐檔上傳: 對每個「有差異」的檔案, 一個一個上傳到受影響設備 (即時進度 + 直接確認)。"""
+        seen = set()
+        union = []
+        for tid in targets:
+            for l, r in diff_by_target.get(tid, []):
+                if r not in seen:
+                    seen.add(r)
+                    union.append((l, r))
+        if not union:
+            print("ℹ️ 無差異檔案")
+            return
+        print(f"\n🔄 [逐檔上傳] 共 {len(union)} 個差異檔案, 一個一個上傳...")
+        for idx, (l, r) in enumerate(union, 1):
+            print(f"\n── [{idx}/{len(union)}] {r} ──")
+            affected = [tid for tid in targets if any(rr == r for _, rr in diff_by_target.get(tid, []))]
+            self._upload_single_file_to_targets(l, r, affected, confirm_mode="auto")
+        print("\n✅ 逐檔上傳完成")
+        time.sleep(1)
+        self._reboot_and_confirm(targets=targets)
+
+    def _upload_single_file_interactive(self, files_to_upload, targets):
+        """挑選單一 (或多個) 檔案上傳到全部設備。"""
+        print("\n📄 [單檔上傳] 選擇要上傳的檔案:")
+        for i, (_, r) in enumerate(files_to_upload, 1):
+            print(f"  {i:3d}. {r}")
+        sel = input("👉 輸入編號 (逗號分隔, 例: 1,3,5): ").strip()
+        if not sel:
+            return
+        indices = []
+        try:
+            for part in sel.replace("，", ",").split(","):
+                idx = int(part.strip()) - 1
+                if 0 <= idx < len(files_to_upload):
+                    indices.append(idx)
+        except Exception:
+            print("❌ 輸入無效")
+            return
+        if not indices:
+            print("❌ 未選擇有效檔案")
+            return
+        chosen = [files_to_upload[i] for i in indices]
+        print(f"\n📦 將上傳 {len(chosen)} 個檔案到 {len(targets)} 台設備:")
+        for _, r in chosen:
+            print(f"    - {r}")
+        ch = input("👉 上傳後直接確認? (y=直接確認 / Enter=手動確認): ").strip().lower()
+        confirm_mode = "auto" if ch == "y" else "prompt"
+        for l, r in chosen:
+            print(f"\n── {r} ──")
+            self._upload_single_file_to_targets(l, r, targets, confirm_mode=confirm_mode)
+        time.sleep(1)
+        print("\n✅ 單檔上傳完成")
+        self._reboot_and_confirm(targets=targets)
 
     def _modify_config(self):
         target = self.selected_targets[0]
@@ -2769,7 +3368,7 @@ class NetBusMaster:
             return
 
         self.panel.update_device(target, status="完成", transfer_label="", upload_progress=100)
-        temp_path = "temp_config.json"
+        temp_path = os.path.join(DATA_DIR, "temp_config.json")
         
         try:
             # Format JSON for easier editing
@@ -3238,8 +3837,8 @@ class NetBusMaster:
     
     # ==================== Step 2: 準備數據 (修復版) ====================
     def _save_bins(self):
-        """將 prepared_data 保存到 bins/ 目錄"""
-        bins_dir = os.path.join('.', 'bins')
+        """將 prepared_data 保存到 data/bins/ 目錄"""
+        bins_dir = BINS_DIR
         os.makedirs(bins_dir, exist_ok=True)
 
         for pid, data in self.prepared_data.items():
@@ -3256,13 +3855,13 @@ class NetBusMaster:
             print(f"  ⚠️ Metadata save failed: {e}")
 
     def _load_metadata_only(self):
-        """🔧 只載入 bins/metadata.json (不載 bin 資料)。
+        """🔧 只載入 data/bins/metadata.json (不載 bin 資料)。
 
         讓工具重開後 (未跑 Step 2) 也能知道各 PlayID 的 total_frames/fps:
         - handle_client 註冊設備時面板 total_frames 正確 → 播放進度% 可顯示
         - 中途加入計算目標幀時 current_fps 正確
         """
-        bins_dir = os.path.join('.', 'bins')
+        bins_dir = BINS_DIR
         meta_path = os.path.join(bins_dir, 'metadata.json')
         if not os.path.exists(meta_path):
             return
@@ -3276,8 +3875,8 @@ class NetBusMaster:
             print(f"  ⚠️ Metadata (only) load failed: {e}")
 
     def _load_bins(self):
-        """從 bins/ 目錄載入 bin 檔案到 prepared_data"""
-        bins_dir = os.path.join('.', 'bins')
+        """從 data/bins/ 目錄載入 bin 檔案到 prepared_data"""
+        bins_dir = BINS_DIR
         needed_pids = {self.config["mapping"][tid].get("play_id") for tid in self.selected_targets}
         needed_pids.discard(None)
 
@@ -3360,8 +3959,8 @@ class NetBusMaster:
             self.panel.start()
             return
 
-        # 檢查 bins/ 是否有現成的 bin 檔案
-        bins_dir = os.path.join('.', 'bins')
+        # 檢查 data/bins/ 是否有現成的 bin 檔案
+        bins_dir = BINS_DIR
         has_bins = os.path.isdir(bins_dir) and any(f.endswith('.bin') for f in os.listdir(bins_dir))
 
         pxld_files = [f for f in os.listdir('.') if f.endswith('.pxld')]
@@ -4211,7 +4810,7 @@ class NetBusMaster:
 
                 # 🔧 更新此設備 Profile (模式/狀態/延遲), 供日後離線查閱
                 if self._save_profile(cid):
-                    print(f"   💾 Profile 已更新: profiles/{cid.replace(':', '_')}.json")
+                    print(f"   💾 Profile 已更新: data/profiles/{cid.replace(':', '_')}.json")
         except KeyboardInterrupt:
             print("\n🛑 配對中斷")
         finally:
@@ -4238,7 +4837,7 @@ class NetBusMaster:
 
         choice = input("\n👉 請選擇: ").strip().lower()
         if choice == '1':
-            profiles_dir = os.path.join(os.getcwd(), "profiles")
+            profiles_dir = PROFILE_DIR
             if not os.path.isdir(profiles_dir):
                 print("\n  (尚無 profile 快取 — 先執行批次備份或 Step 7 配對)")
             else:

@@ -29,11 +29,11 @@ def on_connect_request(bus_manager, url):
     """
     try:
         last_url = getattr(bus_manager, "_last_url", None)
+        # 🔧 依 WS connection 狀態判斷 (原設計): 已連到同一個 URL 就維持現況, 不重連。
+        #    之前這裡有 hasattr(bus_manager,"ping") 的死碼 —— NetBus 從未實作 ping(),
+        #    導致 always-poll discovery 時每次收到 DISCOVER 都誤觸 disconnect+重連。
         if bus_manager.connected and last_url == url:
-            if hasattr(bus_manager, "ping") and bus_manager.ping():
-                return True
-            bus_manager.disconnect()
-            time.sleep_ms(50)
+            return True
 
         # 1. 解析 URL
         parts = url.replace("ws://", "").split("/", 1)
@@ -51,10 +51,8 @@ def on_connect_request(bus_manager, url):
         if bus_manager.connected:
             peer = getattr(bus_manager, "_peer", None)
             if peer == (h, p, path):
-                if hasattr(bus_manager, "ping") and bus_manager.ping():
-                    return True
-                bus_manager.disconnect()
-                time.sleep_ms(50)
+                # 已連到同一個 master → 不重連
+                return True
             else:
                 print(f"🔄 [Network] Active connection detected, resetting for: {h}:{p}{path}")
                 bus_manager.disconnect()
