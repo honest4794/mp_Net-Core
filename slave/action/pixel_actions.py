@@ -4,11 +4,12 @@
 # 指令 (pixel 群 0x31xx, 對應 slave/schema/pixel.json):
 #   請求 (Master→Slave, 本模組註冊 handler):
 #     0x3101 MODE_LIST_QUERY    — 查詢本地燈效模式 id 清單
+#     0x3103 MODE_GET           — 查詢目前本地模式狀態
 #     0x3105 MODE_SET           — 播放指定本地模式 (一個一個播, 供配對識別)
 #     0x3106 MODE_STOP          — 停止本地模式 (熄燈)
 #     0x3107 MODE_DETAIL_QUERY  — 查詢單一模式名稱等細節
 #   回應 (Slave→Master, 只送出):
-#     0x3102 MODE_LIST_RSP / 0x3108 MODE_DETAIL_RSP
+#     0x3102 MODE_LIST_RSP / 0x3104 MODE_GET_RSP / 0x3108 MODE_DETAIL_RSP
 #
 # 播放端 = PixelTask (Core1, pixel_task.py): 本模組只把指令寫進 bus.shared
 # ("pixel_remote_set"/"pixel_remote_stop"), PixelTask._consume_cmds 消費後
@@ -26,7 +27,7 @@ def _send(ctx, rsp_cmd, fields):
         cmd_def = app.store.get(rsp_cmd)
         payload = SchemaCodec.encode(cmd_def, fields)
         if "send" in ctx:
-            ctx["send"](Proto.pack(rsp_cmd, payload))
+            ctx["send"](Proto.pack(rsp_cmd, payload, addr=bus.cid))
     except Exception as e:
         print("[Pixel] reply {} failed: {}".format(hex(rsp_cmd), e))
 
@@ -43,6 +44,36 @@ def on_mode_list_query(ctx, args):
         "entries": entries,
     })
     print("[Pixel] MODE_LIST type={} count={}".format(mode_type, len(ids)))
+
+
+def _ticks_ms():
+    try:
+        return time.ticks_ms()
+    except AttributeError:
+        return int(time.monotonic() * 1000)
+
+
+def _ticks_diff(now, then):
+    try:
+        return time.ticks_diff(now, then)
+    except AttributeError:
+        return now - then
+
+
+def on_mode_get(ctx, args):
+    """0x3103: 回報目前模式，供 Hi-Nu Master 探測及收斂確認。"""
+    status = bus.shared.get("pixel_nc4_status") or {}
+    running = 1 if status.get("running") else 0
+    elapsed_ms = int(status.get("elapsed_ms", 0) or 0)
+    if running:
+        elapsed_ms = max(0, _ticks_diff(_ticks_ms(), status.get("started_at", _ticks_ms())))
+    _send(ctx, 0x3104, {
+        "mode_type": int(status.get("mode_type", 0) or 0),
+        "mode_id": int(status.get("mode_id", 0) or 0),
+        "elapsed_ms": elapsed_ms,
+        "total_ms": 0,
+        "running": running,
+    })
 
 
 def on_mode_set(ctx, args):
@@ -65,6 +96,13 @@ def on_mode_set(ctx, args):
         "is_ready": False,
     })
     bus.shared["pixel_remote_set"] = mode_id
+    bus.shared["pixel_nc4_status"] = {
+        "mode_type": int(mode_type),
+        "mode_id": int(mode_id),
+        "started_at": _ticks_ms(),
+        "elapsed_ms": 0,
+        "running": 1,
+    }
     print("[Pixel] MODE_SET type={} id={} bri={}".format(mode_type, mode_id, brightness))
 
 
@@ -77,6 +115,13 @@ def on_mode_stop(ctx, args):
         "is_ready": False,
     })
     bus.shared["pixel_remote_stop"] = 1
+    status = bus.shared.get("pixel_nc4_status") or {}
+    if status.get("running"):
+        status["elapsed_ms"] = max(
+            0, _ticks_diff(_ticks_ms(), status.get("started_at", _ticks_ms()))
+        )
+    status["running"] = 0
+    bus.shared["pixel_nc4_status"] = status
     print("[Pixel] MODE_STOP")
 
 
@@ -97,6 +142,7 @@ def on_mode_detail_query(ctx, args):
 
 def register(app):
     app.disp.on(0x3101, on_mode_list_query)
+    app.disp.on(0x3103, on_mode_get)
     app.disp.on(0x3105, on_mode_set)
     app.disp.on(0x3106, on_mode_stop)
     app.disp.on(0x3107, on_mode_detail_query)
