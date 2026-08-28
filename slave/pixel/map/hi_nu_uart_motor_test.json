@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": 4,
+  "name": "hi_nu_uart_motor_test",
+  "groups": [
+    {
+      "id": 1,
+      "name": "all_uart_motors",
+      "sel": [
+        {"type": "uartMotor1", "sel": ":"}
+      ]
+    }
+  ]
+}

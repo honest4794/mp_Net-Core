@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "id": 2,
+  "name": "motor_dev_sine",
+  "index": 2,
+  "play_count": -1,
+  "play_interval": 1,
+  "mapping": "hi_nu_uart_motor_test",
+  "map": [
+    {
+      "group": "hi_nu_uart_motor_test.all_uart_motors",
+      "effect": "uart_motor_dev_sine",
+      "write": "w"
+    }
+  ]
+}
