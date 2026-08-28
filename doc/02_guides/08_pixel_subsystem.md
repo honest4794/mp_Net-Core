@@ -42,6 +42,11 @@
 | `offset` | 空間偏移 |
 | `speed` | 倍速 |
 | `reverse` | 反向 |
+| `cycles` | 選用；播放幾個完整波形循環後進入保持狀態 |
+| `hold_value` | 選用；完成 `cycles` 後持續輸出的 12-bit 安全值（UART motor 停止為 `2048`） |
+
+`cycles` 未設定時保持原本的無限循環行為。有限 motor effect 完成後持續輸出
+`hold_value`，不以 `StopIteration` 結束，避免遠端只播放單一 mode 時被大隊列自動重新啟動。
 
 #### 寫效果（最高優化）
 
@@ -204,7 +209,8 @@ core1（計算核）PixelTask                  core0（播放核）RenderTask
 
 **motor 接入（UART-412）**：
 - `UartMotor` 實作 controller 介面（`pixel_type="uartMotor1"`），從 big_buffer **W 通道**讀速度 byte（8-bit），`st_show()` 一次過發射單台 frame 串接（`ff addr value fe` × N）。
-- UART-412 廣播模式受 `MAX_DEVICE=32` 限制，address > 32 時只能用單台串接。
+- UART-412 廣播模式受 `MAX_DEVICE=32` 限制，address > 32 時只能用單台串接；
+  同步 broadcast 亦會避開 payload 保留值 `0xFE`，防止較高 address 提早截斷。
 - 歸零保護：W=0 會是「全速正轉」，故映射成中性值（死區 0x80）。
 - 初始化：`driver/motor_drv.py` 讀 config `uartMotor` → 建 `UartMotor` → `boot.py` 註冊 → `pixel_drv.py` 聚合進 pixel_list。
 

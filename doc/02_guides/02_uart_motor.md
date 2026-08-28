@@ -146,6 +146,8 @@ UartMotor(cfg)
 | `uart` | UART 實例 | ✅ | 共用同一條 UART；缺漏會 `ValueError` |
 | `addresses` | `int` 或 list | ✅ | 控制的台；會排序去重、驗證 1～255 |
 | `version` | `int` | ❌ | 指令方法標記，預設 1 |
+| `sync_broadcast_span` | `int` | ❌ | `1..32`；啟用固定長度 UART-412 broadcast，值必須涵蓋最大 address。未設定則沿用單台 frame 串接 |
+| `sync_tx_interval_ms` | `int` | ❌ | 同步 broadcast 最短發送間隔；只保留最新值，轉入 Stop 不受節流影響。預設 0 |
 | `calib` | dict | ❌ | 校準資料，格式 `{address: {speed: 全程ms}}`，正反同值 |
 | `t_full_ms` | `int` | ❌ | 全速全程 ms 的**預設值**（全部台同值），預設 3000 |
 | `t_full_fwd_ms` | `int` 或 `{addr: ms}` | ❌ | 伸出全速全程 ms，逐台覆蓋 |
@@ -195,7 +197,14 @@ calib（明確速度點）  >  t_full_fwd_ms / t_full_rev_ms / t_full_ms（全�
 零拷貝入口，回傳 `memoryview(self.buffer)`，供外部直接寫 buffer。
 
 ### `show_all()`
-由 buffer 組出**廣播 frame**，單次 `uart.write` 推送全部。**唯一的廣播發送口。**
+單次 `uart.write` 推送全部：
+
+- 有設定 `sync_broadcast_span`：送固定長度 broadcast；未控制 address 固定填 `0x80` Stop。相同狀態不重送，快速變化按 `sync_tx_interval_ms` 只送最新值。
+- 未設定：送各受控 address 的單台 frame 串接，保留 address `33..255` 相容性。
+
+UART-412 broadcast 沒有 byte escaping，payload 中的 `0xFE` 會被誤認為 frame
+結尾；同步模式會把命令值 `0xFE` 提升成同方向相鄰值 `0xFF`，避免較高 address
+漏收。buffer 本身仍保留原始值，只有 wire encoding 會作此安全轉換。
 
 ### `send(addr, value)`
 `set` + 立即發送**單台 frame**（同時更新 buffer）。
@@ -219,7 +228,7 @@ calib（明確速度點）  >  t_full_fwd_ms / t_full_rev_ms / t_full_ms（全�
 ### Frame 格式（v1）
 
 - 單台：`FF addr value FE`
-- 廣播：`FF 00 V1 V2 ... VN FE`（`N = num_devices`）
+- 廣播：`FF 00 V1 V2 ... VN FE`（`N = sync_broadcast_span`，UART-412 上限 32）
 
 ---
 
@@ -443,15 +452,55 @@ while True:
 
 ## 10. 注意事項與限制
 
-1. **`set` / `move_to` / `set_many` 都不發送**。`show_all()` 是唯一的廣播發送口；`send` / `send_all` / `stop_all` 才立即寫 UART。
+1. **`set` / `move_to` / `set_many` 都不發送**。`show_all()` 是統一整批發送口；`send` / `send_all` / `stop_all` 才立即寫 UART。
 2. **address 必須在初始化列表內**，否則 `ValueError`。
 3. **位置是估算值**：這是「速度 × 時間」的開迴路估算，精度取決於校準準不準，且會隨**電壓 / 負載 / 溫度**漂移。要精確定位需加上限位開關（home）或編碼器閉環，本函式庫目前只做開迴路估算。
 4. **啟動/停止暫態**：馬達加減速與滑行會造成短行程誤差，比「速度是否線性」更影響短行程精度。
 5. **正反速度通常不同**：本函式庫 `calib` 預設正反同值；若實測差異大，用 `calibrate(addr, direction, ...)` 分開餵。
 6. **MicroPython 上 `save()` / `load_calibration()` 需要可寫的 Flash 或 SD**，路徑如 `/calib` 須有寫入權限。
 7. `t_full_ms` 預設 3000 只是佔位，**實際一定要校準過**才準。
+8. 同步 broadcast 只消除同一 frame 內逐 address 的下令先後差；開迴路摩打的實際行程仍可能因機械負載、電壓和個體速度而不同。那部分才需要 Calibration。
 
 ## 相關文件
 
 - `03_notes/02_buffer_architecture.md` — 多級緩衝架構（L0 DMA 分配慣例）
 - `01_protocol/02_command_index.md` — 完整指令索引（UART 幀協定的相關指令）
+
+---
+
+## Hi-Nu 1/18 JSON 極速測試模式
+
+共用 mapping：`slave/pixel/map/hi_nu_uart_motor_test.json`。每塊 Slave 控制自己
+`config.json` 內的全部 UART motor：
+
+| Slave profile | UART motor address |
+|---|---|
+| `ports/S3/ESP32-S3_1_18_hiNew/config.json`（Slave 1） | `19`, `15` |
+| `ports/S3/ESP32-S3-1_18/config.json`（Slave 2） | `12`, `21` |
+
+兩個 profile 均使用 `frame_interval_ms=20`（50 FPS），所以 500 frame = 10 秒。
+兩者的 `uartMotor.GPIO.uart` 都是 list index `1`，對應第二個 UART（`id=2`、9600 baud）。
+兩者亦使用相同 `sync_broadcast_span=21`，每次都送 24-byte frame，四個控制器在
+各自完整 frame 的同一個 `FE` 才套用命令；`sync_tx_interval_ms=40` 防止 Mode 2
+在 9600 baud 形成 TX backlog。Stop 轉換仍會即時發送。
+RenderTask 的 `is_streaming`／`is_ready`／`is_paused` 控制旗標不經 500ms cache，
+MODE_SET 到達後不會因兩塊 Slave 各自的 cache 到期相位而相差一個 render frame。
+
+目前 Hi-Nu 測試 profile **沒有 `calib` 欄位**，所以四台收到相同 raw command，
+不作逐台速度補償；`calibrate()`、`calib` loader 及所有校準程式碼仍完整保留，
+日後實測需要時可直接啟用。
+
+| Mode ID | 名稱 | UART motor 行為 |
+|---:|---|---|
+| `0` | `motor_diagnostic` | Direction A，raw `0x01`，10 秒後保持 `0x80` Stop |
+| `1` | `motor_max_open` | Direction B/Open，raw `0xFF` 真正最高速度，10 秒後保持 Stop |
+| `2` | `motor_dev_sine` | sine Open 10 秒 → Stop 5 秒 → sine Close 10 秒 → Stop 5 秒；6 cycle／180 秒後保持 Stop |
+
+Mode 0 不使用 raw `0x00`，因 Pixel motor 安全層會把 W=0 視為未寫入並轉成 Stop；
+因此使用 `0x01`（約 99.2% Direction A）避免 accidental full-speed command。
+
+PC 驗證：
+
+```bash
+python3 -B test/pixel/test_uart_motor_storymodes.py
+```
