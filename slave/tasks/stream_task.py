@@ -51,7 +51,8 @@ class StreamTask(Task):
         self._disabled = False
 
         self.state = _IDLE
-        self._fp = None            # data.bin 檔案 handle
+        self._fp = None            # data.bin 檔案 handle (file 來源)
+        self._src_kind = "file"    # 串流來源: "file" = 檔案; "ram" = RAM 緩衝區 (/ram/...)
         self._frame_bytes = 0      # 期望幀大小（num_pixels*4；無 num_pixels 時 = total_bytes）
         self._frame_buf = None     # 讀取用的整幀緩衝
         self._mv_frame = None      # _frame_buf 的 memoryview
@@ -117,6 +118,45 @@ class StreamTask(Task):
             view[:k] = self._mv_frame[:k]
         if slot > k:
             view[k:] = self._mv_neutral[k:]
+
+    # ── 來源統一讀寫介面 (file / RAM 分流) ──────────────
+    def _release_src(self):
+        """關閉目前串流來源 (file 關 handle, ram 清 fs 串流狀態)。"""
+        if self._src_kind == "ram":
+            try:
+                fs.end_read()
+            except Exception:
+                pass
+        elif self._fp is not None:
+            try:
+                self._fp.close()
+            except Exception:
+                pass
+        self._fp = None
+        self._src_kind = "file"
+
+    def _read_into(self, buf):
+        """依來源讀下一段到 buf, 回傳位元組數 (0=結束)。"""
+        if self._src_kind == "ram":
+            return fs.read_into(buf)
+        if self._fp is not None:
+            return self._fp.readinto(buf)
+        return 0
+
+    def _seek(self, off):
+        """依來源 seek (位元組偏移)。"""
+        if self._src_kind == "ram":
+            fs.seek(off)
+        elif self._fp is not None:
+            self._fp.seek(off)
+
+    def _tell(self):
+        """依來源回傳目前位元組偏移。"""
+        if self._src_kind == "ram":
+            return fs.tell()
+        if self._fp is not None:
+            return self._fp.tell()
+        return 0
 
     # ── READY_ACK（0x3008）──────────────
     def _send_ready(self):
@@ -198,17 +238,25 @@ class StreamTask(Task):
         file_name = cmd.get("file_name", "")
         block_id = int(cmd.get("block_id", 0) or 0)
         play_mode = int(cmd.get("play_mode", 0) or 0)
+
+        # 🔧 重連/中途加入時可能已有開啟中的來源 (舊 stream 還在播) — 先關掉再重開,
+        #    否則反覆重連會把檔案描述子耗盡 (RAM 來源則清 fs 串流狀態)。
+        self._release_src()
+
+        # ── 來源分流: /ram/... = RAM 緩衝區 (實時播放), 其餘 = 檔案 ──
         try:
-            path = fs.resolve(file_name)[1]
-            # 🔧 重連/中途加入時可能已有開啟中的 handle (舊 stream 還在播) —
-            #    先關掉再重開, 否則反覆重連會把檔案描述子耗盡。
-            if self._fp is not None:
-                try:
-                    self._fp.close()
-                except Exception:
-                    pass
-                self._fp = None
-            self._fp = open(path, "rb")
+            kind, full, _raw = fs.resolve(file_name)
+            if kind == "ram":
+                if fs.begin_read(file_name) <= 0:
+                    get_log().error("[Stream] RAM 緩衝區不存在或為空: {}".format(file_name))
+                    self._reset()
+                    return
+                self._src_kind = "ram"
+                self._path = full
+            else:
+                self._fp = open(full, "rb")
+                self._src_kind = "file"
+                self._path = full
         except Exception as e:
             get_log().error("[Stream] 開檔失敗 {}: {}".format(file_name, e))
             self._reset()
@@ -238,9 +286,9 @@ class StreamTask(Task):
         seek 後不重置) — PC 端顯示/自動續播計算才準。
         """
         try:
-            if self._fp is None or self._frame_bytes <= 0:
+            if self._frame_bytes <= 0:
                 return
-            p = self._fp.tell() // self._frame_bytes
+            p = self._tell() // self._frame_bytes
             stream_actions._STREAM_STATE["pos_frame"] = max(0, p - 1)
         except Exception:
             pass
@@ -249,7 +297,7 @@ class StreamTask(Task):
         view = self.hub.get_write_view()
         if view is None:
             return
-        n = self._fp.readinto(self._frame_buf)
+        n = self._read_into(self._frame_buf)
         if n <= 0:
             self._reset()
             return
@@ -281,11 +329,11 @@ class StreamTask(Task):
                 bus.shared["is_streaming"] = True
 
     def _begin_seek(self, frame, resume):
-        if self._fp is None:
+        if self._src_kind == "file" and self._fp is None:
             return
         self.hub.flush()
         try:
-            self._fp.seek(frame * self._frame_bytes)
+            self._seek(frame * self._frame_bytes)
         except Exception as e:
             get_log().error("[Stream] seek 失敗: {}".format(e))
             return
@@ -297,7 +345,7 @@ class StreamTask(Task):
         view = self.hub.get_write_view()
         if view is None:
             return
-        n = self._fp.readinto(self._frame_buf)
+        n = self._read_into(self._frame_buf)
         if n <= 0:
             self._reset()
             return
@@ -316,16 +364,16 @@ class StreamTask(Task):
         view = self.hub.get_write_view()
         if view is None:
             return  # hub 滿（RenderTask 還沒消化）→ 這輪不補，不阻塞
-        n = self._fp.readinto(self._frame_buf)
+        n = self._read_into(self._frame_buf)
         if n <= 0:
             # 檔尾
             if self._play_mode == 1:
                 try:
-                    self._fp.seek(0)
+                    self._seek(0)
                 except Exception:
                     self._reset()
                     return
-                n = self._fp.readinto(self._frame_buf)
+                n = self._read_into(self._frame_buf)
                 if n <= 0:
                     self._reset()
                     return
@@ -338,12 +386,7 @@ class StreamTask(Task):
         stream_actions._STREAM_STATE["frame_count"] += 1
 
     def _reset(self):
-        if self._fp is not None:
-            try:
-                self._fp.close()
-            except Exception:
-                pass
-            self._fp = None
+        self._release_src()
         self.state = _IDLE
         bus.shared.update({
             "stream_active": False,

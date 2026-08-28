@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="">
+  <title>NetBus WebMaster</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🎬 NetBus <span>WebMaster</span></div>
+    <div class="topbar-right">
+      <span id="connState" class="conn-state off">未連線</span>
+      <button id="themeToggle" class="btn ghost" title="切換主題">🌓</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="side-section">
+        <h3>設備</h3>
+        <ul id="deviceList" class="device-list"></ul>
+      </div>
+      <div class="side-section">
+        <h3>音訊</h3>
+        <select id="mp3Select" class="select"></select>
+        <div class="delay-row">
+          <label>延遲 <span id="delayVal">0</span> ms</label>
+          <input id="delaySlider" type="range" min="-500" max="500" value="0" step="10">
+        </div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section class="card">
+        <div class="card-head">
+          <h2>播放控制</h2>
+          <span id="activeSlave" class="muted">尚未選擇設備</span>
+        </div>
+        <div class="controls">
+          <div class="ctrl-row">
+            <label>檔案 / 緩衝區</label>
+            <input id="fileName" type="text" value="/ram/live.bin" class="input" placeholder="/ram/live.bin 或 data.bin">
+          </div>
+          <div class="ctrl-row">
+            <label>Play Mode</label>
+            <select id="playMode" class="select">
+              <option value="0">播放一次</option>
+              <option value="1">循環</option>
+            </select>
+            <label>FPS</label>
+            <input id="fps" type="number" value="40" min="1" max="120" class="input short">
+          </div>
+          <div class="btn-row">
+            <button id="btnPrepare" class="btn primary">準備</button>
+            <button id="btnPlay" class="btn success">播放</button>
+            <button id="btnPause" class="btn">暫停/繼續</button>
+            <button id="btnStop" class="btn danger">停止</button>
+            <button id="btnSeek" class="btn">跳轉 0</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>RAM 實時播放</h2>
+          <span class="muted">上傳到指定 RAM 緩衝區後可直接串流</span>
+        </div>
+        <div class="controls">
+          <div class="ctrl-row">
+            <label>緩衝區路徑</label>
+            <input id="ramPath" type="text" value="/ram/live.bin" class="input">
+            <label>Chunk</label>
+            <input id="ramChunk" type="number" value="4096" class="input short">
+          </div>
+          <div class="btn-row">
+            <input id="ramFile" type="file" class="file">
+            <button id="btnRamUpload" class="btn primary">上傳到 RAM</button>
+          </div>
+          <div class="progress"><div id="ramProgress" class="progress-bar"></div></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h2>終端 / 日誌</h2></div>
+        <div id="terminal" class="terminal"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 隱藏音訊播放器 (原生 <audio>) -->
+  <audio id="player" preload="auto"></audio>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
