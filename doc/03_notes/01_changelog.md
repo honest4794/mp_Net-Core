@@ -337,3 +337,39 @@ self.next_tick_us = time.ticks_add(self.next_tick_us, self.interval_us)
 - `02_guides/08_pixel_subsystem.md` — §4.1 Pixel Render 架構簡介（雙核 + hub + controller + 停止填中性值 + motor 接入）。
 - `02_guides/11_developing_effects.md` — §7 新增「用 write:w 驅動馬達」。
 - `slave/lib/hw/uart_motor.py`、`slave/driver/motor_drv.py`、`slave/lib/sw/PixelController.py`（clear_all / neutral_value）。
+
+---
+
+## 12) RenderTask 停止/暫停的電機行為補完（dStay 顯式化 + 中性幀只推一次）
+
+> 電機（uartMotor）一直透過 `PixelStreamer` 通用 controller 介面參與播放（`show_all` 讀 W 通道），
+> 本輪補上停止/暫停路徑的兩個缺口，並把 `dStay`（對齊舊專案 PWM 的 dArc 概念）顯式寫進 config。
+
+### 12.1 停止路徑：clear_all 不再每 loop 推幀（電機 UART 洪水）
+
+- 舊版 `render.py` 停止分支的 `clear_all()` 在 100ms 節流檢查**之前**執行 → 每個 runner 週期（數百 Hz～1kHz）都推一幀完整中性幀，電機 UART 被 stop frame 灌爆。
+- 改為狀態轉換旗標 `_neutral_pushed`：只在「進入停止狀態」時推一次（燈熄、電機 0x80 停），硬體會保持在中性值。
+
+### 12.2 暫停 = 電機也停（`PixelStreamer.stop_motors()`）
+
+- 舊版 `is_paused` 分支完全不推幀 → 電機保持最後速度 byte，暫停期間持續運轉。
+- 新增 `PixelStreamer.stop_motors()`：只把 `pixel_type="uartMotor1"` 的 controller 填 `neutral_value`（0x80 停）歸位、**燈保持最後一幀**，再推一幀；同樣只推一次。
+- `pixel_task` 的 pixel_pause 現在同步 `bus.shared["is_paused"]`，讓本地燈效暫停也走同一條電機歸位路徑（與 stream 0x3005 暫停一致）。
+
+### 12.3 config 顯式化
+
+- `slave/config.json` 的 `uartMotor.list` 每台加 `"dStay": 2048`（12-bit，>>4 = 0x80 死區停；原為 code 預設值，現與 PWM 的 dArc 一樣在 config 可見）。
+- `motor_drv.py` docstring 補 `dStay` 欄位說明。
+
+---
+
+## 13) 移除舊專案遺留的 dArc 設定（全部改用 dStay）
+
+> 舊專案 mp_LEDController 的 `dArc`（reset 回到中性值）在本專案已改名 `dStay`，
+> 但 config 仍殘留舊欄位（code 端完全沒有讀 `dArc`，是死設定）。本輪全部清掉。
+
+- `slave/config.json`、`ports/P4/ESP32-P4-ETH/config.json`、`test/protocol/night_run/config.1401.{test,backup}.json`：
+  - PWM 條目 `"dArc": 0` → `"dStay": 0`
+  - PCA9685 條目：移除 GPIO 內層的 `"dArc": 0`，改在 item 層放 `"dStay": 0`（driver 讀的位置：`pca9685_drv.py` 的 `item.get("dStay", 0)`）
+- LED（WS2812/APA102/PCA9685）`dStay` 顯式設 0 與 code 預設一致；uartMotor 維持 2048。
+- grep 全 `*.json` 已無 `dArc`；docs 中「對齊舊專案 dArc 概念」的歷史說明保留。

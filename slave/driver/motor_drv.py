@@ -2,7 +2,10 @@
 motor_drv.py — UART 電機控制器 (UART-412) 初始化
 
 設定來源: bus.shared["uartMotor"]  ({enable, list})
-         list item: {"GPIO": {"uart": <uart_list index>}, "address": ["51"], "version": 1}
+         list item: {"GPIO": {"uart": <uart_list index>}, "address": ["51"],
+                     "version": 1, "dStay": 2048}
+         dStay = 中性值（對齊舊專案 PWM 的 dArc 概念）：停止/熄燈/暫停時
+         電機回到的值（12-bit 0-4095，>>4 = 8-bit 速度 byte；2048 = 0x80 死區停）。
 產物:    bus.register_service("motor_list", [UartMotor, ...])
 
 UartMotor 具備 pixel 相容介面（pixel_type="uartMotor1"），可作為

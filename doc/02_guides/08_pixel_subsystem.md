@@ -201,6 +201,7 @@ core1（計算核）PixelTask                  core0（播放核）RenderTask
 - config 每台設備可設 `dStay`（default Stay）：燈 `0`（熄滅）、motor `2048`（= 0x80 死區停）。
 - 不能全清 0 —— UART-412 馬達的 `0` = 全速正轉（危險！）。
 - 三處停止流程統一用 `clear_all()`：`render.py`（is_streaming 熄燈）、`pixel_task._stop()`、`Core_Manager` 退出。
+- **暫停 = 電機也停（`PixelStreamer.stop_motors()`）**：`render.py` 的 is_paused 分支只把電機（`pixel_type="uartMotor1"`）填中性值歸位、燈保持最後一幀，且停止/暫停的中性幀只在狀態轉換時推一次（避免每 loop 推幀造成電機 UART 洪水）。
 
 **motor 接入（UART-412）**：
 - `UartMotor` 實作 controller 介面（`pixel_type="uartMotor1"`），從 big_buffer **W 通道**讀速度 byte（8-bit），`st_show()` 一次過發射單台 frame 串接（`ff addr value fe` × N）。

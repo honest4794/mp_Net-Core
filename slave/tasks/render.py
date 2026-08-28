@@ -14,6 +14,7 @@ class RenderTask(Task):
         self._played_frames = 0
         self.interval_us = 0
         self.next_tick_us = 0
+        self._neutral_pushed = False   # 停止/暫停是否已推過中性幀（只推一次，防 UART 洪水）
 
     @staticmethod
     def _resolve_interval_ms(sys_cfg):
@@ -53,10 +54,13 @@ class RenderTask(Task):
         is_streaming = self.fcache_get("is_streaming")
         if not is_streaming:
             is_ready = self.fcache_get("is_ready")
-            if is_ready == False:
+            if is_ready == False and not self._neutral_pushed:
                 # 停止/熄燈：填中性值（燈=0 熄滅，motor=0x80 死區停），
                 # 不能全清 0 —— UART-412 的 0 = 全速正轉！
+                # 只在狀態轉換時推一次：硬體會保持在中性值，之後每 loop 都推
+                # 會把電機 UART 灌爆（舊版 clear_all 在節流檢查之前無節流執行）。
                 self.st_pixel.clear_all()
+                self._neutral_pushed = True
 
             if time.ticks_diff(time.ticks_us(), self.next_tick_us) < 0:
                 return
@@ -67,11 +71,18 @@ class RenderTask(Task):
 
         is_paused = self.fcache_get("is_paused")
         if is_paused:
+            if not self._neutral_pushed:
+                # 暫停：燈保持最後一幀，電機填中性值（0x80 停）歸位，只推一次
+                self.st_pixel.stop_motors()
+                self._neutral_pushed = True
             if time.ticks_diff(time.ticks_us(), self.next_tick_us) < 0:
                 return
             self.next_tick_us = time.ticks_add(time.ticks_us(), 50000)
             self._played_frames = 0
             return
+
+        # 恢復播放：清掉中性幀旗標，之後新幀會覆寫 big_buffer
+        self._neutral_pushed = False
 
         now = time.ticks_us()
         if time.ticks_diff(now, self.next_tick_us) > 200000:

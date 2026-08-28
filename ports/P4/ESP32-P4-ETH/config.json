@@ -97,7 +97,7 @@
   "PWM": {
     "enable": 0,
     "list": [
-      {"GPIO": 0,"dArc": 0,"type": 0}
+      {"GPIO": 0,"dStay": 0,"type": 0}
     ]
   },
   "I2S": {
@@ -169,7 +169,7 @@
     "enable": 1,
     "list": [
       {
-        "GPIO": {"i2c": 0,"dArc": 0,"type": 0},"address": ["0xFF"]
+        "GPIO": {"i2c": 0,"type": 0},"address": ["0xFF"],"dStay": 0
       }
     ]
   },

@@ -158,6 +158,24 @@ class PixelStreamer:
                 buf[o + 3] = neutral
         self.show_all()
 
+    def stop_motors(self):
+        """暫停：電機填中性值（0x80 死區停）歸位，燈保持最後一幀，再推一幀到硬體。
+
+        與 clear_all() 的差異：只動電機 controller（pixel_type="uartMotor1"），
+        燈光通道保持 big_buffer 原值（暫停前最後一幀），所以燈不熄。
+        big_buffer 的電機 W 通道被改成中性值 — 恢復播放後新幀會覆寫，無需還原。
+        """
+        buf = self.big_buffer
+        offs = self.offsets
+        for i, c in enumerate(self.controllers):
+            if getattr(c, "pixel_type", "") != "uartMotor1":
+                continue
+            neutral = getattr(c, "neutral_value", 0)
+            off = offs[i]
+            for k in range(c.num_pixels):
+                buf[off + (k << 2) + 3] = neutral
+        self.show_all()
+
     def close(self):
         for c in self.controllers:
             c.is_active = False

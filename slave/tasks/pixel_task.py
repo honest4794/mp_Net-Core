@@ -316,6 +316,7 @@ class PixelTask(Task):
         # 通知播放核（RenderTask）開始取幀
         bus.shared["is_streaming"] = True
         bus.shared["is_ready"] = True
+        bus.shared["is_paused"] = False
         get_log().info("[Pixel] ▶ show 開始（{} mode(s)）".format(len(self._show_list)))
 
     def _stop(self):
@@ -338,6 +339,8 @@ class PixelTask(Task):
             self._start()
         if bus.shared.pop("pixel_pause", None) is not None:
             self._paused = not self._paused
+            # 同步給播放核（RenderTask）：暫停時電機填中性值歸位（is_paused 分支）
+            bus.shared["is_paused"] = self._paused
             get_log().info("[Pixel] ⏸ paused={}".format(self._paused))
         # 遠端指定播放單一本地模式 (0x3105 MODE_SET → pixel_actions 寫入)
         rid = bus.shared.pop("pixel_remote_set", None)
