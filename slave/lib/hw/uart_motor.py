@@ -202,13 +202,47 @@ class UartMotor:
         self._build_broadcast = method["broadcast"]
         self._build_single = method["single"]
 
+        # 同步廣播是 opt-in：兩個 Slave 使用相同 span，UART-412 會等到共同的
+        # ENDING 才一次套用整幀，避免逐 address frame 的先後時間差。
+        # 未啟用時保留原有單台 frame 串接，支援 address > 32 的裝置。
+        self.sync_broadcast_span = int(cfg.get("sync_broadcast_span", 0) or 0)
+        if self.sync_broadcast_span:
+            if self._build_broadcast is None:
+                raise ValueError(
+                    "UartMotor: version {} 沒有 broadcast encoder".format(
+                        self.version))
+            if self.sync_broadcast_span < max(addresses):
+                raise ValueError(
+                    "UartMotor: sync_broadcast_span {} 小於最大 address {}".format(
+                        self.sync_broadcast_span, max(addresses)))
+            if self.sync_broadcast_span > 32:
+                raise ValueError(
+                    "UartMotor: sync_broadcast_span 不可超過 UART-412 上限 32")
+        self.sync_tx_interval_ms = int(cfg.get("sync_tx_interval_ms", 0) or 0)
+        if self.sync_tx_interval_ms < 0:
+            raise ValueError("UartMotor: sync_tx_interval_ms 必須 >= 0")
+
         # 廣播欄位數 = 最大 address（參考文件 8 台 = addr 1..8）。
         # 未控制的 position 固定 STOP（0x80），安全預設。
         self.num_devices = max(addresses)
         self.buffer = bytearray(self.num_devices)
-        self._tx_broadcast = bytearray(self.num_devices + 3)
+        tx_size = (self.sync_broadcast_span or self.num_devices) + 3
+        self._tx_broadcast = bytearray(tx_size)
         self._tx_single = bytearray(4)
         self.set_all(STOP)
+
+        # sync buffer 只讓本 controller 管理的 address 帶命令；其餘 position
+        # 永遠填 STOP，避免同一 UART bus 上未列入設定的裝置誤動。
+        self._sync_values = None
+        self._sync_last_sent = None
+        self._sync_has_sent = False
+        self._sync_last_tx_ms = 0
+        if self.sync_broadcast_span:
+            self._sync_values = bytearray(self.sync_broadcast_span)
+            self._sync_last_sent = bytearray(self.sync_broadcast_span)
+            for i in range(self.sync_broadcast_span):
+                self._sync_values[i] = STOP
+                self._sync_last_sent[i] = STOP
 
         # 中性值（停止/歸零時回到的數值）：config 的 dStay（default Stay, 12-bit）
         # → big_buffer 8-bit。預設 2048 = 0x80 死區停（UART-412 的 0 = 全速正轉！）。
@@ -335,13 +369,56 @@ class UartMotor:
     # dStay（default Stay，12-bit，config 可覆寫）：停止/歸零時回到的數值。
     DEFAULT_DSTAY = 2048   # = 0x80 死區（12-bit 語義，>>4 = 0x80）
 
-    def show_all(self):
-        """單台 frame 串接：一次 write 發所有 address 的 frame（FF addr value FE × N）。
+    def show_all(self, force=False):
+        """一次 write 發送目前狀態。
 
-        UART-412 廣播模式受 MAX_DEVICE=32 限制（原碼 while i < MAX_DEVICE+2），
-        address > 32 的設備廣播收不到；故一律用單台 frame 串接，一次過發射。
-        依 version 用對應的 _build_single 編碼（v1=FF/addr/value/FE，可註冊其他版本）。
+        sync_broadcast_span > 0：固定長度 FF 00 V1..VN FE；UART-412 在同一個
+        ENDING 套用全部值。重複值不重送，變化值按 sync_tx_interval_ms 節流，
+        但轉入 STOP 或 force=True 永遠即時發送。
+
+        未啟用 sync：保留單台 frame 串接（FF addr value FE × N），支援
+        UART-412 廣播上限 32 以外的 address。
         """
+        if self.sync_broadcast_span:
+            values = self._sync_values
+            last = self._sync_last_sent
+            all_stopped = True
+            for addr in self.addresses:
+                value = self.buffer[addr - 1]
+                # UART-412 broadcast 沒有 escaping；payload 的 0xFE 會被 parser
+                # 當成提早結尾。0xFE（近全速反轉）提升一級為 0xFF，保持方向
+                # 並確保較高 address 仍收到同一完整 frame。
+                if value == ENDING:
+                    value = REV_FS
+                values[addr - 1] = value
+                if value != STOP:
+                    all_stopped = False
+
+            changed = not self._sync_has_sent
+            if not changed:
+                for i in range(self.sync_broadcast_span):
+                    if values[i] != last[i]:
+                        changed = True
+                        break
+            if not changed and not force:
+                return
+
+            now = self._clock()
+            if (not force and not all_stopped and self._sync_has_sent
+                    and self.sync_tx_interval_ms > 0
+                    and self._clock_diff(now, self._sync_last_tx_ms)
+                    < self.sync_tx_interval_ms):
+                return
+
+            self._build_broadcast(
+                self._tx_broadcast, values, self.sync_broadcast_span)
+            self.uart.write(self._tx_broadcast)
+            for i in range(self.sync_broadcast_span):
+                last[i] = values[i]
+            self._sync_has_sent = True
+            self._sync_last_tx_ms = now
+            return
+
         n = len(self.addresses)
         need = n * 4
         if len(self._tx_broadcast) < need:
@@ -361,7 +438,7 @@ class UartMotor:
     def send_all(self, value):
         """set_all + show_all 立即廣播全部同值。"""
         self.set_all(value)
-        self.show_all()
+        self.show_all(force=True)
 
     def stop_all(self):
         """全部停止（set_all(STOP) + show_all）。"""
@@ -574,7 +651,7 @@ class UartMotor:
             self.buffer[i] = v if v != 0 else self.neutral_value
 
     def st_show(self):
-        """組廣播 frame（FF 00 V1..VN FE）一次過 uart.write。"""
+        """按設定組同步廣播或單台串接 frame，一次過 uart.write。"""
         self.show_all()
 
 

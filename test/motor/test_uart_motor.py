@@ -256,6 +256,107 @@ class FakeClock:
         return a - b
 
 
+class TestSynchronizedBroadcast(unittest.TestCase):
+
+    def _motor(self, addresses=(15, 19), span=21, interval=40):
+        self.clock = FakeClock()
+        self.uart = FakeUART()
+        return UartMotor({
+            "version": 1,
+            "addresses": list(addresses),
+            "uart": self.uart,
+            "clock": self.clock,
+            "clock_diff": FakeClock.diff,
+            "sync_broadcast_span": span,
+            "sync_tx_interval_ms": interval,
+        })
+
+    def test_common_span_broadcast_latches_controlled_motors_at_same_eof(self):
+        motor = self._motor()
+        motor.set(15, 0x01)
+        motor.set(19, 0x01)
+        motor.show_all()
+
+        expected_values = [STOP] * 21
+        expected_values[14] = 0x01
+        expected_values[18] = 0x01
+        self.assertEqual(
+            bytes([HEADER, 0x00] + expected_values + [ENDING]),
+            self.uart.writes[-1],
+        )
+        self.assertEqual(24, len(self.uart.writes[-1]))
+
+    def test_unchanged_payload_is_not_retransmitted(self):
+        motor = self._motor()
+        motor.set(15, REV_FS)
+        motor.set(19, REV_FS)
+        motor.show_all()
+        motor.show_all()
+        self.assertEqual(1, len(self.uart.writes))
+
+    def test_throttle_keeps_latest_value_without_uart_backlog(self):
+        motor = self._motor()
+        motor.set_all(0x10)
+        motor.show_all()
+
+        self.clock.t = 20
+        motor.set_all(0x20)
+        motor.show_all()
+        self.clock.t = 39
+        motor.set_all(0x30)
+        motor.show_all()
+        self.assertEqual(1, len(self.uart.writes))
+
+        self.clock.t = 40
+        motor.show_all()
+        self.assertEqual(2, len(self.uart.writes))
+        self.assertEqual(0x30, self.uart.writes[-1][2 + 14])
+        self.assertEqual(0x30, self.uart.writes[-1][2 + 18])
+
+    def test_stop_all_bypasses_throttle(self):
+        motor = self._motor()
+        motor.set_all(REV_FS)
+        motor.show_all()
+        self.clock.t = 1
+        motor.stop_all()
+
+        self.assertEqual(2, len(self.uart.writes))
+        self.assertEqual(bytes([HEADER, 0x00] + [STOP] * 21 + [ENDING]),
+                         self.uart.writes[-1])
+
+    def test_reserved_ending_value_cannot_truncate_sync_broadcast(self):
+        """UART-412 treats the first 0xFE in broadcast data as the frame ending."""
+        motor = self._motor(addresses=(12, 21))
+        motor.set(12, ENDING)
+        motor.set(21, ENDING)
+        motor.show_all()
+
+        frame = self.uart.writes[-1]
+        self.assertEqual(ENDING, frame[-1])
+        self.assertEqual(1, frame.count(ENDING))
+        self.assertEqual(REV_FS, frame[2 + 11])
+        self.assertEqual(REV_FS, frame[2 + 20])
+
+    def test_span_must_cover_highest_address_and_uart412_limit(self):
+        with self.assertRaises(ValueError):
+            self._motor(addresses=(15, 19), span=18)
+        with self.assertRaises(ValueError):
+            self._motor(addresses=(15, 19), span=33)
+
+    def test_sync_mode_requires_a_broadcast_encoder(self):
+        def build_v2_single(frame, addr, value):
+            frame[:] = bytes([0xEE, addr, value, 0xEF])
+
+        register_command_method(22, None, build_v2_single)
+        with self.assertRaises(ValueError):
+            UartMotor({
+                "version": 22,
+                "addresses": [1],
+                "uart": FakeUART(),
+                "sync_broadcast_span": 1,
+            })
+
+
 class TestMotionLayer(unittest.TestCase):
 
     def _motor(self, **kw):
