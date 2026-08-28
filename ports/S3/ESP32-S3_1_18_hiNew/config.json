@@ -7,12 +7,13 @@
         "boot_strict": 0,
         "c_lum": 1.0,
         "hostname": "",
+        "cID": "0001",
         "refresh_rate_ms": 1,
         "master_IP": "",
         "master_port": 0,
         "discovery_port": 9000,
         "heartbeat_interval": 10000,
-        "frame_interval_ms": 25,
+        "frame_interval_ms": 20,
         "num_pixels": 336,
         "buffer_frames": 1,
         "log_interval_ms": 1000
@@ -58,11 +59,11 @@
         }
     },
     "CircuitDecode": {
-        "enable": 0,
+        "enable": 1,
         "list": [
             {
                 "GPIO": {
-                    "uart": 1
+                    "uart": 0
                 }
             }
         ]
@@ -90,17 +91,18 @@
                 "id": 1,
                 "baudrate": 115200,
                 "GPIO": {
-                    "tx": 10,
-                    "rx": 11,
-                    "en": 9
-                }
+                    "tx": 14,
+                    "rx": 15,
+                    "en": 16
+                },
+                "en_settle_ms": 1
             },
             {
                 "id": 2,
                 "baudrate": 9600,
                 "GPIO": {
-                    "tx": 12,
-                    "rx": 8
+                    "tx": 17,
+                    "rx": null
                 }
             }
         ]
@@ -180,13 +182,16 @@
         "list": [
             {
                 "GPIO": {
-                    "uart": 2
+                    "uart": 1
                 },
                 "address": [
-                    "51"
+                    "19",
+                    "15"
                 ],
                 "version": 1,
-                "dStay": 2048
+                "dStay": 2048,
+                "sync_broadcast_span": 21,
+                "sync_tx_interval_ms": 40
             }
         ]
     }
