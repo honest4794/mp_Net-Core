@@ -405,3 +405,275 @@ self.next_tick_us = time.ticks_add(self.next_tick_us, self.interval_us)
 - `on_mode_set` 不再 `time.sleep_ms()`（舊版在 core0 通訊鏈上阻塞最多 10 秒，
   全 core0 任務卡死）；改記 `pixel_remote_start_at` 時間戳，由 PixelTask
   延遲到期才播放。MODE_STOP 可取消未到期的延遲 MODE_SET。
+
+---
+
+## 15) 模式播放參數：play_repeat（每輪連播次數）+ range（播放範圍）
+
+> modes/*.json 新增兩個播放控制：`play_repeat` 控制「一輪出現時播幾次」，
+> `range` 控制「map 條目只播群組內的哪一段」。
+
+### 15.1 `play_repeat`（mode 層，預設 1）
+
+- 每輪出現時連播 N 次：效果播完（生成器耗盡）→ `_restart_player` 重播，
+  直到次數滿才 `_find_next` 換下一個；生成器不支援 restart → 自動剷除重建。
+
+### 15.2 `range`（map 條目層，選用）
+
+- `PixelLayout.sub_offsets()`：群組內 slice 範圍（Python 語義，end 不含，
+  群組相對，對齊 set_value 的 k 語義）→ 預先算好的子 offsets array('H')。
+- `PixelLayout.scatter_offs()`：用預先算好的 offsets 散射（scatter 拆出的
+  低層路徑，range 用；無 range 的條目仍走原 scatter）。
+- 同一群組可拆多段配不同效果（重複檢查改為 group+range 組合）；
+  範圍外像素「不修改」，可多段累加組合。
+
+---
+
+## 16) play_loop（循環次數，-1=無限）+ maxF（每次播放最大幀數）
+
+> 每輪出現時的播放控制擴充：`play_loop` 取代 `play_repeat`（舊名相容），
+> 並支援 `-1` 無限循環；新增 `maxF` 截斷單次播放幀數。
+
+- `play_loop`：每輪出現時連播 N 次（播完 restart 重播）；`-1` = 無限循環，
+  一直播到 `pixel_stop`/MODE_STOP（0x3106）/串流介入。`play_repeat` 仍相容（別名）。
+- `maxF`：每次播放最大幀數（commit 幀計數）；達上限 → 強制結束本次循環
+  （配合 `play_loop` 可做「每次循環播固定幀數、無限循環」）。0/缺省 = 不限制。
+- `slave/pixel/modes/demo_eyes.json` 更新為新欄位範例（`play_loop:-1` + `maxF:500` +
+  map 拆兩段 range：eyes 0:16、wave 16:32）。
+- 注意：mode JSON 欄位間逗號不可省（`"maxF": 500` 後要逗號，否則載入失敗）。
+
+---
+
+## 17) 播放語意重定義（play_loop / play_count / play_interval）+ 短效果自己循環
+
+> 三個播放欄位改用使用者指定的語意；並處理「同 mode 內效果長短不一」的餘下部分
+> ——短效果自己循環重播，直到最長效果結束。
+
+### 17.1 欄位語意（新）
+
+| 欄位 | 語意 | 值 |
+|---|---|---|
+| `play_loop` | **總共 loop/出現幾次循環** | `0`=不播、`N`=最多 N 次、`-1`=常駐每輪（預設 -1） |
+| `play_count` | **同一個 loop 中播放幾次** | `1..N`=連播 N 次、`-1`=無限連播（預設 1） |
+| `play_interval` | **相隔多少個循環播一次** | `0`=每個循環都播、`1`=隔 1 循環（預設 0） |
+
+- 舊語意 `play_count`（前 N 輪）→ 新 `play_loop`；舊 `play_interval`（1=每輪）→
+  新 `play_interval` 0-based（0=每輪）。**demo_eyes.json 已遷移**
+  （`play_loop:-1, play_count:1, play_interval:0`）。
+- `play_interval=0` 除零問題修正：`(pass-1) % (interval+1)`，0 即每循環，不再崩潰。
+
+### 17.2 短效果自己循環（長短不一的餘下部分）
+
+- `_tick_player`：entry 生成器耗盡 → `restart()` 重播（短效果繼續動），直到
+  **全部 entry 都至少跑完一次**（= 最長效果結束）本次循環才結束，全部一起重播/換下一個。
+- 生成器不支援 `restart()` → 耗盡即定格（保持最後一幀，相容舊行為）。
+- `play_count` 連播 / `maxF` 截斷維持。
+
+### 17.3 mode 檔遷移（舊語意 → 新語意）
+
+- 對照：舊 `play_count`（前 N 輪）→ 新 `play_loop`；舊 `play_interval`（1=每輪）→
+  新 `play_interval` 0-based（`N-1`）；舊 `play_repeat`/`play_loop`（連播）→ 新 `play_count`。
+- 已遷移：`slave/pixel/modes/demo_eyes.json`、`tools/PC/download/{80F1B2D0ADA8,30EDA0296EDC}/pixel/modes/{demo_eyes,diffusion}.json`
+  （全部 → `play_loop:-1, play_count:1, play_interval:0`）。
+- ⚠️ **部署順序**：新語意的 mode 檔必須配新韌體一起上裝置——舊韌體讀
+  `play_interval:0` 會除零崩潰、`play_count:1` 會變「只前 1 輪」。
+
+---
+
+## 18) 看門狗 WDT（config 控制 + Ctrl+C 自動解除 + 開機按鍵 bypass）
+
+> ESP32 的 `machine.WDT` 無法手動停止（無 deinit，soft reset 不清，斷電才清）。
+> 故設計不「停」狗，而是用**餵狗執行緒**達成等效解除——只有「真卡死」才重置。
+
+### 18.1 架構
+
+- `lib/sys/watchdog.py`：`init_watchdog()`（config 讀取 + 按鍵 bypass + 建立 WDT +
+  啟動 keeper 執行緒）+ 純決策函式 `_should_feed()`（PC 可測）。
+- `TaskManager.runner_loop` 每圈寫 `core0_tick` / `core1_tick` 心跳
+  （core1 首次啟動設 `core1_started`）；keeper 執行緒不可用時退回 runner 直接餵狗。
+- `Core_Manager.launcher()` 在 `tm.finalize()` 後呼叫 `init_watchdog()`。
+
+### 18.2 餵狗決策（keeper 每 ~1s）
+
+| 情境 | 決策 |
+|---|---|
+| `wdt_hold=True`（REPL 手動）或 `engine_run=False`（**Ctrl+C 強制暫停**，Core_Manager finally 設定） | 餵（WDT 等效解除，REPL 測試無限時間） |
+| 引擎在跑且 core0 心跳新鮮（core1 已啟動時也新鮮） | 餵 |
+| 引擎在跑但心跳 stale（任務真卡死） | **不餵 → 8s 後重置** |
+
+### 18.3 逃生門（測試不被鎖）
+
+1. config `System.watchdog.enable: 0`（預設）——開發/單元測試完全不建立 WDT。
+2. 開機按住 `btn_bypass_gpio`（預設 GPIO42）→ 不建立 WDT——現場測試不用改 config。
+3. 使用者 Ctrl+C 暫停 → keeper 自動繼續餵狗——**不用先改/存 config**。
+
+### 18.4 限制
+
+- timeout 上限 ~8388ms（clamp 8000）；單次任務阻塞不能超過 timeout。
+- soft reset（Ctrl+D）不清 WDT；斷電/硬體 reset 才清。boot 早期 keeper 即啟動，
+  重啟循環不會發生。
+
+---
+
+## 19) WDT 自動關閉（Ctrl+C 時 ConfigManager 自動存檔，下次開機生效）
+
+> 使用者強制暫停（Ctrl+C）時，系統自動把 `System.watchdog.enable` 存成 0——
+> **不用預先改/存 config，連一次 reset 都不用硬食**。
+
+### 19.1 流程
+
+```
+Ctrl+C（👋 User stop requested）
+  ├─ 1. Core_Manager finally：engine_run=False
+  │        → keeper 繼續餵狗 → 本次 session 不重置（REPL 無限時間）
+  └─ 2. auto_disable_on_interrupt()（新）：
+           bus.shared["System"]["watchdog"]["enable"] = 0
+           cfg_manager.save_from_bus(update_key="System.watchdog.enable")
+           （ConfigManager 無損單值更新，不動其他欄位）
+        → 下次任何開機都不再建立 WDT → 測試永遠不被鎖
+```
+
+- 只有 WDT 原本開啟（enable=1 且 wdt service 存在）才寫 config，避免無謂寫入。
+- 要恢復 WDT：REPL 執行
+  `from lib.sys.watchdog import watchdog_set_enable; watchdog_set_enable(True)`。
+- `watchdog_set_enable(enabled)`：改 config + 無損存檔（下次開機生效），
+  本次 session 的 WDT 由 keeper 繼續餵，不受影響。
+- 已驗證：ConfigManager 無損更新對 `System.watchdog.enable` 0↔1 roundtrip 成功、
+  其他欄位完好（PC 文字層測試）。
+
+---
+
+## 20) WDT v2：移除 keeper 執行緒，改主線程直接餵狗（穩定性優先）
+
+> 對 v1 keeper 設計的保留意見成立：第三條執行緒 + 跨核心讀共享 dict 是
+> ESP32 MicroPython（GIL/GC/執行緒分配）的新增失敗面。v2 回到最簡單模型——
+> **零額外執行緒、零跨核心**，代價是「硬食一次」重置。
+
+### 20.1 新架構
+
+- `init_watchdog()`：只建立 WDT + 註冊 service（不啟動任何執行緒）。
+- `TaskManager.runner_loop(0)`（主線程）：每圈直接 `wdt.feed()`——
+  同執行緒建立/餵，WDT 物件完全不出主線程。
+- 移除：keeper 執行緒、`_should_feed()`、core0/core1 心跳戳記、
+  `wdt_hold`、`wdt_keeper_fallback`。
+
+### 20.2 行為
+
+| 情境 | 結果 |
+|---|---|
+| 系統正常 | runner 每圈餵狗 → 永不觸發 |
+| 任務真卡死（runner 停） | 不餵 → ~timeout 後重置（自動復原） |
+| 使用者 Ctrl+C | config 自動存 `enable=0` → WDT 在 timeout 後**重置一次（硬食一次）** → 下次開機不再建立 WDT → 永久解鎖 |
+| 不想等 timeout | Ctrl+C 後 REPL 執行 `machine.reset()` 立即重啟 |
+
+- 提示訊息（Ctrl+C 後印出）：「已自動停用…~8 秒後 WDT 將觸發重置一次；想立即重啟可執行 machine.reset()」。
+- core1（計算核）卡死不偵測（v1 的心跳 gate 一併移除）；如需可日後用
+  「core0 讀 core1 心跳」補回，但建議先觀察實際需求。
+
+---
+
+## 21) WDT v3：自動重新武裝（像 bus_speed 超時回滾——沉默即回安全態）
+
+> 「WDT 關閉」變成暫時狀態：測試模式（enable=0）下，若連續 `auto_rearm_ms`
+> （預設 60s）沒有任何有效指令封包（= 沒人操作）→ 自動存 enable=1 並重啟，
+> WDT 保護自己回來。完整故事：Ctrl+C 硬食一次 → 測試 → 離開後 1 分鐘保護自動恢復。
+
+### 21.1 完整故事（時間線）
+
+```
+1. 進 REPL → Ctrl+C → 自動存 enable=0 → 硬食一次重置（§19）
+2. 開機 = 測試模式（WDT 關）。有人操作（master 送指令 / REPL 工作）→ 保持關
+3. 沒人操作（無任何有效封包）連續 auto_rearm_ms（60s）→ 自動存 enable=1 + 重啟
+4. 下次開機 → WDT 保護回來（部署安全）→ 回到正常模式
+```
+
+### 21.2 實作
+
+- `watchdog.touch()` / `idle_ms()`：app.handle_stream 收到任何有效封包時呼叫
+  （與 bus_speed_touch 同位置、同執行緒）——「有人操作」= 收到封包。
+- `watchdog.should_rearm(idle, boot_age, now, rearm_ms)`：純決策（PC 可測）。
+  沉默 ≥ rearm 且開機已過寬限（≥ rearm）→ re-arm。開機寬限避免
+  「開機後從未收到封包」在寬限期內誤觸發。
+- `tasks/watchdog_task.py`（WatchdogTask）：core0 主線程任務，無新增執行緒；
+  僅 enable=0 且 auto_rearm_ms>0 時由 Core_Manager 註冊。觸發 →
+  `watchdog_set_enable(True)` + `machine.reset()`。
+- **REPL 暫停期間 WatchdogTask 不跑 → 不會誤重啟正在 REPL 工作的 session**。
+- config：`System.watchdog.auto_rearm_ms`（預設 60000；0 = 關閉此行為）。
+- 語意：持續有人操作（master 持續發指令）→ 不 re-arm（「有人使用」= 測試/操作
+  模式）；沉默 1 分鐘 → 回安全態。
+- 已驗證：`should_rearm` 5 情境（寬限/逾時/有通訊/邊界/從未收到）全過。
+
+---
+
+## 22) WDT v4：硬食一次改為 finally 立即重啟 + re-arm 防無限迴圈
+
+> 實測發現 v3 的問題：「硬食一次」是 Ctrl+C 後 **8 秒 WDT 偷襲**——使用者在
+> 想代碼時被突然重啟。修正：硬食改在 **finally 主動立即執行**（可預測）。
+
+### 22.1 Ctrl+C 行為（finally / KeyboardInterrupt 分支）
+
+- 舊：存 enable=0 → 等 WDT 8 秒後觸發（偷襲，打斷思考）。
+- 新：存 enable=0 → **立即 `machine.reset()` 一次**（硬食一次，可預測）；
+  下次開機進入測試模式（無 WDT），之後 Ctrl+C 不再有任何重啟（session 無限）。
+- 測試模式（無 WDT）Ctrl+C → 不做任何事（`auto_disable_on_interrupt` 只在
+  WDT 啟用時動作）。
+- 存檔失敗 → 不重啟，印錯（WDT 會在 timeout 後自然觸發）。
+
+### 22.2 re-arm 防無限重啟迴圈
+
+- WatchdogTask 觸發 re-arm 時：**只有 `watchdog_set_enable(True)` 成功才
+  `machine.reset()`**；失敗 → 印錯 + 下個週期再試——避免「存不進 → 重啟 →
+  又 enable=0 → 又倒數」的無限重啟迴圈。
+- re-arm 每個開機 session 最多觸發一次（成功後 enable=1，WatchdogTask 不再註冊）。
+
+---
+
+## 23) WDT v5：移除 WatchdogTask 獨立任務，re-arm 檢查併入 runner_loop 大循環
+
+> 獨立任務不值得（還要條件註冊）。re-arm 檢查只是每圈幾行——直接寫進
+> `TaskManager.runner_loop(0)`，是大循環的一步，每圈執行一次。
+
+### 23.1 變更
+
+- `tasks/watchdog_task.py` 刪除；Core_Manager 不再條件註冊任務。
+- `watchdog.arm_rearm(rearm_ms)`：init_watchdog 在測試模式（enable=0 且
+  auto_rearm_ms>0）時啟動倒數（開機寬限 = rearm_ms）。
+- `watchdog.poll_rearm()`：runner_loop(0) 每圈呼叫（與餵狗同一 try 區塊）。
+  沉默逾時 → 存 enable=1（成功才 `machine.reset()`）+ 觸發前先清 `_rearm_ms`
+  （每個 session 只觸發一次，防重複/防無限迴圈）。
+- 維持：無額外執行緒、無跨核心、無獨立任務——全部在主線程大循環內。
+
+---
+
+## 24) WDT bypass 腳位進 GPIO 衝突檢查（預設改 null）
+
+> `btn_bypass_gpio` 加入 boot.py Phase 1 的 `gpio_claim`/`gpio_validate`——
+> 撞腳開機直接報錯（不再靜默）。電位語意：**接低電位（GND）= bypass（WDT 關）**；
+> 浮空/高電位 = 正常（開機設 PULL_UP）。
+
+- `watchdog.gpios()`：有設定 `btn_bypass_gpio` 才 claim（driver 名 "wdt"，
+  label "wdt_bypass"）；`null`/未設定 → 不 claim。
+- `boot.py` DRIVERS 加 `("wdt", g_wdt)`。
+- `slave/config.json` 預設 `btn_bypass_gpio: null`（預設關閉——使用者不太需要
+  此功能；要現場測試用才設空閒腳位）。原預設 42 會與 PIN 的 btn 衝突
+  （同一腳兩個 driver），故移除預設值。
+- 已驗證（PC 模擬 boot Phase 1）：null → 通過；42 → 衝突報錯
+  （`GPIO 42: btn (PIN) 與 wdt_bypass (wdt) 衝突`）；19（hiNew 空閒腳）→ 通過。
+- 注意：ESP32-S3 的 GPIO 19/20 = 原生 USB D-/D+；若板子用 USB 上傳，
+  建議改設其他空閒腳（如 1、2）。
+
+---
+
+## 25) GPIO 檢查改為「正確印明細 + 走 level」：衝突永遠顯示、例行清單降噪
+
+> `gpio_validate()` 不再 `raise ValueError`（raw exception，看不到明細）——
+> 改為正確印出「哪隻腳、哪個外設對撞」並回 False；正常 GPIO 清單降為
+> level 2（debug_level≥2 才顯示），衝突永遠顯示（不受 debug_level 影響）。
+
+- `gpio_validate()`：衝突 → `print` 明細（例：`GPIO 42: btn (PIN) 與 wdt_bypass (WDT) 衝突`）
+  + 回 False，不 raise；無衝突 → True。
+- `gpio_dump()`：改用 `dprint(level=2)`——例行資訊降噪。
+- `boot.py`：`if not bus.gpio_validate(): raise SystemExit("[BOOT] GPIO 衝突 — 修正 config.json 後重開機")`。
+- `_DRIVER_LABELS` 補 `"wdt": "WDT"`（衝突訊息顯示 WDT 而非原始 key）。
+- 已驗證（PC）：無衝突 → True + level 1 靜默 / level 2 顯示；衝突 → 明細 +
+  False（不 raise）；debug_level=0 衝突仍顯示。

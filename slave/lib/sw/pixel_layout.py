@@ -543,6 +543,16 @@ class PixelLayout:
         """mapping + group → 選出的像素數（應 == effect 的 pixel_n）。"""
         return len(self._indices(mref, gref))
 
+    def sub_offsets(self, mref, gref, spec):
+        """群組內範圍（slice 字串，Python 語義，end 不含）→ 子 offsets array('H')。
+
+        範圍是「群組選出次序」的相對範圍（對齊 set_value/get_value 的 k 語義），
+        供 mode map 條目的 "range" 使用：同一群組可拆成多段配不同效果。
+        """
+        idx = self._indices(mref, gref)
+        sel = _slice_indices(_parse_slice(str(spec)), len(idx))
+        return _array('H', (idx[k] for k in sel))
+
     # ── 執行期操作──────────────
 
     def scatter(self, big_buffer, mref, gref, values, write):
@@ -555,7 +565,10 @@ class PixelLayout:
           r/g/b/w 只寫對應通道，其餘「不修改」。
         保底：值流不足 → 取模循環；過長 → 多餘丟棄；空 → 對應通道寫 0。
         """
-        offs = self._indices(mref, gref)
+        self.scatter_offs(big_buffer, self._indices(mref, gref), values, write)
+
+    def scatter_offs(self, big_buffer, offs, values, write):
+        """用預先算好的 offsets 散射（mode range 子範圍用；offs 須為 array('H')）。"""
         n = len(offs)
         if _MP and not (isinstance(values, _array) or isinstance(values, memoryview)):
             raise TypeError("scatter 需要 array('H') 或 memoryview，而非 list")

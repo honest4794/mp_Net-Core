@@ -72,4 +72,10 @@ class App:
                 bus_speed.bus_speed_touch()
             except Exception:
                 pass
+            # 收到有效通訊 → 刷新 WDT 測試模式的「有人操作」倒數（同執行緒，見 watchdog.py）
+            try:
+                from lib.sys import watchdog
+                watchdog.touch()
+            except Exception:
+                pass
         return packet_found

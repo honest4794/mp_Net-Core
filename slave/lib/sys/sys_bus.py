@@ -9,6 +9,7 @@ _DRIVER_LABELS = {
     "sd": "SD 卡",
     "tft": "TFT",
     "enc": "編碼器 ENC",
+    "wdt": "WDT",
 }
 
 
@@ -55,30 +56,41 @@ class SysBus:
         self._gpio_claims[gpio].append({"driver": driver, "label": label})
 
     def gpio_validate(self):
+        """檢查 GPIO 衝突。衝突 → 印出明細（哪隻腳/哪個外設對撞）並回 False；
+        無衝突 → 回 True。不 raise——訊息由本函式正確輸出（永遠顯示，
+        不受 debug_level 影響——衝突是致命設定錯誤），呼叫端收到 False
+        自行決定中止或繼續。"""
         conflicts = {}
         for gpio, claims in self._gpio_claims.items():
             drivers = set(c["driver"] for c in claims)
             if len(drivers) > 1:
                 conflicts[gpio] = claims
-        if conflicts:
-            lines = ["GPIO CONFLICT: 同一腳位被多個外設同時使用，請檢查 config.json 的 GPIO 設定:"]
-            for gpio, claims in conflicts.items():
-                descs = ["{} ({})".format(c["label"], _DRIVER_LABELS.get(c["driver"], c["driver"])) for c in claims]
-                if len(descs) == 2:
-                    lines.append("  GPIO {}: {} 與 {} 衝突".format(gpio, descs[0], descs[1]))
-                else:
-                    lines.append("  GPIO {}: {} 互相衝突".format(gpio, "、".join(descs)))
-            raise ValueError("\n".join(lines))
-        return True
+        if not conflicts:
+            return True
+        lines = ["GPIO CONFLICT: 同一腳位被多個外設同時使用，請檢查 config.json 的 GPIO 設定:"]
+        for gpio, claims in sorted(conflicts.items()):
+            descs = ["{} ({})".format(c["label"], _DRIVER_LABELS.get(c["driver"], c["driver"])) for c in claims]
+            if len(descs) == 2:
+                lines.append("  GPIO {}: {} 與 {} 衝突".format(gpio, descs[0], descs[1]))
+            else:
+                lines.append("  GPIO {}: {} 互相衝突".format(gpio, "、".join(descs)))
+        for line in lines:
+            print(line)
+        return False
 
     def gpio_dump(self):
+        """正常 GPIO 清單（例行資訊，level 2——debug_level>=2 才顯示，減噪音）。"""
+        try:
+            from lib.sys.dispatch import dprint
+        except Exception:
+            dprint = print
         if not self._gpio_claims:
-            print("[GPIO] (none claimed)")
+            dprint("[GPIO] (none claimed)", level=2)
             return
-        print("[GPIO] claimed pins:")
+        dprint("[GPIO] claimed pins:", level=2)
         for gpio in sorted(self._gpio_claims.keys()):
             for c in self._gpio_claims[gpio]:
-                print("  {:>3}  {:<16} {}".format(gpio, c["driver"], c["label"]))
+                dprint("  {:>3}  {:<16} {}".format(gpio, c["driver"], c["label"]), level=2)
 
 
 bus = SysBus()

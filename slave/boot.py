@@ -52,6 +52,7 @@ from driver.apa102_drv   import init_apa102
 from driver.pca9685_drv  import init_pca9685
 from driver.motor_drv    import init_motor
 from driver.pixel_drv    import init_pixel
+from lib.sys.watchdog    import gpios as g_wdt
 
 
 # ══════════════════════════════════════════════════════
@@ -68,13 +69,15 @@ DRIVERS = [
     ("sd",   g_sd),
     ("tft",  g_tft),
     ("enc",  g_enc),
+    ("wdt",  g_wdt),
 ]
 
 for name, gpios_fn in DRIVERS:
     for gpio, label in gpios_fn(bus).items():
         bus.gpio_claim(gpio, name, label)
 
-bus.gpio_validate()
+if not bus.gpio_validate():
+    raise SystemExit("[BOOT] GPIO 衝突 — 修正 config.json 後重開機")
 bus.gpio_dump()
 
 

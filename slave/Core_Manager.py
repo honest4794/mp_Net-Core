@@ -123,6 +123,16 @@ def launcher():
 
     tm.finalize()
 
+    # ── 看門狗（config System.watchdog）──
+    #   enable=0（預設）或開機按住 btn_bypass_gpio → 不建立（None）；測試模式
+    #   下自動重新武裝的倒數由 TaskManager.runner_loop(0) 每圈 poll_rearm()
+    #   檢查（大循環的一步，無獨立任務）。
+    #   enable=1 → 建立 WDT，由 core0 runner 主線程直接餵狗（無額外執行緒/跨核心）。
+    #   Ctrl+C → auto_disable_on_interrupt()：存 enable=0 + 立即重啟一次
+    #   （硬食一次，可預測；不讓 WDT timeout 後偷襲打斷 REPL），之後測試模式無狗。
+    from lib.sys.watchdog import init_watchdog
+    init_watchdog()
+
     try:
         log.info("✨ Starting Core 1 Runner...")
         # stack 統一 16KB（與主線程 MICROPY_TASK_STACK_SIZE 同級）：
@@ -138,6 +148,11 @@ def launcher():
 
     except KeyboardInterrupt:
         print("[CoreManager]👋 User stop requested.")
+        # 使用者強制暫停 → WDT 自動關閉（存 config，下次開機生效）。
+        # 本次 session：engine_run=False → keeper 繼續餵狗，不會重置——
+        # REPL 測試不再被鎖，連一次 reset 都不用硬食。
+        from lib.sys.watchdog import auto_disable_on_interrupt
+        auto_disable_on_interrupt()
     except Exception as e:
         print("[CoreManager]❌ System Error: {}".format(e))
     finally:

@@ -112,12 +112,15 @@ scatter/effect/controller**——未來彩色 effect 再接；controller 整合�
   "id": 1,
   "name": "demo1",
   "index": 1,            // 大隊列排序備援：先比 index 再比 id，越少越前（list 順序為主）
-  "play_count": 1,       // 0=永遠跳過; 1..N=只在前 N 輪出現; -1=常駐每輪
-  "play_interval": 1,    // 每隔 N 輪出現一次（1=每輪）
+  "play_loop": -1,       // 總共 loop/出現幾次循環（0=不播; N=最多 N 次; -1=常駐每輪）
+  "play_count": 1,       // 同一個 loop 中播放幾次（1..N=連播 N 次; -1=無限連播）
+  "play_interval": 0,    // 相隔多少個循環播一次（0=每個循環都播; 1=隔 1 循環=每 2 循環一次）
+  "maxF": 500,           // 每次播放最大幀數（0/缺省=不限制，播到效果自然結束）
   "mapping": "gundam",   // 選用：預設 mapping（id 或 name）；可省略
   "map": [
     { "group": "1.1", "effect": 1, "write": "rgb" },
-    { "group": "motors", "effect": "breathing", "write": "w" }
+    { "group": "motors", "effect": "breathing", "write": "w" },
+    { "group": "1.1", "effect": "wave", "write": "g", "range": "0:16" }
   ]
 }
 ```
@@ -125,8 +128,14 @@ scatter/effect/controller**——未來彩色 effect 再接；controller 整合�
 - **group 複合引用**：`mapping.group`，兩邊各可用 id 或 name（`gundam.motors` /
   `1.motors` / `gundam.1` / `1.1`）；無點號時以頂層 `mapping` 為預設。
 - effect 同用 id 或 name 引用。
-- **同 mode 內 group 引用不得重複**，重複 → warn + 只保留第一項。
-- 播放參數單位全用 **frame**（不用 ms，節奏由播放端控制）。
+- **`range`（選用）**：群組內播放範圍（slice 字串，Python 語義，end 不含，如
+  `"0:16"` / `":10"` / `"::2"` / `"15:10:-1"`）。同一群組可拆多段配不同效果；
+  沒寫 = 整個群組。範圍外的像素「不修改」（保留原值，可多段累加組合）。
+- **同 mode 內 group+range 組合不得重複**，重複 → warn + 只保留第一項。
+- **播放語意**：`play_loop` = 總共出現幾次循環、`play_count` = 每次出現連播幾次、
+  `play_interval` = 相隔幾個循環播一次（0=每循環）。播放參數單位全用 **frame**。
+- **長短不一**：同 mode 內短效果播完 → 自己 restart 循環重播，直到最長的效果結束，
+  本次循環才一起結束（生成器不支援 restart 的 → 定格保持最後一幀）。
 
 `write` 白名單：`r` / `g` / `b` / `w` / `ww` / `rgb` / `rgbw` / `wwww`。
 
@@ -152,12 +161,15 @@ scatter/effect/controller**——未來彩色 effect 再接；controller 整合�
   generator（`restart()` + 重置 done），不剷除不重建，避免重複播放時的卡頓。
   generator 不支援 `restart()` → 自動回退剷除重建。
 - 每輪依播放參數決定該 mode 是否出現：
-  - `play_count==0` → 永遠跳過
-  - `play_count>0` 且 `pass > play_count` → 這輪起消失（開頭段）
-  - `(pass-1) % play_interval != 0` → 這輪跳過（週期性）
-  - 其餘（含 `play_count=-1` 常駐）→ 播放
-- 例：`[intro(count=1), A(-1), B(-1)]` → 第 1 輪 intro+A+B，第 2 輪起 A+B 循環。
-- 例：`ticker(count=1, interval=5)` → 第 1、6、11…輪才出現。
+  - `play_loop==0` → 永遠不播
+  - `play_loop>0` 且出現次數已達 `play_loop` → 不再出現（總出現次數上限）
+  - `(pass-1) % (play_interval+1) != 0` → 這輪跳過（相隔循環；0=每輪都播）
+  - 其餘（含 `play_loop=-1` 常駐）→ 播放
+- 出現時依 `play_count` 連播：本次循環結束（效果耗盡/達 maxF）→ restart 重播，
+  直到次數滿才換下一個；`play_count=-1` = 無限連播。
+- 例：`[intro(play_loop=1), A(-1), B(-1)]` → 第 1 輪 intro+A+B，第 2 輪起 A+B 循環。
+- 例：`ticker(play_loop=3, play_interval=1)` → 第 1、3、5…循環各出現一次，共 3 次。
+- 例：`A(play_count=3)` → 每次輪到 A 都連播 3 次才換下一個。
 
 ## 4. 整合流程（一幀怎麼跑）
 

@@ -372,13 +372,30 @@ assert next(eff) == eff.frame(0)
 ### 9.3 modes/*.json — 模式（效果 × 群組配對）
 
 ```json
-{ "id": 1, "name": "demo_eyes", "index": 1, "play_count": -1, "play_interval": 1,
+{ "id": 1, "name": "demo_eyes", "index": 1,
+  "play_loop": -1, "play_count": 1, "play_interval": 0, "maxF": 500,
   "mapping": "matrix",
   "map": [ { "group": "matrix.full", "effect": "eyes", "write": "rgb" } ] }
 ```
 
-- `group`：`mapping.group` 複合引用。`play_count`：-1 常駐、1..N 前 N 輪、0 跳過。
-- `play_interval`：每隔 N 輪一次。
+- `group`：`mapping.group` 複合引用。
+- `play_loop`（預設 -1）：**總共出現幾次循環**——0=不播、N=最多 N 次、-1=常駐每輪。
+- `play_count`（預設 1）：**同一個 loop 中播放幾次**——1..N=連播 N 次、-1=無限連播。
+- `play_interval`（預設 0）：**相隔多少個循環播一次**——0=每個循環都播、1=隔 1 循環（每 2 循環一次）。
+- `maxF`（選用，預設 0）：每次播放最大幀數；0 = 不限制（播到效果自然結束）。
+- `range`（map 條目內，選用）：群組內播放範圍（slice 字串，end 不含）。
+  同一群組可拆多段配不同效果，範圍外像素不修改：
+
+```json
+{ "id": 2, "name": "split", "mapping": "matrix",
+  "map": [
+    { "group": "matrix.full", "effect": "eyes", "write": "rgb", "range": "0:16" },
+    { "group": "matrix.full", "effect": "wave", "write": "g",   "range": "16:32" }
+  ] }
+```
+
+> **長短不一**：同 mode 內效果長短不同時，短效果播完會自己 restart 循環重播，
+> 直到最長的效果結束，本次循環才一起結束（生成器不支援 restart → 定格保持最後一幀）。
 
 ### 9.4 registry.json — 播放清單
 

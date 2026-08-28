@@ -2,6 +2,7 @@ import gc
 import time
 from lib.sys.sys_bus import bus
 from lib.sys.log_service import get_log, _viper_write_i32, _viper_read_i32
+from lib.sys import watchdog as _wd
 
 _FIXED = 5
 _FIXED_BYTES = _FIXED * 4
@@ -297,6 +298,20 @@ class TaskManager:
 
         while True:
             now_ms = time.ticks_ms()
+
+            # ── WDT：主線程（core0）直接餵狗 + 測試模式 re-arm 檢查 ──
+            # 同執行緒建立/餵（lib/sys/watchdog.py），無跨核心、無額外執行緒、
+            # 無獨立任務（poll_rearm 就是大循環的一步，每圈執行一次）。
+            # 系統卡死（本 runner 停止）→ 不餵 → WDT 重置；
+            # 測試模式（enable=0）沉默逾時 → poll_rearm 存 enable=1 + 重啟。
+            if core_id == 0:
+                try:
+                    _wdt = bus.get_service("wdt")
+                    if _wdt is not None:
+                        _wdt.feed()
+                    _wd.poll_rearm()
+                except Exception:
+                    pass
 
             if time.ticks_diff(now_ms, _engine_refresh_ms) > 500:
                 _engine_run = bus.shared.get("engine_run", True)

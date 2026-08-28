@@ -68,6 +68,9 @@ class PixelTask(Task):
         self._mode_idx = 0
         self._cur = None
         self._cur_mode = None   # _cur 對應的 mode（判斷下一個是否同一 mode → 重用生成器）
+        self._cur_repeat = 1    # 目前 mode 本次出現已連播次數（play_count 用）
+        self._cur_frames = 0    # 本次播放已 commit 幀數（maxF 用）
+        self._appears = {}      # mode id → 已出現次數（play_loop 總次數用）
 
     # ── 啟動：依序初始化 ──────────────────────────
     def on_start(self):
@@ -236,9 +239,22 @@ class PixelTask(Task):
             except (KeyError, ValueError, TypeError):
                 get_log().warn("[Pixel] mode {} 引用未知群組 {!r} — 跳過該項".format(name, it["group"]))
                 continue
-            key = (rmid, rgid)
+            # 播放範圍（群組內 slice，可選）：同一群組可拆多段配不同效果
+            offs = None
+            rng = it.get("range")
+            if rng is not None:
+                try:
+                    offs = lay.sub_offsets(rmid, rgid, rng)
+                except Exception:
+                    get_log().warn("[Pixel] mode {} 引用無效 range {!r} — 跳過該項".format(name, rng))
+                    continue
+                if not offs:
+                    get_log().warn("[Pixel] mode {} range {!r} 為空 — 跳過該項".format(name, rng))
+                    continue
+            key = (rmid, rgid, str(rng))
             if key in seen:
-                get_log().warn("[Pixel] mode {} 群組 {!r} 重複 — 只保留第一項".format(name, it["group"]))
+                get_log().warn("[Pixel] mode {} 群組 {!r} range {!r} 重複 — 只保留第一項".format(
+                    name, it["group"], rng))
                 continue
             seen.add(key)
 
@@ -251,7 +267,7 @@ class PixelTask(Task):
                 get_log().warn("[Pixel] mode {} 未知寫法 {!r} — 跳過該項".format(name, write))
                 continue
             entries.append({
-                "mref": rmid, "gref": rgid, "write": write,
+                "mref": rmid, "gref": rgid, "write": write, "offs": offs,
                 "cls": eff["cls"], "name": eff["name"], "params": eff["params"],
             })
 
@@ -259,10 +275,34 @@ class PixelTask(Task):
             "id": mid,
             "name": name,
             "index": d.get("index", mid),
-            "play_count": d.get("play_count", 1),
-            "play_interval": d.get("play_interval", 1),
+            # 播放語意（3 欄分工）：
+            #   play_loop     = 總共 loop/出現幾次循環（0=不播; N=最多 N 次; -1=常駐每輪）
+            #   play_count    = 同一個 loop 中播放幾次（1..N=連播 N 次; -1=無限連播）
+            #   play_interval = 相隔多少個循環播一次（0=每個循環都播; 1=隔 1 循環）
+            "play_loop": self._parse_loop(d),
+            "play_count": self._parse_count(d),
+            "play_interval": max(0, int(d.get("play_interval", 0) or 0)),
+            "maxF": max(0, int(d.get("maxF", 0) or 0)),   # 每次播放最大幀數；0=不限制
             "entries": entries,
         }
+
+    @staticmethod
+    def _parse_loop(d):
+        """play_loop：總出現次數。0=不播; N=最多 N 次; 負數(-1)=常駐每輪。預設 -1。"""
+        try:
+            v = int(d.get("play_loop", -1))
+        except (TypeError, ValueError):
+            v = -1
+        return -1 if v < 0 else v
+
+    @staticmethod
+    def _parse_count(d):
+        """play_count：同一個 loop 中連播幾次。0/缺省→1; 負數(-1)=無限連播。"""
+        try:
+            v = int(d.get("play_count", 1) or 1)
+        except (TypeError, ValueError):
+            v = 1
+        return -1 if v < 0 else max(1, v)
 
     def _find_effect(self, ref):
         if isinstance(ref, int):
@@ -311,6 +351,9 @@ class PixelTask(Task):
         self._paused = False
         self._pass = 1
         self._mode_idx = 0
+        self._cur_repeat = 1
+        self._cur_frames = 0
+        self._appears = {}
         self._release_player(self._cur)
         self._cur = None
         self._cur_mode = None
@@ -380,15 +423,20 @@ class PixelTask(Task):
                 get_log().warn("[Pixel] remote mode {} 不存在".format(rid))
 
     def _should_play(self, mode):
-        """這一輪（pass）這個 mode 是否要播。"""
-        pc = mode["play_count"]
-        if pc == 0:
-            return False                       # 永遠跳過
-        if pc > 0 and self._pass > pc:
-            return False                       # 開頭段：只在前 N 輪出現
-        if (self._pass - 1) % mode["play_interval"] != 0:
-            return False                       # 週期性：每隔 N 輪出現一次
-        return True                            # -1 = 常駐每輪
+        """這一輪（循環）這個 mode 是否要播。
+
+        play_loop     : 總共出現幾次循環（0=不播; N=最多 N 次; -1=常駐每輪）
+        play_interval : 相隔多少個循環播一次（0=每個循環都播; 1=隔 1 循環=每 2 循環一次）
+        """
+        pl = mode["play_loop"]
+        iv = mode["play_interval"]
+        if pl == 0:
+            return False                       # 永遠不播
+        if (self._pass - 1) % (iv + 1) != 0:
+            return False                       # 相隔循環
+        if pl > 0 and self._appears.get(mode["id"], 0) >= pl:
+            return False                       # 總出現次數已滿
+        return True
 
     def _find_next(self, prev_mode=None):
         """掃一圈找下一個要播的 mode；沒有 → _cur 清空（空輪，pass 已推進）。
@@ -414,11 +462,16 @@ class PixelTask(Task):
                 self._release_player(self._cur)
                 self._cur = self._make_player(mode)
             self._cur_mode = mode
+            self._cur_repeat = 1
+            self._cur_frames = 0
+            self._appears[mode["id"]] = self._appears.get(mode["id"], 0) + 1
             return
         # 掃一圈沒找到要播的 → 空輪
         self._release_player(self._cur)
         self._cur = None
         self._cur_mode = None
+        self._cur_repeat = 1
+        self._cur_frames = 0
 
     def _make_player(self, mode):
         """mode → 播放器：每個 entry 一個 fresh generator（換 mode 時才重建）。
@@ -428,8 +481,10 @@ class PixelTask(Task):
         """
         return [{
             "mref": e["mref"], "gref": e["gref"], "write": e["write"],
+            "offs": e.get("offs"),
             "gen": self._instantiate(e["cls"], e["name"], e["params"]),
             "done": False,
+            "run_done": False,   # 已至少跑完一次完整效果（短效果循環結束判斷用）
         } for e in mode["entries"]]
 
     @staticmethod
@@ -446,6 +501,7 @@ class PixelTask(Task):
         for e in player:
             e["gen"].restart()
             e["done"] = False
+            e["run_done"] = False
         return True
 
     @staticmethod
@@ -463,7 +519,12 @@ class PixelTask(Task):
                     gen.release()
 
     def _tick_player(self, player):
-        """播放器推進一幀。回傳 True = 還在播；False = 全部 entry 耗盡（mode 結束）。
+        """播放器推進一幀。回傳 True = 還在播；False = 本次循環結束。
+
+        短效果自己循環：entry 生成器耗盡 → restart 重播（長效果繼續播），
+        直到「全部 entry 都至少跑完一次」= 長效果結束，本次循環才結束。
+        生成器不支援 restart → 耗盡即定格（done，保持最後一幀）。
+        maxF 達上限 → 強制結束本次循環。
 
         只負責「計算」：scatter 進 pixel_stream hub 的 slot 後 commit()，不碰硬體。
         硬體輸出由 RenderTask（core0）以固定 fps（20ms @ 50fps）節奏從 hub 取幀播放。
@@ -483,13 +544,36 @@ class PixelTask(Task):
             try:
                 vals = next(e["gen"])
             except StopIteration:
-                e["done"] = True
-                continue
-            lay.scatter(view, e["mref"], e["gref"], vals, e["write"])
+                e["run_done"] = True
+                gen = e["gen"]
+                if not hasattr(gen, "restart"):
+                    e["done"] = True
+                    continue
+                try:
+                    gen.restart()
+                    vals = next(gen)
+                except Exception:
+                    e["done"] = True
+                    continue
+            offs = e.get("offs")
+            if offs is not None:
+                lay.scatter_offs(view, offs, vals, e["write"])
+            else:
+                lay.scatter(view, e["mref"], e["gref"], vals, e["write"])
             alive = True
         if not alive:
             return False
+        if all(e.get("run_done") or e.get("done") for e in player):
+            # 全部 entry 都至少跑完一次（= 長效果結束）→ 本次循環結束
+            return False
         hub.commit()
+        # maxF：本次播放已 commit 幀數達上限 → 強制結束本次循環
+        maxf = (self._cur_mode or {}).get("maxF", 0) or 0
+        if maxf > 0:
+            self._cur_frames += 1
+            if self._cur_frames >= maxf:
+                for e in player:
+                    e["done"] = True
         return True
 
     def loop(self):
@@ -515,8 +599,18 @@ class PixelTask(Task):
             if self._cur is None:
                 return
         if not self._tick_player(self._cur):
-            # mode 播完 → 找下一個；若下一個還是同一個 mode，_find_next 會重用生成器
-            self._find_next(self._cur_mode)
+            # 本次循環結束 → play_count 未滿（或 -1 無限）則重播，否則找下一個
+            mode = self._cur_mode or {}
+            rep = mode.get("play_count", 1)
+            if rep < 0 or self._cur_repeat < rep:
+                if rep > 0:
+                    self._cur_repeat += 1
+                self._cur_frames = 0
+                if not self._restart_player(self._cur):
+                    # 生成器不支援 restart → 剷除重建
+                    self._cur = self._make_player(mode)
+            else:
+                self._find_next(self._cur_mode)
 
     def on_stop(self):
         super().on_stop()
