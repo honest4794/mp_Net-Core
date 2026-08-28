@@ -50,9 +50,11 @@ class RenderTask(Task):
             self.interval_us = (1000 // self.stream_fps) * 1000   # 只在此時算，熱路徑不碰
             get_log().info("🔥 [RenderTask] stream fps override -> {} fps".format(self.stream_fps))
 
-        is_streaming = self.fcache_get("is_streaming")
+        # MODE_SET / MODE_STOP 是跨 Slave 同步邊界，不能用 500ms fcache；
+        # 否則兩塊板會按各自 cache 到期相位相差一個或以上 render frame。
+        is_streaming = bus.shared.get("is_streaming", False)
         if not is_streaming:
-            is_ready = self.fcache_get("is_ready")
+            is_ready = bus.shared.get("is_ready", False)
             if is_ready == False:
                 # 停止/熄燈：填中性值（燈=0 熄滅，motor=0x80 死區停），
                 # 不能全清 0 —— UART-412 的 0 = 全速正轉！
@@ -65,7 +67,7 @@ class RenderTask(Task):
             self._played_frames = 0
             return
 
-        is_paused = self.fcache_get("is_paused")
+        is_paused = bus.shared.get("is_paused", False)
         if is_paused:
             if time.ticks_diff(time.ticks_us(), self.next_tick_us) < 0:
                 return
