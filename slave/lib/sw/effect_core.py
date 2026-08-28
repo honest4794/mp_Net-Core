@@ -253,6 +253,7 @@ class Effect:
     （單一真源）。畫波寫不出來的效果才用 py 補充類別（override frame / 不繼承 Effect）。
     frame(t) 是決定性、無狀態的：每顆 pixel i 的值 = pattern_value_at(program, 相位)。
     相位 = (t // speed) * step + i * spacing + offset（對齊舊 wave_list_assign_next）。
+    可選 cycles + hold_value：完成指定循環數後固定輸出安全保持值；未設定時無限循環。
     """
     DEFAULT_PROGRAM = []
 
@@ -267,6 +268,11 @@ class Effect:
         self.offset = int(params.get("offset", 0))
         self.speed = int(params.get("speed", 1))
         self.reverse = bool(params.get("reverse", False))
+        cycles = params.get("cycles")
+        self.cycles = int(cycles) if cycles is not None else None
+        hold_value = int(params.get("hold_value", 0))
+        self.hold_value = (0 if hold_value < 0 else
+                           4095 if hold_value > 4095 else hold_value)
         self._t = 0
         self._buf = _array('H', [0] * self.pixel_n)
         # 波表：module 層快取（同 name + 同 program 只算一次），開機 warm_up() 已預先算好。
@@ -281,13 +287,20 @@ class Effect:
         """回傳第 t 幀（array('H')，pixel_n 個值，全 0-4095）。決定性、無狀態。
 
         熱路徑只做：index 讀波 + 加法 + 單次減法取模（乘數轉加數，無 sin / 無除法 / 無 %）。
+        有限效果完成後持續輸出 hold_value，避免遠端單模式播放清單自動 restart，
+        再次啟動已完成的馬達動作。
         """
         total = self._total
         if total <= 0:
             return self._buf
         buf = self._buf
         n = self.pixel_n
-        g = ((int(t) // self.speed) * self.step + self.offset) % total
+        phase = (int(t) // self.speed) * self.step
+        if self.cycles is not None and phase >= total * self.cycles:
+            for i in range(n):
+                buf[i] = self.hold_value
+            return buf
+        g = (phase + self.offset) % total
         if self.reverse:
             _fill_rev(buf, self._wave, n, g, self._spacing_mod, total)
         else:
