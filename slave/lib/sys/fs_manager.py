@@ -61,7 +61,8 @@ class FileSystemManager:
             "sha_expect_hex": None,
             "last_error": None,
             "last_sha_hex": "",
-            "last_pending": 0
+            "last_pending": 0,
+            "ram_buf": None   # /ram 分塊上傳: 拼 chunk 用的 bytearray (非 ram 時為 None)
         }
 
         # 串流讀取狀態
@@ -279,12 +280,23 @@ class FileSystemManager:
             "total_size": total_size,
             "sha_expect_hex": sha_expect_hex,
             "last_error": None,
-            "last_pending": 0
+            "last_pending": 0,
+            "ram_buf": None
         })
 
         if not path:
             self.session["last_error"] = "MISSING_PATH"
             return False
+
+        # ── RAM 緩衝區上傳 (實時播放用, 斷電消失, 不落盤) ──
+        #   resolve() 對 /ram/... 回 kind="ram"; 走整塊 bytearray 拼 chunk,
+        #   收尾校驗 sha 後直接存 self._ram, 不做 .tmp/.bak/pending (RAM 不需回滾保護)。
+        kind, full, _raw = self.resolve(path)
+        if kind == "ram":
+            self.session["path"] = full
+            self.session["ram_buf"] = bytearray(total_size) if total_size > 0 else bytearray()
+            self.session["active"] = True
+            return True
 
         try:
             temp_path = path + ".tmp"
@@ -329,6 +341,30 @@ class FileSystemManager:
 
     def write_chunk(self, args: dict) -> bool:
         """FILE_CHUNK (0x2002)"""
+        # ── RAM 緩衝區: 直接依 offset 寫入 bytearray ──
+        if self.session.get("ram_buf") is not None:
+            if not self.session["active"]:
+                self.session["last_error"] = "NO_ACTIVE_SESSION"
+                return False
+            req_id = int(args.get("file_id", 0))
+            if req_id != self.session["file_id"]:
+                self.session["last_error"] = f"ID_MISMATCH {req_id}!={self.session['file_id']}"
+                return False
+            off = int(args.get("offset", 0))
+            data = args.get("data", b"")
+            if not isinstance(data, (bytes, bytearray, memoryview)):
+                data = bytes(data)
+            buf = self.session["ram_buf"]
+            if off + len(data) > len(buf):
+                # 允許分塊長度與 total_size 一致時直接擴容 (容錯)
+                new = bytearray(off + len(data))
+                new[:len(buf)] = buf
+                self.session["ram_buf"] = new
+                buf = new
+            buf[off:off + len(data)] = data
+            self.session["written"] = off + len(data)
+            return True
+
         if not self.session["active"] or not self.session["fp"]:
             self.session["last_error"] = "NO_ACTIVE_SESSION"
             return False
@@ -365,7 +401,35 @@ class FileSystemManager:
         """FILE_END (0x2003) -> Finalize"""
         if not self.session["active"]:
             return False
-            
+
+        # ── RAM 緩衝區收尾: 校驗 sha → 存 self._ram (不落盤/不回滾) ──
+        if self.session.get("ram_buf") is not None:
+            buf = self.session["ram_buf"]
+            try:
+                got_sha = ubinascii.hexlify(hashlib.sha256(buf).digest()).decode()
+                expect = self.session.get("sha_expect_hex")
+                if expect and got_sha != expect:
+                    self.session["last_error"] = "SHA_MISMATCH"
+                    self.session["last_sha_hex"] = "00" * 32
+                    self.session["last_pending"] = 0
+                    self.session["active"] = False
+                    self.session["ram_buf"] = None
+                    return False
+                path = self.session["path"]
+                self._ram[path] = bytes(buf)
+                self.session["last_sha_hex"] = got_sha
+                self.session["last_pending"] = 0
+                self.session["active"] = False
+                self.session["ram_buf"] = None
+                print(f"✅ [FS] RAM buffer ready: {path} ({len(buf)} bytes)")
+                return True
+            except Exception as e:
+                self.session["last_error"] = f"RAM_FINALIZE_ERR: {e}"
+                self.session["last_pending"] = 0
+                self.session["active"] = False
+                self.session["ram_buf"] = None
+                return False
+
         self._close_session()
         
         try:

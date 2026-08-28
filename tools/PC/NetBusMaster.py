@@ -400,7 +400,7 @@ class ConsoleUI:
 # ==================== 監控面板核心 ====================
 class MonitorPanel:
     """實時監控面板"""
-    
+
     def __init__(self):
         self.monitors = {}
         self.lock = threading.Lock()
@@ -409,7 +409,34 @@ class MonitorPanel:
         self.render_thread = None
         self.interactive_mode = False
         self.controls_text = None
-    
+        # 🔧 統一 log 出口: 後台執行緒的通知統一進這裡, 面板分區渲染 (不洗掉設備表)
+        self.log_buffer = deque(maxlen=200)   # [(ts, level, msg), ...]
+        self.log_lock = threading.Lock()
+
+    def log(self, level, msg):
+        """把後台通知導進面板 log 區 (非阻塞, 不再直接 print 到 stdout 打亂畫面)。
+
+        level: "info" | "ok" | "warn" | "err" (對應面板著色)。
+        面板「沒在跑」(選單/啟動階段) 時 fallback 到 print, 讓通知仍看得到。
+        此方法可被任何執行緒安全呼叫。
+        """
+        try:
+            with self.log_lock:
+                self.log_buffer.append((datetime.now().strftime("%H:%M:%S"), level, str(msg)))
+        except Exception:
+            pass
+        if not self.running:
+            try:
+                print(str(msg))
+            except Exception:
+                pass
+
+    def _drain_logs(self, limit=200):
+        """取出目前 log 區 (副本), 供渲染使用。"""
+        with self.log_lock:
+            return list(self.log_buffer)[-limit:]
+
+
     def register_device(self, device_id, play_id=None, total_frames=0):
         with self.lock:
             if device_id not in self.monitors:
@@ -503,6 +530,28 @@ class MonitorPanel:
             
             footer = "╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝"
             buffer.append(footer)
+
+            # ── 📋 通知 / 日誌區 (固定高度, 不與設備表互相覆蓋) ──
+            buffer.append("")
+            buffer.append("┌──────────────────────────────────────────── 通知 / 日誌 ────────────────────────────────────────────┐")
+            logs = self._drain_logs(24)
+            if not logs:
+                buffer.append("│  (無通知)                                                                                                          │")
+            else:
+                for ts, level, msg in logs:
+                    color = {
+                        "info": "\033[0m",
+                        "ok": "\033[92m",
+                        "warn": "\033[93m",
+                        "err": "\033[91m",
+                    }.get(level, "\033[0m")
+                    line = f"{ts} {msg}"
+                    # 去掉 ANSI 色碼後截斷到框內寬度 (純 ASCII 寬度近似)
+                    plain = line
+                    if len(plain) > 114:
+                        plain = plain[:114]
+                    buffer.append(f"│ {color}{plain}\033[0m")
+            buffer.append("└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘")
             
             # 確保內容完全覆蓋舊內容
             output_str = "\n".join(buffer)
@@ -637,7 +686,7 @@ class DeviceManager:
             if cid in self.slaves:
                 old_node = self.slaves[cid]
                 try:
-                    print(f"🔄 [DeviceManager] 設備 {cid} 重連，關閉舊連接...")
+                    self.panel.log("warn", f"🔄 [DeviceManager] 設備 {cid} 重連，關閉舊連接...")
                     old_node["conn"].close()
                     # 通知舊的 handle_client 線程退出 (通過關閉 socket 觸發異常)
                 except:
@@ -729,7 +778,7 @@ class DeviceManager:
                         mon.last_update = time.time()
                         if mon.status == "無響應":
                             mon.status = "待機"
-                            print(f"💓 [Health] {cid} ping OK → 恢復待機")
+                            self.panel.log("ok", f"💓 [Health] {cid} ping OK → 恢復待機")
         except Exception:
             pass
 
@@ -783,11 +832,11 @@ class DeviceManager:
             back = prev - offline_now
             if new_off:
                 names = ", ".join(sorted(new_off))
-                print(f"🔔 [Health] 離線/無響應 {len(new_off)} 台 → 自動敲門叫回: {names}")
+                self.panel.log("warn", f"🔔 [Health] 離線/無響應 {len(new_off)} 台 → 自動敲門叫回: {names}")
                 master._log_event("KNOCK", f"離線/無響應 {len(new_off)} 台: {names}")
             if back:
                 names = ", ".join(sorted(back))
-                print(f"✅ [Health] 已回連 {len(back)} 台: {names}")
+                self.panel.log("ok", f"✅ [Health] 已回連 {len(back)} 台: {names}")
                 master._log_event("RECOVER", f"已回連 {len(back)} 台: {names}")
             self._offline_knocked = offline_now
 
@@ -806,7 +855,7 @@ class DeviceManager:
             try:
                 self._knock_offline_devices()
             except Exception as e:
-                print(f"⚠️ [Health] 自動敲門錯誤: {e}")
+                self.panel.log("err", f"⚠️ [Health] 自動敲門錯誤: {e}")
             now = time.time()
             timeout = 30.0   # 無流量上限
             probe_at = 15.0  # 超過此秒數沒流量 → 主動探測
@@ -1138,6 +1187,7 @@ class NetBusMaster:
             
             # 🔧 上線打招呼: 敲門/掃描/主動重連連上都會顯示
             print(f"👋 [Connect] {cid} 已上線 (PlayID {play_id})")
+            self.panel.log("ok", f"👋 [Connect] {cid} 已上線 (PlayID {play_id})")
             
             # --- Mid-Stream Join Logic (🔧 延遲補償 + READY 等待, 推算最準確幀號) ---
             # 🔧 改用 play_session_active (go→stop_all), 不再用 is_playing:
@@ -1148,7 +1198,7 @@ class NetBusMaster:
                     # 異步執行加入流程，避免阻塞 recv 主循環
                     threading.Thread(target=self._mid_join_task, args=(cid,), daemon=True).start()
                 except Exception as e:
-                    print(f"❌ Mid-Join logic error: {e}")
+                    self.panel.log("err", f"❌ Mid-Join logic error: {e}")
             # --- END Mid-Join Logic ---
             
             node = self.device_manager.get_slave(cid)
@@ -1224,11 +1274,11 @@ class NetBusMaster:
         if not session:
             return
         if finished:
-            print(f"ℹ️ [Mid-Join] {target_cid} 本次會話已自然播完, 不自動續播")
+            self.panel.log("info", f"ℹ️ [Mid-Join] {target_cid} 本次會話已自然播完, 不自動續播")
             return
 
         self.panel.update_device(target_cid, status="中途加入")
-        print(f"🔗 [Mid-Join] {target_cid} 開始接回流程 (attempt {_attempt + 1})...")
+        self.panel.log("info", f"🔗 [Mid-Join] {target_cid} 開始接回流程 (attempt {_attempt + 1})...")
 
         # 0. 量測此設備的單向延遲 (RTT/2), 供幀號補償
         lat_s = 0.0
@@ -1236,7 +1286,7 @@ class NetBusMaster:
         if lat is not None:
             lat_s = lat / 1000.0
             self._log_latency([(target_cid, lat)], note="mid-join")
-            print(f"   📡 {target_cid} latency {lat:.1f}ms → 補償 {lat_s*1000:.0f}ms")
+            self.panel.log("info", f"   📡 {target_cid} latency {lat:.1f}ms → 補償 {lat_s*1000:.0f}ms")
 
         # 非循環且主控已播到結尾 → 視為已播完, 不續播
         total = self._device_total_frames(target_cid)
@@ -1245,7 +1295,7 @@ class NetBusMaster:
             if done_frame >= total:
                 self._dev_finished.add(target_cid)
                 self.panel.update_device(target_cid, status="播完")
-                print(f"ℹ️ [Mid-Join] {target_cid} 非循環已播完 (frame {total}), 不續播")
+                self.panel.log("info", f"ℹ️ [Mid-Join] {target_cid} 非循環已播完 (frame {total}), 不續播")
                 return
 
         attempts = max(1, self._cfg_int("join_retry_count", 3))
@@ -1267,17 +1317,17 @@ class NetBusMaster:
             })
             if node["ready_event"].wait(timeout=5.0):
                 break
-            print(f"⚠️ {target_cid} READY timeout (attempt {attempt}/{attempts})")
+            self.panel.log("warn", f"⚠️ {target_cid} READY timeout (attempt {attempt}/{attempts})")
             if attempt < attempts:
                 time.sleep(1.0)
         else:
             # 🔧 握手全數失敗 → 整輪重來一次 (剛連上時 slave 可能還在開機/忙線)
             if _attempt == 0:
-                print(f"🔁 [Mid-Join] {target_cid} READY 握手失敗 → 整輪重來一次")
+                self.panel.log("warn", f"🔁 [Mid-Join] {target_cid} READY 握手失敗 → 整輪重來一次")
                 time.sleep(1.0)
                 self._mid_join_task(target_cid, _attempt=1)
                 return
-            print(f"❌ {target_cid} READY timeout, skip play")
+            self.panel.log("err", f"❌ {target_cid} READY timeout, skip play")
             self.panel.update_device(target_cid, status="錯誤", error_msg="READY timeout")
             return
 
@@ -1292,7 +1342,7 @@ class NetBusMaster:
         target_frame = int((elapsed + lat_s) * self.current_fps)
         if total > 0:
             target_frame = target_frame % total if play_mode == 1 else min(target_frame, total - 1)
-        print(f"🔄 [Mid-Join] {target_cid} → frame {target_frame}")
+        self.panel.log("info", f"🔄 [Mid-Join] {target_cid} → frame {target_frame}")
 
         # 4. 帶幀號播放 + 同步 fps; master 暫停中則讓新裝置也跟上暫停
         self.send_pkt([target_cid], 0x300A, {"start_frame": target_frame})
@@ -1311,12 +1361,12 @@ class NetBusMaster:
         # 5. 🔧 接回後驗證閉環: 確認 slave 真的開始播, 進度偏差就 SEEK 拉回
         ok = self._verify_join(target_cid, target_frame)
         if not ok and _attempt == 0:
-            print(f"🔁 [Mid-Join] {target_cid} 接回後未開始播放 → 整輪重來一次")
+            self.panel.log("warn", f"🔁 [Mid-Join] {target_cid} 接回後未開始播放 → 整輪重來一次")
             time.sleep(1.0)
             self._mid_join_task(target_cid, _attempt=1)
             return
         if ok:
-            print(f"✅ [Mid-Join] {target_cid} 已接回播放 (frame {target_frame}{', 同步暫停' if paused else ''})")
+            self.panel.log("ok", f"✅ [Mid-Join] {target_cid} 已接回播放 (frame {target_frame}{', 同步暫停' if paused else ''})")
 
     def _verify_join(self, target_cid, target_frame, rounds=3):
         """接回後驗證: 輪詢 slave 狀態, 確認 stream 真的有在跑且進度正確。
@@ -1337,7 +1387,7 @@ class NetBusMaster:
                 continue
             cur, pos, active, mem_free, _rid = self._parse_status(st)
             if active is False:
-                print(f"   ⏳ [Verify] {target_cid} 第{rnd}輪: stream_active=False (可能仍在準備)")
+                self.panel.log("info", f"   ⏳ [Verify] {target_cid} 第{rnd}輪: stream_active=False (可能仍在準備)")
                 continue
             # 有在播 → 對齊檢查
             self.panel.update_device(target_cid, current_frame=cur, mem_free=mem_free)
@@ -1347,10 +1397,10 @@ class NetBusMaster:
                 drift = abs(pos - expected)
                 drift_tol = max(30, int(total * 0.03))
                 if drift > drift_tol:
-                    print(f"   🩹 [Verify] {target_cid} 進度偏差 {drift} 幀 (pos={pos}, expect={expected}) → SEEK 校正")
+                    self.panel.log("warn", f"   🩹 [Verify] {target_cid} 進度偏差 {drift} 幀 (pos={pos}, expect={expected}) → SEEK 校正")
                     self.send_pkt([target_cid], 0x3004, {"target_block": 0, "target_frame": expected})
                 else:
-                    print(f"   ✅ [Verify] {target_cid} 播放中且進度正確 (frame {pos}/{total})")
+                    self.panel.log("ok", f"   ✅ [Verify] {target_cid} 播放中且進度正確 (frame {pos}/{total})")
             return True
         self.panel.update_device(target_cid, status="錯誤", error_msg="join後未開始播放")
         return False
@@ -1640,7 +1690,7 @@ class NetBusMaster:
                     pid = self.config["mapping"].get(cid, {}).get("play_id", "")
                     w.writerow([ts, cid, pid, f"{lat:.2f}", note])
         except Exception as e:
-            print(f"⚠️ 延遲紀錄寫入失敗: {e}")
+            self.panel.log("warn", f"⚠️ 延遲紀錄寫入失敗: {e}")
 
     def _latency_test_and_log(self, targets=None, note="", ask_note=False):
         """對目標設備逐一量測延遲, 顯示結果並寫入紀錄檔。
@@ -1956,11 +2006,11 @@ class NetBusMaster:
         self.send_pkt([tid], 0x2011, {"src": src, "dst": remote_path})
         ok = node["query_event"].wait(timeout=wait)
         if not ok:
-            print(f"  ⚠️ [{tid}] promote {remote_path}: 逾時")
+            self.panel.log("warn", f"⚠️ [{tid}] promote {remote_path}: 逾時")
             return False
         if node.get("last_error"):
             err = node["last_error"]
-            print(f"  ⚠️ [{tid}] promote {remote_path}: 失敗 (error={err})")
+            self.panel.log("err", f"⚠️ [{tid}] promote {remote_path}: 失敗 (error={err})")
             return False
         return True
 
@@ -2059,9 +2109,9 @@ class NetBusMaster:
             fail_n += len(res) - got
             for tid, ok in res.items():
                 if not ok:
-                    print(f"  ⚠️ [{tid}] {verb}失敗: {path}")
+                    self.panel.log("err", f"⚠️ [{tid}] {verb}失敗: {path}")
                 self._log_event(level if ok else "FAIL", f"{verb} {path}" + ("" if ok else " (失敗)"), device_id=tid)
-            print(f"  [{i}/{total}] {path}: {verb} {len(res)} 台 ({got} 成功)")
+            self.panel.log("info", f"[{i}/{total}] {path}: {verb} {len(res)} 台 ({got} 成功)")
         return ok_n, fail_n
 
     def _prompt_confirm_promoted(self, promoted):
@@ -2097,7 +2147,7 @@ class NetBusMaster:
         print(f"\n✅ [Promote] 直接確認 {total} 個檔案 (正式生效, 刪 .bak)...")
         ok_n, fail_n = self._run_confirm_or_undo(promoted, "confirm")
         self._log_event("CONFIRM", f"批次直接確認 {ok_n} 成功 / {fail_n} 失敗")
-        print(f"✅ 已確認 {ok_n} 個檔案; 失敗 {fail_n}")
+        self.panel.log("ok", f"✅ 已確認 {ok_n} 個檔案; 失敗 {fail_n}")
         self._verify_promoted(promoted)
 
     def _verify_promoted(self, promoted):
@@ -2108,7 +2158,7 @@ class NetBusMaster:
         if not promoted:
             return
         remote_to_local = {r: l for l, r in getattr(self, "last_upload_files", [])}
-        print("\n🔎 [Verify] promote 後檢查遠端哈希 + delta...")
+        self.panel.log("info", "🔎 [Verify] promote 後檢查遠端哈希 + delta...")
         for tid, paths in promoted.items():
             if isinstance(paths, dict):
                 paths = list(paths.keys())
@@ -2117,29 +2167,29 @@ class NetBusMaster:
             for r in paths:
                 l = remote_to_local.get(r)
                 if not l or not os.path.isfile(l):
-                    print(f"  ⚠️ [{tid}] {r}: 找不到本地來源, 略過 sha 比對")
+                    self.panel.log("warn", f"⚠️ [{tid}] {r}: 找不到本地來源, 略過 sha 比對")
                     continue
                 local_sha = self._calc_local_sha(l)
                 remote_sha = self._query_remote_sha(tid, r)
                 if remote_sha is None:
-                    print(f"  ❌ [{tid}] {r}: 遠端 sha 查詢失敗")
+                    self.panel.log("err", f"❌ [{tid}] {r}: 遠端 sha 查詢失敗")
                     self._log_event("FAIL", f"promote 驗證 sha 查詢失敗 {r}", device_id=tid)
                 elif remote_sha != local_sha:
-                    print(f"  ❌ [{tid}] {r}: 哈希不符 (remote {remote_sha.hex()[:8]} != local {local_sha.hex()[:8]})")
+                    self.panel.log("err", f"❌ [{tid}] {r}: 哈希不符 (remote {remote_sha.hex()[:8]} != local {local_sha.hex()[:8]})")
                     self._log_event("FAIL", f"promote 驗證哈希不符 {r}", device_id=tid)
                 else:
-                    print(f"  ✅ [{tid}] {r}: 哈希一致")
-        print("🔎 [Verify] 檢查 delta pending 是否已清空...")
+                    self.panel.log("ok", f"✅ [{tid}] {r}: 哈希一致")
+        self.panel.log("info", "🔎 [Verify] 檢查 delta pending 是否已清空...")
         for tid in promoted:
             if tid not in self.slaves:
                 continue
             pend = self._download_remote_delta(tid)
             if pend:
                 shown = ", ".join(sorted(pend)[:5])
-                print(f"  ⚠️ [{tid}]: 仍有 {len(pend)} 個 pending 未清 ({shown})")
+                self.panel.log("warn", f"⚠️ [{tid}]: 仍有 {len(pend)} 個 pending 未清 ({shown})")
                 self._log_event("FAIL", f"promote 驗證 pending 未清 ({len(pend)})", device_id=tid)
             else:
-                print(f"  ✅ [{tid}]: pending 已清空")
+                self.panel.log("ok", f"✅ [{tid}]: pending 已清空")
 
     # ==================== 重啟確認流程 (0x100F REBOOT) ====================
     def _do_reboot(self, chosen, wait_seconds=90):
@@ -2303,7 +2353,7 @@ class NetBusMaster:
                         aligned = (written // chunk_size) * chunk_size if chunk_size else 0
                         if aligned > 0 and aligned < total_len:
                             start_offset = aligned
-                            print(f"♻️ [Resume] {tid} {remote_path} 續傳 @ {aligned}/{total_len}")
+                            self.panel.log("info", f"♻️ [Resume] {tid} {remote_path} 續傳 @ {aligned}/{total_len}")
             except Exception:
                 pass
 
@@ -2369,14 +2419,14 @@ class NetBusMaster:
                     # 🔧 只接受與目前 chunk offset 相符的 ACK; 延遲的舊 ACK 忽略
                     if node.get("ack_offset") == off:
                         break
-                    print(f"⚠️ 忽略錯位 ACK off={node.get('ack_offset')} expect={off}, 重發")
+                    self.panel.log("warn", f"⚠️ 忽略錯位 ACK off={node.get('ack_offset')} expect={off}, 重發")
                     ok = False
                     why = "mismatch"
                 if why == "cancel":
                     raise Exception("已停止")
                 if retry_left > 0:
                     retry_left -= 1
-                    print(f"⚠️ 上傳 ACK 逾時/錯位 offset {off} (chunk={chunk_size}), 重發 ({retry_count - retry_left}/{retry_count})...")
+                    self.panel.log("warn", f"⚠️ 上傳 ACK 逾時/錯位 offset {off} (chunk={chunk_size}), 重發 ({retry_count - retry_left}/{retry_count})...")
                     continue
                 raise Exception(f"Timeout at offset {off} (chunk={chunk_size})")
             send_total += (t_send1 - t_send0)
@@ -2494,20 +2544,20 @@ class NetBusMaster:
                     #    延遲的舊 chunk 回應 (重試後才到) 會造成重複寫入 → 忽略
                     if node.get("read_offset") == offset:
                         break
-                    print(f"⚠️ 忽略錯位回應 off={node.get('read_offset')} expect={offset}")
+                    self.panel.log("warn", f"⚠️ 忽略錯位回應 off={node.get('read_offset')} expect={offset}")
                     ok = False
                     why = "mismatch"
                 if why == "cancel":
                     raise Exception("已停止")
                 if retry_left > 0:
                     retry_left -= 1
-                    print(f"⚠️ 下載讀取逾時/錯位 off={offset} (chunk={req_len}), 重試 ({retry_count - retry_left}/{retry_count})...")
+                    self.panel.log("warn", f"⚠️ 下載讀取逾時/錯位 off={offset} (chunk={req_len}), 重試 ({retry_count - retry_left}/{retry_count})...")
                     continue
                 if chunk_size > chunk_min:
                     next_req = chunk_size // 2
                     if next_req < chunk_min:
                         next_req = chunk_min
-                    print(f"⚠️ 下載超時，chunk {chunk_size} -> {next_req} (path={remote_path}, off={offset})")
+                    self.panel.log("warn", f"⚠️ 下載超時，chunk {chunk_size} -> {next_req} (path={remote_path}, off={offset})")
                     chunk_size = next_req
                     req_len = chunk_size
                     remain = expected_size - offset
@@ -3057,7 +3107,7 @@ class NetBusMaster:
             # 🔧 跳過健康檢查標記為離線/無響應的設備, 避免每個都等查詢逾時
             mon = self.panel.monitors.get(target)
             if mon and mon.status in ("離線", "無響應"):
-                print(f"  ⚠️ {target}: {mon.status}, 跳過 (先 Scan 或確認設備在線)")
+                self.panel.log("warn", f"⚠️ {target}: {mon.status}, 跳過 (先 Scan 或確認設備在線)")
                 fail_count += 1
                 continue
 
@@ -3249,7 +3299,7 @@ class NetBusMaster:
                     diff.append((l_path, r_path))
         else:
             # 無 manifest → 逐檔查詢 sha
-            print(f"  ⚠️ [{tid}] 無 manifest, 逐檔查詢 sha (較慢)...")
+            self.panel.log("warn", f"⚠️ [{tid}] 無 manifest, 逐檔查詢 sha (較慢)...")
             for l_path, r_path in files_to_upload:
                 local_sha = self._calc_local_sha(l_path)
                 remote_sha = self._query_remote_sha(tid, r_path)
@@ -4340,7 +4390,7 @@ class NetBusMaster:
         #    (清 .bak + pending)。否則 /data.bin 的備份會留著, 3 次開機後被靜默還原成舊版。
         if not self._confirm_file(tid, "/data.bin"):
             self._log_event("FAIL", "data.bin 確認失敗 (pending 未清, 可能 3 次重啟後回滾)", device_id=tid)
-            print(f"  ⚠️ [{tid}] data.bin 上傳成功但確認失敗 (pending 未清)")
+            self.panel.log("warn", f"⚠️ [{tid}] data.bin 上傳成功但確認失敗 (pending 未清)")
         self.config["mapping"][tid]["last_sha"] = local_sha.hex()
         self.save_config()
     
@@ -4644,7 +4694,7 @@ class NetBusMaster:
 
         self._active_sync_thread = threading.Thread(target=_loop, daemon=True)
         self._active_sync_thread.start()
-        print(f"🔁 [ActiveSync] 定時廣播 0x3001 fps={fps} (每 {interval:.0f}s)")
+        self.panel.log("info", f"🔁 [ActiveSync] 定時廣播 0x3001 fps={fps} (每 {interval:.0f}s)")
 
     def _stop_active_sync(self):
         """停止主動同步廣播執行緒。"""
@@ -4721,7 +4771,7 @@ class NetBusMaster:
                             self._dev_drift[tid] = self._dev_drift.get(tid, 0) + 1
                             if self._dev_drift.get(tid, 0) >= 3:
                                 self._dev_drift[tid] = 0
-                                print(f"🩹 [Sync] {tid} 進度偏差 {abs(pos - expected)} 幀 (pos={pos}, expect={expected}) → SEEK 校正")
+                                self.panel.log("warn", f"🩹 [Sync] {tid} 進度偏差 {abs(pos - expected)} 幀 (pos={pos}, expect={expected}) → SEEK 校正")
                                 self.send_pkt([tid], 0x3004, {"target_block": 0, "target_frame": expected})
                         else:
                             self._dev_drift[tid] = 0

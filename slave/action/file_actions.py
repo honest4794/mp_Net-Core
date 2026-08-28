@@ -102,19 +102,25 @@ def on_file_end(ctx, args):
         # 回覆最終狀態 (0x2006)，附 free + pending
         size = 0
         sha_bytes = b'\x00' * 32
-        entry, _ = fs.manifest_lookup(path)
-        if entry:
-            size = entry.get("s", 0)
-            sha_bytes = _hex_to_bytes(entry.get("h", ""))
+        # ── RAM 緩衝區: 不落盤, manifest/os.stat 都查不到, 直接回 session 的真實 sha ──
+        if fs.resolve(path)[0] == "ram":
+            data = fs.read(path) or b""
+            size = len(data)
+            sha_bytes = _hex_to_bytes(sha) if sha else b'\x00' * 32
         else:
-            try:
-                import os
-                st = os.stat(path)
-                size = st[6]
-                sha_bytes = _hex_to_bytes(sha) if sha else b'\x00' * 32
-            except Exception:
-                size = 0
-                sha_bytes = b'\x00' * 32
+            entry, _ = fs.manifest_lookup(path)
+            if entry:
+                size = entry.get("s", 0)
+                sha_bytes = _hex_to_bytes(entry.get("h", ""))
+            else:
+                try:
+                    import os
+                    st = os.stat(path)
+                    size = st[6]
+                    sha_bytes = _hex_to_bytes(sha) if sha else b'\x00' * 32
+                except Exception:
+                    size = 0
+                    sha_bytes = b'\x00' * 32
 
         _send(ctx, 0x2006, {
             "exists": 1,
