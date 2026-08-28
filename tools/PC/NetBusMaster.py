@@ -1675,13 +1675,16 @@ class NetBusMaster:
             print(f"💾 已紀錄 {len(rows)} 筆 → {os.path.join(LOG_DIR, self.config.get('latency_log_file', 'latency_log.csv'))}")
 
     def _get_mode_name(self, cid, mode_id):
-        """查詢單一本地燈效模式的名稱 (0x3107→0x3108), 失敗回 '?'。"""
+        """查詢單一本地燈效模式的名稱 (0x3107→0x3108), 失敗回 '?'。
+
+        mode_id = 內部 16-bit 識別碼；發送時拆回 (mode_type, mode_id) 兩欄。
+        """
         node = self.slaves.get(cid)
         if not node:
             return "?"
         node["mode_detail_event"].clear()
         node["mode_detail"] = None
-        self.send_pkt([cid], 0x3107, {"mode_type": 0, "mode_id": mode_id})
+        self.send_pkt([cid], 0x3107, {"mode_type": mode_id >> 8, "mode_id": mode_id & 0xFF})
         if node["mode_detail_event"].wait(timeout=1.5):
             d = node.get("mode_detail") or {}
             name = d.get("name")
@@ -1710,6 +1713,7 @@ class NetBusMaster:
         """查詢設備本地燈效清單 (0x3101 + 0x3108 名稱)。
 
         回傳 [(mode_id, name), ...]; 逾時/無模式回 []。
+        mode_id = 內部 16-bit 識別碼（entries 每筆 2 bytes, little-endian）。
         """
         node = self.slaves.get(cid)
         if not node:
@@ -1724,7 +1728,8 @@ class NetBusMaster:
         if entries is None:
             return []
         try:
-            ids = list(bytes(entries))
+            raw = bytes(entries)
+            ids = list(struct.unpack("<{}H".format(len(raw) // 2), raw))
         except Exception:
             return []
         result = []
@@ -4870,8 +4875,8 @@ class NetBusMaster:
                     for i, mid in enumerate(mode_ids):
                         print(f"\n   ▶ [{i+1}/{len(mode_ids)}] 播放 mode {mid} ...")
                         self.send_pkt([cid], 0x3105, {
-                            "mode_type": 0,
-                            "mode_id": mid,
+                            "mode_type": mid >> 8,
+                            "mode_id": mid & 0xFF,
                             "start_delay_ms": 0,
                             "brightness": 255
                         })

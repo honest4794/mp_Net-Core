@@ -15,9 +15,15 @@
 # 以本地 registry/show 機制播放該單一模式, 不需 PC 串流 data.bin。
 
 import time
+import struct
 from lib.sys.proto import Proto
 from lib.sys.schema_codec import SchemaCodec
 from lib.sys.sys_bus import bus
+
+# ── 內部模式識別碼：協議的 (mode_type, mode_id) 分開讀取，進系統後合併成
+#    單一 16-bit id = (mode_type << 8) | mode_id —— modes/*.json 的 id 即此值。
+def _combine(mode_type, mode_id):
+    return ((int(mode_type) & 0xFF) << 8) | (int(mode_id) & 0xFF)
 
 
 def _send(ctx, rsp_cmd, fields):
@@ -32,11 +38,15 @@ def _send(ctx, rsp_cmd, fields):
 
 
 def on_mode_list_query(ctx, args):
-    """0x3101: 回報本地燈效 id 清單 (entries = 依 id 排序的 u8 串)。"""
+    """0x3101: 回報本地燈效清單。
+
+    entries = 依 id 排序的 u16 串（每筆 2 bytes, little-endian, 對齊
+    SchemaCodec 的 <H 習慣）= 內部 16-bit 模式識別碼 (mode_type<<8 | mode_id)。
+    """
     mode_type = args.get("mode_type", 0)
     modes = bus.shared.get("pixel_maps", {})
     ids = sorted(modes.keys())
-    entries = bytes(ids) if ids else b""
+    entries = b"".join(struct.pack("<H", i) for i in ids)
     _send(ctx, 0x3102, {
         "mode_type": mode_type,
         "count": len(ids),
@@ -50,13 +60,14 @@ def on_mode_set(ctx, args):
 
     先強制退出串流 (stream_active=False / is_streaming=False), 避免 data.bin
     供給鏈 (NetworkTask.handle_supply_chain) 與本地燈效搶 pixel_stream hub。
+    (mode_type, mode_id) 分開讀取 → 合併成單一 16-bit id 進系統。
+    start_delay_ms 不在此阻塞等待（舊版 time.sleep_ms 會卡死 core0 通訊鏈），
+    改記時間戳由 PixelTask 延遲播放。
     """
     mode_type = args.get("mode_type", 0)
     mode_id = args.get("mode_id", 0)
     start_delay_ms = args.get("start_delay_ms", 0) or 0
     brightness = args.get("brightness", 255)
-    if start_delay_ms > 0:
-        time.sleep_ms(min(start_delay_ms, 10000))
     # 停用串流供給鏈 (stream_active) 與渲染旗標, 避免與本地 show 衝突
     bus.shared.update({
         "stream_active": False,
@@ -64,8 +75,10 @@ def on_mode_set(ctx, args):
         "is_paused": False,
         "is_ready": False,
     })
-    bus.shared["pixel_remote_set"] = mode_id
-    print("[Pixel] MODE_SET type={} id={} bri={}".format(mode_type, mode_id, brightness))
+    bus.shared["pixel_remote_set"] = _combine(mode_type, mode_id)
+    bus.shared["pixel_remote_start_at"] = time.ticks_ms() + start_delay_ms
+    print("[Pixel] MODE_SET type={} id={} bri={} delay={}ms".format(
+        mode_type, mode_id, brightness, start_delay_ms))
 
 
 def on_mode_stop(ctx, args):
@@ -85,7 +98,7 @@ def on_mode_detail_query(ctx, args):
     mode_type = args.get("mode_type", 0)
     mode_id = args.get("mode_id", 0)
     modes = bus.shared.get("pixel_maps", {})
-    m = modes.get(mode_id)
+    m = modes.get(_combine(mode_type, mode_id))
     name = m.get("name", "") if m else ""
     _send(ctx, 0x3108, {
         "mode_type": mode_type,

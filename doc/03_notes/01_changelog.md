@@ -373,3 +373,35 @@ self.next_tick_us = time.ticks_add(self.next_tick_us, self.interval_us)
   - PCA9685 條目：移除 GPIO 內層的 `"dArc": 0`，改在 item 層放 `"dStay": 0`（driver 讀的位置：`pca9685_drv.py` 的 `item.get("dStay", 0)`）
 - LED（WS2812/APA102/PCA9685）`dStay` 顯式設 0 與 code 預設一致；uartMotor 維持 2048。
 - grep 全 `*.json` 已無 `dArc`；docs 中「對齊舊專案 dArc 概念」的歷史說明保留。
+
+---
+
+## 14) Pixel 模式識別碼合併為 16-bit + 串流優先互斥 + MODE_SET 非阻塞
+
+> wire 協定照舊（`mode_type:u8` + `mode_id:u8` 分開讀），進系統後合併成
+> 單一 16-bit id；本地模式與串流改為「串流優先、結束自動恢復」。
+
+### 14.1 (mode_type, mode_id) → 內部單一 16-bit id
+
+- `pixel_actions._combine()`：內部模式識別碼 = `(mode_type << 8) | mode_id`（0..65535）；
+  `modes/*.json` 的 `id` 即此合併值（例：LED 組 mode 5 → wire `(1,5)` → id `0x0105`）。
+- `MODE_LIST_RSP.entries` 改為每筆 **2 bytes**（u16 LE 合併 id；舊實作是 raw u8 id，
+  協議文件原訂的 6-byte 格式從未實作）。`MODE_SET`/`MODE_DETAIL_QUERY` 的
+  `mode_type`/`mode_id` 欄位與 schema 不變。
+- master（`NetBusMaster.py`）：`_query_modes` 解 u16 entries；發 0x3105/0x3107 時把
+  合併 id 拆回 `(mode_type, mode_id) = (id >> 8, id & 0xFF)`。
+
+### 14.2 串流優先 + 結束自動恢復（`pixel_task.py`）
+
+- `loop()`：`stream_active=True`（串流載入/播放中）→ 本地模式讓位（保持 `_playing`，
+  不停止）；`stream_active=False` 且本地模式還在播 → 自動恢復並重新宣告
+  `is_streaming/is_ready`（RenderTask 恢復取幀）。修掉舊版「串流開始不踢本地模式、
+  兩個生產者同時寫 SPSC hub」的混幀風險，以及「串流結束本地模式不會自動接回」。
+- `_start/_stop/pixel_pause`：串流播放中不碰渲染旗標（`is_streaming/is_ready/is_paused`
+  是串流的）、不熄燈，避免誤傷串流。
+
+### 14.3 MODE_SET 非阻塞延遲
+
+- `on_mode_set` 不再 `time.sleep_ms()`（舊版在 core0 通訊鏈上阻塞最多 10 秒，
+  全 core0 任務卡死）；改記 `pixel_remote_start_at` 時間戳，由 PixelTask
+  延遲到期才播放。MODE_STOP 可取消未到期的延遲 MODE_SET。

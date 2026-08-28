@@ -30,7 +30,7 @@
 | CMD | 名稱 | 方向 | Payload |
 |---:|---|---|---|
 | `0x3101` | `MODE_LIST_QUERY` | Master → Slave | `mode_type:u8`（0=全部、1=LED、2=SERVO） |
-| `0x3102` | `MODE_LIST_RSP` | Slave → Master | `mode_type:u8`（回音）, `count:u8`, `entries:bytes_rest`（子格式：mode_type:u8 + mode_id:u8 + total_ms:u32，見 §2.2） |
+| `0x3102` | `MODE_LIST_RSP` | Slave → Master | `mode_type:u8`（回音）, `count:u8`, `entries:bytes_rest`（子格式：每筆 2 bytes = 內部 16-bit 模式 id，見 §2.2） |
 | `0x3103` | `MODE_GET` | Master → Slave | (空) |
 | `0x3104` | `MODE_GET_RSP` | Slave → Master | `mode_type:u8`, `mode_id:u8`, `elapsed_ms:u32`, `total_ms:u32`, `running:u8` |
 | `0x3105` | `MODE_SET` | Master → Slave | `mode_type:u8`, `mode_id:u8`, `start_delay_ms:u16`, `brightness:u8` |
@@ -59,6 +59,13 @@
 - 原 `STORY_SET`（LED/SERVO 切換）已併入：LED=`1`、SERVO=`2`，不再有獨立指令。
 - `mode_id` 空間是 per-mode_type 的：`(1, 0)` 與 `(2, 0)` 是不同模式，互不衝突。
 
+> **實作（slave）**：wire 上仍分開讀取 `mode_type` + `mode_id` 兩欄；進入系統後
+> 合併成**單一 16-bit 模式識別碼** = `(mode_type << 8) | mode_id`
+> （`pixel_actions._combine()`），`modes/*.json` 的 `id` 即此合併值。
+> 例：LED 組 mode 5 → wire `(1, 5)` → 內部 id `0x0105`（261）。
+> Master 收到清單 id 後，發 `MODE_SET`/`MODE_DETAIL_QUERY` 時拆回
+> `(mode_type, mode_id) = (id >> 8, id & 0xFF)`。
+
 > ⚠️ **語義區別**：`0x3101/0x3102` 入面的 `mode_type` 係「組別選擇／回音」（0=全部、1=LED、2=SERVO）；
 > 而 `0x3107/0x3108` 同 entries 入面的 `mode_type` 係「模式識別碼高位」（1=LED、2=SERVO，0=系統模式）。
 > 兩個用法唔同，睇清楚係邊條指令。
@@ -79,24 +86,19 @@
 ]}
 ```
 
-- `MODE_LIST_QUERY.mode_type` 指定查哪一組：`0`=全部（LED+SERVO 一次過）、`1`=LED、`2`=SERVO；其餘保留。
+- `MODE_LIST_QUERY.mode_type` 指定查哪一組：`0`=全部（LED+SERVO 一次過）、`1`=LED、`2`=SERVO；其餘保留。（目前 slave 未依此過濾，一律回全部。）
 - `MODE_LIST_RSP.mode_type` **回音** query 嘅組別（0/1/2），Master 可核對回覆對應邊個查詢。
-- 每個 entry 含綁定的 `(mode_type, mode_id)` 與總時間，順序一致，不需另外對齊三個表。
-- `entries` 自訂子格式（schema 無 list 型別），每筆**固定 6 bytes**：
+- `entries` 自訂子格式（schema 無 list 型別），每筆**固定 2 bytes** = 內部 16-bit 模式 id：
 
 ```text
 entries = concat( entry[0..count-1] )
-entry (固定 6 bytes, 全 little-endian):
-  mode_type: u8     綁定 key 高位（1=LED、2=SERVO）
-  mode_id:   u8     綁定 key 低位（該組內索引，0 起）
-  total_ms:  u32    模式總時間（毫秒；0=不設限，如 DEV／常駐模式）
+entry (固定 2 bytes, little-endian):
+  u16  內部模式識別碼 = (mode_type << 8) | mode_id
 ```
 
-- Master 拿到任一筆的 `(mode_type, mode_id)`，可直接原樣丟進 `MODE_SET`（0x3105）或 `MODE_DETAIL_QUERY`（0x3107）。
-- `count` 為 u8，上限 **255**。以固定 6 bytes/筆計，255 筆 = 1531 bytes payload，遠低於 8K 上限，**列表不需分頁**。
-- 範例（查 LED 組 `mode_type=1`，回 2 個模式）：
-  `01 | 02 | 01 00 30 75 00 00 | 01 01 88 13 00 00`
-  （mode_type 回音=1；count=2；entry1: `mode_type=1, mode_id=0, total_ms=30000`；entry2: `mode_type=1, mode_id=1, total_ms=5000`）
+- Master 拿到任一筆 id，發 `MODE_SET`（0x3105）或 `MODE_DETAIL_QUERY`（0x3107）時拆回 `(mode_type, mode_id) = (id >> 8, id & 0xFF)`。
+- `count` 為 u8，上限 **255**。以 2 bytes/筆計，255 筆 = 511 bytes payload，遠低於 8K 上限，**列表不需分頁**。
+- 範例（id `0x0105` = LED 組 mode 5）：entries 內 `05 01`（LE）→ Master 拆回 mode_type=1、mode_id=5。
 
 ### 2.3 `MODE_GET`（0x3103）／`MODE_GET_RSP`（0x3104）
 

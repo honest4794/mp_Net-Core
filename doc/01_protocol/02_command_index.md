@@ -234,7 +234,7 @@
 | CMD | 名稱 | 方向 | Payload | 說明 |
 |-----|------|------|---------|------|
 | 0x3101 | MODE_LIST_QUERY | Master → MCU | `mode_type(u8)` | 查模式清單（0=全部、1=LED、2=SERVO） |
-| 0x3102 | MODE_LIST_RSP | MCU → Master | `mode_type(u8)` `count(u8)` `entries(bytes_rest)` | 清單（mode_type 回音 query；每筆 `mode_type(u8)`+`mode_id(u8)`+`total_ms(u32)`） |
+| 0x3102 | MODE_LIST_RSP | MCU → Master | `mode_type(u8)` `count(u8)` `entries(bytes_rest)` | 清單（mode_type 回音 query；entries 每筆 = 內部 16-bit 模式 id，u16 LE，見 04_pixel_protocol §2.2） |
 | 0x3103 | MODE_GET | Master → MCU | (空) | 查目前狀態 |
 | 0x3104 | MODE_GET_RSP | MCU → Master | `mode_type(u8)` `mode_id(u8)` `elapsed_ms(u32)` `total_ms(u32)` `running(u8)` | 目前狀態 |
 | 0x3105 | MODE_SET | Master → MCU | `mode_type(u8)` `mode_id(u8)` `start_delay_ms(u16)` `brightness(u8)` | 切換模式（brightness 0–30，0xFF=不設置） |

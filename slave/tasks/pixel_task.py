@@ -22,6 +22,7 @@ loop() = 播放端：大隊列（registry.list）依序播放，show 循環；mo
 """
 
 import json
+import time
 from lib.sys.task import Task
 from lib.sys.sys_bus import bus
 from lib.sys.log_service import get_log
@@ -313,10 +314,11 @@ class PixelTask(Task):
         self._release_player(self._cur)
         self._cur = None
         self._cur_mode = None
-        # 通知播放核（RenderTask）開始取幀
-        bus.shared["is_streaming"] = True
-        bus.shared["is_ready"] = True
-        bus.shared["is_paused"] = False
+        # 通知播放核（RenderTask）開始取幀；串流播放中不搶渲染旗標
+        if not bus.shared.get("stream_active"):
+            bus.shared["is_streaming"] = True
+            bus.shared["is_ready"] = True
+            bus.shared["is_paused"] = False
         get_log().info("[Pixel] ▶ show 開始（{} mode(s)）".format(len(self._show_list)))
 
     def _stop(self):
@@ -324,12 +326,14 @@ class PixelTask(Task):
         self._release_player(self._cur)
         self._cur = None
         self._cur_mode = None
-        bus.shared["is_streaming"] = False
-        bus.shared["is_ready"] = False
-        if self._st:
+        if not bus.shared.get("stream_active"):
             # 停止/熄燈：填中性值（燈=0 熄滅，motor=0x80 死區停），
             # 不能全清 0 —— UART-412 的 0 = 全速正轉！
-            self._st.clear_all()
+            # 串流播放中不碰渲染旗標/不熄燈（那些是串流的）
+            bus.shared["is_streaming"] = False
+            bus.shared["is_ready"] = False
+            if self._st:
+                self._st.clear_all()
         get_log().info("[Pixel] ■ show 停止")
 
     def _consume_cmds(self):
@@ -339,12 +343,29 @@ class PixelTask(Task):
             self._start()
         if bus.shared.pop("pixel_pause", None) is not None:
             self._paused = not self._paused
-            # 同步給播放核（RenderTask）：暫停時電機填中性值歸位（is_paused 分支）
-            bus.shared["is_paused"] = self._paused
+            if not bus.shared.get("stream_active"):
+                # 同步給播放核（RenderTask）：暫停時電機填中性值歸位（is_paused 分支）
+                bus.shared["is_paused"] = self._paused
             get_log().info("[Pixel] ⏸ paused={}".format(self._paused))
+        # 遠端停止本地模式 (0x3106 MODE_STOP) → 熄燈並還原 show list。
+        # 先處理：可以取消尚未到期的延遲 MODE_SET（清掉 pending）。
+        if bus.shared.pop("pixel_remote_stop", None) is not None:
+            bus.shared.pop("pixel_remote_set", None)
+            bus.shared.pop("pixel_remote_start_at", None)
+            if self._orig_show_list is not None:
+                self._show_list = self._orig_show_list
+                self._orig_show_list = None
+            self._stop()
+            get_log().info("[Pixel] ■ remote stop (show list restored)")
         # 遠端指定播放單一本地模式 (0x3105 MODE_SET → pixel_actions 寫入)
         rid = bus.shared.pop("pixel_remote_set", None)
         if rid is not None:
+            at = bus.shared.pop("pixel_remote_start_at", 0)
+            if at and time.ticks_diff(time.ticks_ms(), at) < 0:
+                # start_delay_ms 未到 → 放回，下一輪再檢查（非阻塞延遲播放）
+                bus.shared["pixel_remote_set"] = rid
+                bus.shared["pixel_remote_start_at"] = at
+                return
             try:
                 mode = self._modes.get(int(rid))
             except (TypeError, ValueError):
@@ -357,13 +378,6 @@ class PixelTask(Task):
                 get_log().info("[Pixel] ▶ remote play mode {}".format(rid))
             else:
                 get_log().warn("[Pixel] remote mode {} 不存在".format(rid))
-        # 遠端停止本地模式 (0x3106 MODE_STOP) → 熄燈並還原 show list
-        if bus.shared.pop("pixel_remote_stop", None) is not None:
-            if self._orig_show_list is not None:
-                self._show_list = self._orig_show_list
-                self._orig_show_list = None
-            self._stop()
-            get_log().info("[Pixel] ■ remote stop (show list restored)")
 
     def _should_play(self, mode):
         """這一輪（pass）這個 mode 是否要播。"""
@@ -482,6 +496,16 @@ class PixelTask(Task):
         if not self.running:
             return
         self._consume_cmds()
+        # ── 串流優先：stream_active=True（串流載入/播放中）→ 本地模式讓位，
+        #    但保持 _playing 狀態不停止；串流結束（stream_active=False）自動恢復。
+        if bus.shared.get("stream_active"):
+            return
+        # 串流結束自動恢復：本地模式還在播、但渲染旗標被串流清掉 → 重新宣告，
+        # 讓 RenderTask 恢復取幀（配合 _consume_cmds 的 pixel_remote_set 流程）。
+        if (self._playing and not self._paused
+                and bus.shared.get("is_streaming") is not True):
+            bus.shared["is_streaming"] = True
+            bus.shared["is_ready"] = True
         if not self._playing or self._paused or self._st is None or self._hub is None:
             return
         # 計算核：全力算幀。hub 滿（播放核來不及消化）→ get_write_view 回 None，
