@@ -71,11 +71,19 @@ _boot_at = 0
 
 def arm_rearm(rearm_ms):
     """測試模式（enable=0 且 auto_rearm_ms>0）時由 init_watchdog 呼叫：
-    啟動 re-arm 倒數（開機寬限 = rearm_ms）。回傳 True = 已啟動。"""
+    啟動 re-arm 倒數（開機寬限 = rearm_ms）。回傳 True = 已啟動。
+    rearm_ms <= 0 → 不 arm（回 False），避免 max(1000, 0) 誤啟 1 秒倒數。"""
     global _rearm_ms, _boot_at
-    _rearm_ms = max(1000, int(rearm_ms or 0))
+    try:
+        rearm_ms = int(rearm_ms or 0)
+    except (TypeError, ValueError):
+        rearm_ms = 0
+    if rearm_ms <= 0:
+        _rearm_ms = 0
+        return False
+    _rearm_ms = max(1000, rearm_ms)
     _boot_at = time.ticks_ms()
-    return _rearm_ms > 0
+    return True
 
 
 def poll_rearm():
@@ -226,11 +234,11 @@ def auto_disable_on_interrupt():
                 machine.reset()
             else:
                 get_log().immediate("[WDT] 存 config 失敗 — 不重啟，WDT 將在 timeout 後觸發")
-        else:
-            # 測試模式（無 WDT）：倒數狀態改變 = WatchdogTask 隨 runner 暫停而凍結
-            get_log().immediate(
-                "[WDT] 測試模式：re-arm 倒數已暫停（REPL session）；"
-                "重新運行/開機後重新開始倒數")
+            return ok
+        # 測試模式（無 WDT）：倒數狀態改變 = WatchdogTask 隨 runner 暫停而凍結
+        get_log().immediate(
+            "[WDT] 測試模式：re-arm 倒數已暫停（REPL session）；"
+            "重新運行/開機後重新開始倒數")
     except Exception:
         pass
     return False

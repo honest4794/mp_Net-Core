@@ -677,3 +677,40 @@ Ctrl+C（👋 User stop requested）
 - `_DRIVER_LABELS` 補 `"wdt": "WDT"`（衝突訊息顯示 WDT 而非原始 key）。
 - 已驗證（PC）：無衝突 → True + level 1 靜默 / level 2 顯示；衝突 → 明細 +
   False（不 raise）；debug_level=0 衝突仍顯示。
+
+---
+
+## 26) Watchdog / 播放引擎正式 PC 測試（test/sys/）+ 修掉 2 個真 bug
+
+> 新增 `test/sys/test_watchdog.py`（17 項）與 `test/sys/test_pixel_task_engine.py`
+> （11 項），fake machine.WDT/Pin/reset/ConfigManager + fake 播放器，不依賴硬體。
+
+### 26.1 測試發現並修掉的 bug
+
+1. **`arm_rearm(0)` 誤啟倒數**：`max(1000, int(rearm_ms or 0))` 在 `auto_rearm_ms=0`
+   （關閉此行為）時會 arm 成 1000ms。修正：`rearm_ms <= 0` → 不 arm（回 False）。
+2. **`auto_disable_on_interrupt()` 永遠回 False**：動作有執行（存 config + 重啟）
+   但回傳值恆 False。修正：動作成功回傳 `ok`。
+
+### 26.2 覆蓋範圍
+
+- `init_watchdog` 全分支：enable=0（含 rearm 啟動）/ enable=1 / 按鍵 bypass
+  （低電位跳過、高電位正常）/ timeout clamp（8000 上限、1000 下限）。
+- `watchdog_set_enable`：改 bus + 存 config + 無 watchdog 區塊自動建立。
+- `auto_disable_on_interrupt`：WDT 開啟 → 存 enable=0 + 立即重啟；
+  測試模式 → 不動作；存檔失敗 → 不重啟。
+- `should_rearm`/`touch`/`idle_ms`/`poll_rearm`：寬限/沉默/有通訊/觸發一次/
+  存檔失敗不重啟。
+- **TaskManager.runner_loop(0) 整合**：背景執行緒跑 runner → 每圈 `wdt.feed()` +
+  `poll_rearm()` 確實被呼叫。
+- 播放引擎：短效果循環、play_loop/play_count/play_interval/maxF/欄位解析/range。
+
+### 26.3 執行
+
+```bash
+python -B -m unittest discover -s test/sys -p "test_*.py"    # 28 項
+python -B -m unittest discover -s test/motor -p "test_uart_motor.py"   # 36 項
+python -B test/pixel/test_pixel_math.py   # 27 pass
+python -B test/pixel/test_pixel_color.py  # 18 pass
+python -B slave/lib/sw/pixel_layout.py    # 自檢
+```
