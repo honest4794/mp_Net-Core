@@ -1,13 +1,13 @@
 ---
 name: fastled-cross-repo-delivery
-description: Use when changes in any FastLED clone or branch may need synchronization to FastLED_ColorPicker or MP4_Preview_App, when auditing ColorPicker effect completeness, or before task-only commit/push and GitHub Pages delivery.
+description: Use when FastLED changes may need synchronization to ColorPicker, MP4 Preview, or a paired Hi-Nu motor/sound repository; when auditing effect completeness or cross-board timing; or before task-only commit/push and GitHub Pages delivery.
 ---
 
 # FastLED 跨 Repository 交付
 
 ## 核心流程
 
-固定執行：**掃描差異 → 更新 → 完整性驗證 → staged diff 複核 → commit／push → Pages 證據**。
+固定執行：**掃描差異 → 更新 → 完整性驗證 → staged diff 複核 → commit／push → 適用時提供 Pages 證據**。
 
 不能只同步同名檔、只看到選單名稱，或只確認 push 成功。
 
@@ -17,6 +17,7 @@ description: Use when changes in any FastLED clone or branch may need synchroniz
 | --- | --- |
 | `FastLED_ColorPicker` clone | ColorPicker Web／PWA、USB、Preset／Playlist、effect／palette catalog、schema、renderer、QA |
 | `MP4_Preview_App` clone | RGB／WLED／PWM effect、palette、schema、catalog／adapter、recorder runtime、WASM、preview、Pages |
+| Hi-Nu 配對 repositories | 藍色 `SlaveX` 的 C++ RGB／PCA／StoryMode，及黑色 `SlaveX.1` 的 MicroPython motor／sound／JSON timeline |
 
 目標 root 必須來自本次使用者指示、全域／專案 `AGENTS.md` 或已驗證 workspace 設定，再以 repository root、origin 與目前 branch 確認；repo skill 不寫死個人電腦路徑。Effect、palette 或共用 schema 改變時通常核對兩個目標；純 ColorPicker UI／USB 變更不需碰 MP4。硬體 mapping、GPIO、profile、brightness、slave grouping、`platformio_local.ini` 只留在各自 authority repository。
 
@@ -24,9 +25,31 @@ description: Use when changes in any FastLED clone or branch may need synchroniz
 
 若來源與 ColorPicker 的 `rhythmic.cpp`、WLED 1D／2D 實作及 registry 已同 hash，但 ColorPicker 缺少「RGB 節奏（30）」分類，task manifest 只包含 Web source、分類測試與重建 HTML；不覆蓋 firmware，也不更新無關的 MP4 repository。
 
+## Hi-Nu 配對板判定
+
+配對 root 與預期 branch 以兩邊 `AGENTS.md` 及已驗證 checkout 為準。典型分工如下：
+
+- 藍色 `SlaveX`（Hi-Nu C++ repo）擁有 RGB、PCA、視覺 StoryMode 與 Master scheduling。
+- 黑色 `SlaveX.1`（companion repo 的 `dev_motor_effects` branch）擁有 motor effect JSON、motor UART、sound cue 與其硬體設定。
+- Master 對兩板排定同一開始時間；兩板不以 peer-to-peer 命令互相啟動。現有非 `SlaveX.1` motor path 不因本配對規則而停用或搬移。
+
+Hi-Nu 配對硬體 wiring 的最高權威是 [Figma `Gunpla` board 目前版本](https://www.figma.com/board/Wd6kUSFmDwmTflF711eixM/Gunpla?node-id=0-1&t=W5TL9CJopGvFQ9nh-1)。Repository 內的 `config.json`、`platformio_local.ini` 與文件只視為部署快照；涉及板角色、GPIO、UART address、RS485 或連線時，先讀取 Figma 目前內容，再只更新擁有該硬體的 repository。無法讀取 Figma 時，不以舊 config 猜測新 wiring。
+
+先分類變更，再決定實際要修改的 repository：
+
+| 變更 | 交付範圍 |
+| --- | --- |
+| motor／sound effect、cue、timeslot、方向、速度曲線、open／close／STOP | 更新 companion；若共同時序合約改變，同步 Hi-Nu |
+| StoryMode mode ID／次序／總長／stage boundary／scheduled start 會改變 motor 或 sound cue | 掃描並同步兩邊 |
+| 純 RGB／PCA 顏色、亮度或視覺參數，且共同時序合約不變 | 只更新 Hi-Nu；companion 維持零 diff |
+| 純 companion runtime／JSON 修正，且 mode mapping 與時序合約不變 | 只更新 companion；Hi-Nu 維持零 diff |
+| GPIO、UART address、port profile 等硬體 mapping | 先以 Figma 目前版本核對，再只修改擁有該硬體的 repo |
+
+共同時序合約至少包含：穩定 mode key／ID 或明確 mapping、Master scheduled-start 語意、時間單位、總長、每個 motor／sound cue 的 start／end，以及結尾 motor STOP／sound stop。只有受影響的 repository 才產生 commit，不做占位修改或空同步 commit。
+
 ## 1. 掃描差異
 
-1. 對來源與兩個目標讀取 `AGENTS.md`、README、目前 branch、HEAD、origin、upstream、`git status --short`、staged／unstaged／untracked 清單。
+1. 對來源與每個適用目標讀取 `AGENTS.md`、README、目前 branch、HEAD、origin、upstream、`git status --short`、staged／unstaged／untracked 清單。
 2. 以本次任務已知 base 與 working diff 建立 task manifest；base 不明時從任務 commit 或已驗證 upstream 找證據，不猜 branch／remote，也不切換 checkout。
 3. 用 `rg` 比對 effect ID、stable key、header/source、registration、catalog、schema、renderer dispatch、UI request、runtime adapter 與 generated asset。檔案存在或 hash 相同只證明該檔，不代表整條功能完整。
 4. 記錄目標既有 dirty 路徑。與 task manifest 重疊且不能可靠分離時，停止該目標更新並回報；不得 stash、reset、clean、整目錄覆蓋或 `rsync --delete`。
@@ -56,6 +79,8 @@ description: Use when changes in any FastLED clone or branch may need synchroniz
 
 - ColorPicker：至少涵蓋受影響的 build、catalog/schema、UI request、USB、Preset／Playlist、PWA 與韌體環境。
 - MP4 Preview：至少涵蓋 preview build、catalog／adapter、runtime／WASM、parameter compatibility 與 Pages entry。
+- Hi-Nu 配對：Hi-Nu 建置 Master 與受影響藍板；companion 執行 repo 內現有 motor／StoryMode JSON 測試。若存在，至少執行 `python3 -B test/motor/test_uart_motor.py` 與 `python3 -B test/pixel/test_uart_motor_storymodes.py`。
+- 跨板 timing audit 必須證明兩邊 start contract、mode mapping、時間單位與總長一致，每個 cue 都有 start／end，最後有 motor STOP 與 sound stop；不要求未受影響的 repo 製造檔案差異。
 - 任何 build／test 失敗、generated 第二次仍有 diff、或 completeness gate 不成立，都不得標示完成或 push 未驗證版本。
 
 ## 5. Task-only Commit／Push
@@ -65,13 +90,13 @@ description: Use when changes in any FastLED clone or branch may need synchroniz
 3. 驗證通過後，自動 commit 並 push 各受影響 repository 的**目前 checkout branch**。不猜或切換部署 branch，不用 `--all`、force、tags，也不改寫歷史。
 4. remote 已前進或 push rejected 時保留本機 commit並停止；不得自動 rebase／force。回報 repository、branch、commit 與錯誤。
 
-## 6. GitHub Pages 證據
+## 6. GitHub Pages 證據（只限 Pages 目標）
 
 Push 不等於部署完成。先讀實際 workflow 的 branch／path filters；缺 workflow 時先補齊已核准的部署路徑。Push 後核對同一 commit SHA 的 Actions run、成功狀態、Pages URL 與線上版本／內容。無法查到 run 或 URL 時，只能回報「已 push，Pages 未驗證」。
 
 ## 完成摘要
 
-逐個 repository 回報：掃描到的差異、實際更新檔案、完整性計數、測試結果、branch、commit SHA、push 結果、Pages run／URL，以及保留的既有 dirty 路徑。
+逐個 repository 回報：掃描到的差異、實際更新檔案、完整性或 timing contract 結果、測試結果、branch、commit SHA、push 結果、適用時的 Pages run／URL，以及保留的既有 dirty 路徑。
 
 ## 常見錯誤
 
@@ -81,3 +106,5 @@ Push 不等於部署完成。先讀實際 workflow 的 branch／path filters；�
 - 複製來源硬體 mapping／profile／brightness 到 App 或 Preview。
 - 只驗證 catalog 名稱，不驗證 schema、request、renderer 與 applied state。
 - Push 成功就宣稱 GitHub Pages 已更新。
+- 把藍板當成黑板 motor／sound executor，或讓兩板互相直接啟動。
+- 每次 StoryMode 視覺微調都強迫 companion 產生無意義修改或 commit。
