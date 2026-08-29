@@ -14,8 +14,8 @@
 |---|---|---|---|
 | 效果 | 波形生成器（怎麼動） | `pixel/effects/`（effects.json + effects.py） | `pixel_gens` |
 | mapping | 群組排列（怎麼排） | `pixel/map/*.json`（每套一個檔，自帶 id/name） | `pixel_layout` |
-| modes | 效果 × 群組配對 + 播放參數 | `pixel/modes/*.json` | `pixel_maps` |
-| 播放清單 | 播什麼、開不開自動播放 | `pixel/registry.json` | `pixel_show` |
+| modes | 效果 × 群組配對 + 播放參數 | `pixel/modes/*.json` 或 `registry.json.modes` | `pixel_maps` |
+| 播放清單 | 可內嵌少量 mode、選擇播什麼／是否自動 | `pixel/registry.json` | `pixel_show` |
 
 ---
 
@@ -119,16 +119,20 @@
 
 `write` 白名單：`r` / `g` / `b` / `w` / `ww` / `rgb` / `rgbw` / `wwww`。
 
-### 2.4 registry.json — 播放清單 + 自動播放
+### 2.4 registry.json — 可內嵌 mode + 播放清單 + 自動播放
 
 ```json
 {
   "version": 1,
-  "auto_play": true,
-  "list": ["demo1", "demo2"]
+  "auto_play": false,
+  "modes": [
+    {"id": 0, "name": "diagnostic", "mapping": "gundam", "map": []}
+  ],
+  "list": ["diagnostic", "demo2"]
 }
 ```
 
+- `modes`（選用）：直接內嵌 mode 定義；適合專案診斷／短清單，不需另建 mode 檔。
 - `list`：mode 名稱（或 id）依序播放 = 大隊列；順序即播放順序，播完一輪 → 再從頭循環。
 - `auto_play=false`（或檔案不存在）→ 不自動播放，等指令層下 `pixel_play`。
 
@@ -224,7 +228,7 @@ on_start
 │    聚合順序：apa102 + ws2812 + pca9685 + motor（boot.py 各 driver 先 init）
 ├─ 2. effects：py register + 載 effects.json → bus.shared["pixel_gens"]
 ├─ 3. mapping：從播放器推導 order/counts + 載 map/*.json → bus.shared["pixel_layout"]
-├─ 4. modes：載 modes/*.json（解析複合 group 引用）→ bus.shared["pixel_maps"]
+├─ 4. modes：載 modes/*.json + registry.modes（解析複合 group）→ bus.shared["pixel_maps"]
 └─ 5. registry：載 registry.json → bus.shared["pixel_show"]；auto_play → 啟動 show
 ```
 

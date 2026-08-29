@@ -17,11 +17,18 @@ if SLAVE not in sys.path:
 from lib.hw.uart_motor import UartMotor
 from lib.sw.effect_core import Effect
 from lib.sw.pixel_layout import PixelLayout
+from pixel.effects.effects import (
+    uart_dc_motor_profile_speed,
+    uart_dc_motor_scale_profile_speed,
+    uart_dc_motor_value,
+    uart_motor_dev_sine,
+)
 
 
 EFFECTS_PATH = os.path.join(SLAVE, "pixel", "effects", "effects.json")
 MAPPING_PATH = os.path.join(SLAVE, "pixel", "map", "hi_nu_uart_motor_test.json")
 MODES_DIR = os.path.join(SLAVE, "pixel", "modes")
+REGISTRY_PATH = os.path.join(SLAVE, "pixel", "registry.json")
 DEPLOY_EFFECTS_PATH = os.path.join(
     ROOT, "test", "pixel", "fixtures", "hinu_uart_motor_effects.json"
 )
@@ -76,6 +83,9 @@ def mode_by_id(mode_id):
         mode = load_json(os.path.join(MODES_DIR, filename))
         if mode["id"] == mode_id:
             return mode
+    for mode in load_json(REGISTRY_PATH).get("modes", []):
+        if mode["id"] == mode_id:
+            return mode
     raise KeyError(mode_id)
 
 
@@ -102,6 +112,17 @@ class FiniteEffectTests(unittest.TestCase):
 
 
 class MotorStoryModeTests(unittest.TestCase):
+    def test_diagnostic_mode_is_inline_in_registry_not_a_separate_file(self):
+        registry = load_json(REGISTRY_PATH)
+        inline = {mode["name"]: mode for mode in registry.get("modes", [])}
+
+        self.assertIn("motor_diagnostic", inline)
+        self.assertEqual(0, inline["motor_diagnostic"]["id"])
+        self.assertIn("motor_diagnostic", registry["list"])
+        self.assertFalse(registry["auto_play"])
+        self.assertFalse(os.path.exists(
+            os.path.join(MODES_DIR, "motor_diagnostic.json")))
+
     def test_low_memory_deployment_effects_match_the_canonical_motor_effects(self):
         names = {
             "uart_motor_diagnostic",
@@ -233,13 +254,14 @@ class MotorStoryModeTests(unittest.TestCase):
             self.assertEqual(effect_name, mode["map"][0]["effect"])
             self.assertEqual("hi_nu_uart_motor_test.all_uart_motors",
                              mode["map"][0]["group"])
-            self.assertEqual("w", mode["map"][0]["write"])
+            self.assertEqual("rgbw" if mode_id == 2 else "w",
+                             mode["map"][0]["write"])
 
     def test_mode_zero_runs_direction_a_then_stays_stopped(self):
         """Changing diagnostic duration or its safe A command must be detected."""
         effect = Effect("uart_motor_diagnostic", effect_params("uart_motor_diagnostic"))
 
-        self.assertEqual(16, effect.frame(0)[0])       # W >> 4 = raw 0x01
+        self.assertEqual(16, effect.frame(0)[0])       # W >> 4 = marker 0x01
         self.assertEqual(16, effect.frame(499)[0])
         self.assertEqual(2048, effect.frame(500)[0])  # W >> 4 = STOP 0x80
         self.assertEqual(2048, effect.frame(5000)[0])
@@ -254,25 +276,72 @@ class MotorStoryModeTests(unittest.TestCase):
         self.assertEqual(2048, effect.frame(5000)[0])
 
     def test_mode_two_repeats_six_sine_cycles_then_stays_stopped(self):
-        """Changing the 10/5/10/5 timing or six-cycle limit must fail."""
-        effect = Effect("uart_motor_dev_sine", effect_params("uart_motor_dev_sine"))
+        """Mode 2 follows storyMode_dev's B/stop/A/stop timing for six cycles."""
+        effect = uart_motor_dev_sine(
+            "uart_motor_dev_sine", effect_params("uart_motor_dev_sine"))
 
-        self.assertLessEqual(effect.frame(0)[0], 2080)
-        self.assertGreaterEqual(effect.frame(250)[0], 4000)
-        self.assertEqual(2048, effect.frame(500)[0])
-        self.assertGreaterEqual(effect.frame(750)[0], 2000)
-        self.assertLessEqual(effect.frame(1000)[0], 64)
-        self.assertEqual(2048, effect.frame(1250)[0])
-        self.assertLessEqual(effect.frame(1500)[0], 2080)  # cycle 2 begins
-        self.assertEqual(2048, effect.frame(9000)[0])      # 6 * 1500 frames
-        self.assertEqual(2048, effect.frame(20000)[0])
+        # rgbw transport: R=4095 is the explicit-raw marker; W=raw << 4.
+        expected_raw = {
+            0: 128,
+            125: 242,
+            250: 255,
+            375: 242,
+            499: 131,
+            500: 128,
+            750: 128,
+            875: 13,
+            1000: 0,
+            1125: 13,
+            1249: 125,
+            1250: 128,
+            1500: 128,
+            9000: 128,
+            20000: 128,
+        }
+        for frame_no, raw in expected_raw.items():
+            frame = effect.frame(frame_no)
+            self.assertEqual([4095, 0, 0], list(frame[:3]))
+            self.assertEqual(raw << 4, frame[3], frame_no)
+
+    def test_mode_two_math_matches_hinu_cpp_reference_vectors(self):
+        """Literal vectors pin patterns_uart_dc_motor.cpp's two-stage sine math."""
+        expected = {
+            0: (0, 0, 128, 128),
+            125: (71, 90, 13, 242),
+            250: (100, 100, 0, 255),
+            375: (71, 90, 13, 242),
+            499: (1, 2, 125, 131),
+            500: (0, 0, 128, 128),
+        }
+        for elapsed, (profile, scaled, close_raw, open_raw) in expected.items():
+            self.assertEqual(profile,
+                             uart_dc_motor_profile_speed(elapsed, 500))
+            self.assertEqual(
+                scaled,
+                uart_dc_motor_scale_profile_speed(profile, 100, "Sine"),
+            )
+            self.assertEqual(close_raw, uart_dc_motor_value("A", scaled))
+            self.assertEqual(open_raw, uart_dc_motor_value("B", scaled))
+
+        # FNV-1a over all 500 frames × A/B, independently generated by compiling
+        # the referenced C++ float/sinf formulas. This catches differences between
+        # checkpoints without copying a 1000-byte golden table into the repo.
+        digest = 2166136261
+        for elapsed in range(500):
+            profile = uart_dc_motor_profile_speed(elapsed, 500)
+            scaled = uart_dc_motor_scale_profile_speed(profile, 100, "Sine")
+            for direction in ("A", "B"):
+                digest ^= uart_dc_motor_value(direction, scaled)
+                digest = (digest * 16777619) & 0xFFFFFFFF
+        self.assertEqual(0xB13ED0E8, digest)
 
     def test_profile_addresses_receive_mode_one_max_command(self):
         """A wrong profile/address or mapping selector must change the emitted frames."""
         mapping = load_json(MAPPING_PATH)
         effect = Effect("uart_motor_max_open", effect_params("uart_motor_max_open"))
 
-        for slave_id, (profile_path, expected_addresses, _expected_cid) in SLAVE_PROFILES.items():
+        for slave_id, profile_info in SLAVE_PROFILES.items():
+            profile_path, expected_addresses, _expected_cid = profile_info
             profile = load_json(profile_path)
             motor_cfg = profile["uartMotor"]
             self.assertEqual(1, motor_cfg["enable"], "Slave {} motor disabled".format(slave_id))
@@ -309,6 +378,77 @@ class MotorStoryModeTests(unittest.TestCase):
                 values[address - 1] = 0xFF
             expected = bytes([0xFF, 0x00] + values + [0xFE])
             self.assertEqual(expected, uart.writes[-1])
+
+    def test_profile_addresses_receive_mode_zero_true_max_a_then_stop(self):
+        """All four motors receive raw 0x00 for 500 frames, then raw 0x80."""
+        mapping = load_json(MAPPING_PATH)
+        effect = Effect("uart_motor_diagnostic", effect_params("uart_motor_diagnostic"))
+
+        for slave_id, (profile_path, expected_addresses, _expected_cid) in SLAVE_PROFILES.items():
+            profile = load_json(profile_path)
+            motor_cfg = profile["uartMotor"]["list"][0]
+            uart = FakeUART()
+            motor = UartMotor({
+                "version": motor_cfg.get("version", 1),
+                "addresses": expected_addresses,
+                "uart": uart,
+                "dStay": motor_cfg.get("dStay", 2048),
+                "sync_broadcast_span": motor_cfg["sync_broadcast_span"],
+                "sync_tx_interval_ms": motor_cfg["sync_tx_interval_ms"],
+            })
+            layout = PixelLayout(["uartMotor1"], {"uartMotor1": motor.num_pixels})
+            layout.register_mapping(mapping["id"], mapping["name"], mapping["groups"])
+
+            def emit(frame_no):
+                frame = bytearray(motor.frame_size)
+                layout.scatter(
+                    frame, mapping["name"], "all_uart_motors",
+                    effect.frame(frame_no), "w",
+                )
+                motor.st_load_and_convert(frame, 0)
+                motor.st_show()
+                return uart.writes[-1]
+
+            moving = [0x80] * 21
+            stopped = [0x80] * 21
+            for address in expected_addresses:
+                moving[address - 1] = 0x00
+
+            self.assertEqual(bytes([0xFF, 0x00] + moving + [0xFE]), emit(0))
+            self.assertEqual(bytes([0xFF, 0x00] + stopped + [0xFE]), emit(500))
+
+    def test_mode_two_peak_sends_exact_raw_zero_through_rgbw_transport(self):
+        """C++ A peak must survive Pixel's blank-W safety rule as explicit raw 0x00."""
+        mapping = load_json(MAPPING_PATH)
+        effect = uart_motor_dev_sine(
+            "uart_motor_dev_sine", effect_params("uart_motor_dev_sine"))
+
+        for _slave_id, (profile_path, expected_addresses, _cid) in SLAVE_PROFILES.items():
+            motor_cfg = load_json(profile_path)["uartMotor"]["list"][0]
+            uart = FakeUART()
+            motor = UartMotor({
+                "version": motor_cfg.get("version", 1),
+                "addresses": expected_addresses,
+                "uart": uart,
+                "dStay": motor_cfg.get("dStay", 2048),
+                "sync_broadcast_span": motor_cfg["sync_broadcast_span"],
+                "sync_tx_interval_ms": motor_cfg["sync_tx_interval_ms"],
+            })
+            layout = PixelLayout(["uartMotor1"], {"uartMotor1": motor.num_pixels})
+            layout.register_mapping(mapping["id"], mapping["name"], mapping["groups"])
+            frame = bytearray(motor.frame_size)
+            layout.scatter(
+                frame, mapping["name"], "all_uart_motors",
+                effect.frame(1000), "rgbw",
+            )
+            motor.st_load_and_convert(frame, 0)
+            motor.st_show()
+
+            values = [0x80] * 21
+            for address in expected_addresses:
+                values[address - 1] = 0x00
+            self.assertEqual(bytes([0xFF, 0x00] + values + [0xFE]),
+                             uart.writes[-1])
 
     def test_profiles_use_hinu_rs485_and_gpio17_motor_hardware(self):
         """The MicroPython profiles must match the accepted Hi-Nu wiring."""

@@ -492,12 +492,35 @@ MODE_SET 到達後不會因兩塊 Slave 各自的 cache 到期相位而相差一
 
 | Mode ID | 名稱 | UART motor 行為 |
 |---:|---|---|
-| `0` | `motor_diagnostic` | Direction A，raw `0x01`，10 秒後保持 `0x80` Stop |
+| `0` | `motor_diagnostic` | Direction A，effect marker `0x01` 轉 raw `0x00` 真全速，10 秒後保持 `0x80` Stop |
 | `1` | `motor_max_open` | Direction B/Open，raw `0xFF` 真正最高速度，10 秒後保持 Stop |
-| `2` | `motor_dev_sine` | sine Open 10 秒 → Stop 5 秒 → sine Close 10 秒 → Stop 5 秒；6 cycle／180 秒後保持 Stop |
+| `2` | `motor_dev_sine` | Hi-Nu C++ dev sine：Open 10 秒 → Stop 5 秒 → Close 10 秒 → Stop 5 秒；6 cycle／180 秒後保持 Stop |
 
-Mode 0 不使用 raw `0x00`，因 Pixel motor 安全層會把 W=0 視為未寫入並轉成 Stop；
-因此使用 `0x01`（約 99.2% Direction A）避免 accidental full-speed command。
+Mode 0 定義直接內嵌於 `slave/pixel/registry.json.modes`，不另建
+`pixel/modes/motor_diagnostic.json`；registry `list` 引用 `motor_diagnostic`，部署時
+保持 `auto_play=false`，待兩塊 Slave 都 ready 後才同步觸發，避免上電次序變成測試誤差。
+
+Mode 0 的 JSON 使用非零 W=`0x01` 作明確 marker；Pixel motor 安全層把 marker 轉成
+UART-412 raw `0x00`，即 Direction A 真正最高速度。全零 big buffer 仍視為未寫入並
+轉成 `0x80` Stop，所以開機、清畫面或 effect 空值不會 accidental full-speed。
+
+ATtiny412 `updateMotor()` 是 dead-zone 真源：raw `0x00` 是 Direction A 最大
+（IN1 PWM 254），raw `0xFF` 是 Direction B 最大（IN2 PWM 254）；只有 raw
+`0x7F` 與 `0x80` 令兩個輸出 PWM 都為 0。本系統統一以 `0x80` 表示 Stop。
+
+Mode 2 逐 frame 對齊 Hi-Nu `patterns_uart_dc_motor.cpp`／`storyMode_dev.cpp`：先算
+`round(sin(pi * progress) * 100)` motion-profile percent，再套 dev 的 Sine speed
+curve `round(sin(pi/2 * percent/100) * 100)`，最後用 C++ 的整數四捨五入公式轉
+Direction A/B raw byte。JSON 的 `direction`、`speed_percent`、`speed_curve` 和累加
+`end_Time` 仍是效果／時間真源。Mode 2 使用 `rgbw` 傳輸，R=`0xFF` 作明確 raw
+旗標，W 保留完整 `0x00..0xFF`；因此峰值 raw `0x00` 和鄰近 raw `0x01` 不會與
+空白 big-buffer W=`0` 混淆。
+
+2026-08-29 四摩打實機同步複測（無 calibration）：Host 對兩塊 motor board 的
+`play()` trigger 相差 `31.167 us`；Slave 1 地址 `15/19` 運行 `10002.314 ms`，
+Slave 2 地址 `12/21` 運行 `10002.279 ms`。兩板均以 raw `0x00` 開始並以 raw
+`0x80` 停止。這證明命令開始／停止同步；開迴路推桿若仍有行程差，來源是個體
+速度、供電或負載，需 calibration／feedback 才能補償。
 
 PC 驗證：
 

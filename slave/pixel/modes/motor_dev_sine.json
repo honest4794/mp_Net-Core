@@ -10,7 +10,7 @@
     {
       "group": "hi_nu_uart_motor_test.all_uart_motors",
       "effect": "uart_motor_dev_sine",
-      "write": "w"
+      "write": "rgbw"
     }
   ]
 }

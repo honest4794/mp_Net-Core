@@ -48,7 +48,7 @@ effects.json（唯一真源）          effects.py（py 補充）
 | `slave/lib/sw/pixel_layout.py` | `PixelLayout`：mapping（群組排列）→ big_buffer 落點 + scatter |
 | `slave/pixel/map/*.json` | mapping（群組排列，怎麼排） |
 | `slave/pixel/modes/*.json` | mode（效果 × 群組配對 + 播放參數） |
-| `slave/pixel/registry.json` | 播放清單 + auto_play |
+| `slave/pixel/registry.json` | 可內嵌少量 `modes` + 播放清單 + `auto_play` |
 | `slave/tasks/pixel_task.py` | 計算核：初始化四層 + 大隊列播放 |
 | `slave/tasks/render.py` | 播放核：固定 fps 從 hub 取幀 → 推硬體 |
 
@@ -380,7 +380,7 @@ assert next(eff) == eff.frame(0)
 - `group`：`mapping.group` 複合引用。`play_count`：-1 常駐、1..N 前 N 輪、0 跳過。
 - `play_interval`：每隔 N 輪一次。
 
-### 9.4 registry.json — 播放清單
+### 9.4 registry.json — 可內嵌 mode + 播放清單
 
 ```json
 { "version": 1, "auto_play": true, "list": ["demo_eyes"] }

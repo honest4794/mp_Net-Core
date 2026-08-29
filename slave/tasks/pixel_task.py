@@ -4,8 +4,8 @@ pixel_task.py — pixel 子系統統一管理任務（PixelTask）
 四層資料：
   1. effects  : pixel/effects/（effects.json + effects.py 生成器，py 優先）
   2. mapping  : pixel/map/*.json（每套一套群組，自帶 id/name）
-  3. modes    : pixel/modes/*.json（模式 = 效果 × 群組配對 + 播放參數）
-  4. registry : pixel/registry.json（播放清單 + auto_play）
+  3. modes    : pixel/modes/*.json + registry.json.modes（效果 × 群組配對）
+  4. registry : pixel/registry.json（可內嵌 modes + 播放清單 + auto_play）
 
 on_start 依序初始化：硬體（st_pixel）→ effects → mapping（PixelLayout）→ modes → registry。
 loop() = 播放端：大隊列（registry.list）依序播放，show 循環；mode 的播放參數
@@ -13,7 +13,7 @@ loop() = 播放端：大隊列（registry.list）依序播放，show 循環；mo
 同一個 mode 連續播放（重複播放）時重用現有生成器（restart），不剷除重建。
 
 硬體 order/counts 一律從播放器（PixelStreamer.controllers）推導，不自己設定
-（硬體真值）。registry.json 只用來選擇「播什麼 / 開不開自動播放」。
+（硬體真值）。registry.json 可內嵌少量專案 mode，並選擇「播什麼 / 是否自動」。
 
 指令介面（bus.shared，指令層寫入、本任務消費）：
   pixel_play   → 開始/重啟 show
@@ -194,7 +194,7 @@ class PixelTask(Task):
                         m["name"], g["name"], t))
 
     def _init_modes(self):
-        """載入 modes/*.json → bus.shared["pixel_maps"]。解析失敗只 warn 跳過該項。"""
+        """載入 modes/*.json + registry.modes → pixel_maps；失敗只 warn。"""
         modes = {}
         for fn in _list_json(MODES_DIR):
             try:
@@ -203,6 +203,15 @@ class PixelTask(Task):
                 self._parse_mode(d, modes)
             except Exception as e:
                 get_log().warn("[Pixel] 載入 {} 失敗: {}".format(fn, e))
+        try:
+            with open(REGISTRY_JSON) as f:
+                registry = json.load(f)
+            for d in registry.get("modes", []):
+                self._parse_mode(d, modes)
+        except OSError:
+            pass
+        except Exception as e:
+            get_log().warn("[Pixel] 載入 registry.modes 失敗: {}".format(e))
         self._modes = modes
         bus.shared["pixel_maps"] = modes
         get_log().info("[Pixel] modes: {} 個".format(len(modes)))

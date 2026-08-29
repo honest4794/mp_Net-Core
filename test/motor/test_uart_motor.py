@@ -128,6 +128,24 @@ class TestFramesV1(unittest.TestCase):
         self.assertEqual(self.uart.writes[-1],
                          _chain((1, 0x40), (2, 0xC0), (3, 0x80)))
 
+    def test_nonzero_marker_requests_true_direction_a_full_speed(self):
+        """W=1 is explicit raw 0x00; W=0 remains the safe empty-cell STOP."""
+        big = bytearray(self.motor.frame_size)
+        big[3] = 1
+        big[7] = 0
+        big[11] = STOP
+        self.motor.st_load_and_convert(big, 0)
+        self.assertEqual(bytes(self.motor.buffer), bytes([FWD_FS, STOP, STOP]))
+
+    def test_rgbw_raw_marker_preserves_zero_one_and_dead_zone(self):
+        """R=0xFF marks W as exact raw, including otherwise ambiguous 0x00/0x01."""
+        big = bytearray(self.motor.frame_size)
+        for i, raw in enumerate((0x00, 0x01, STOP)):
+            big[i * 4] = 0xFF
+            big[i * 4 + 3] = raw
+        self.motor.st_load_and_convert(big, 0)
+        self.assertEqual(bytes(self.motor.buffer), bytes([0x00, 0x01, STOP]))
+
     def test_set_many_dict(self):
         self.motor.set_many({1: FWD, 3: REV})
         self.assertEqual(bytes(self.motor.buffer),

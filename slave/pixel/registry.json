@@ -1,5 +1,23 @@
 {
   "version": 1,
-  "auto_play": true,
-  "list": ["demo_eyes"]
+  "auto_play": false,
+  "modes": [
+    {
+      "version": 1,
+      "id": 0,
+      "name": "motor_diagnostic",
+      "index": 0,
+      "play_count": -1,
+      "play_interval": 1,
+      "mapping": "hi_nu_uart_motor_test",
+      "map": [
+        {
+          "group": "hi_nu_uart_motor_test.all_uart_motors",
+          "effect": "uart_motor_diagnostic",
+          "write": "w"
+        }
+      ]
+    }
+  ],
+  "list": ["motor_diagnostic"]
 }

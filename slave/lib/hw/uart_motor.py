@@ -642,13 +642,20 @@ class UartMotor:
 
         歸零保護：W 通道是 0（big_buffer 初始值 / 效果熄燈）時，UART-412 會把它
         當「全速正轉」（updateMotor: value=0 → IN1 PWM 254）。這極危險（電機暴走）。
-        故 0 → 映射成死區值 0x80（停）。要讓 motor 全速正轉，效果輸出值
-        0x01..0x7F（或寫入端直接給非 0 值）。
+        故空白 0 → 映射成 0x80（停）。舊 W=1 marker 明確要求 raw 0x00。
+        專用 rgbw motor effect 以 R=0xFF 表示 W 是完整 raw byte，故能無歧義
+        保留 raw 0x00 與 raw 0x01；raw 0x7F/0x80 都是 ATtiny 的零 PWM dead zone，
+        系統統一用 0x80 作 Stop。
         """
         n = self.num_devices
         for i in range(n):
-            v = source_buffer[offset + (i << 2) + 3]
-            self.buffer[i] = v if v != 0 else self.neutral_value
+            cell = offset + (i << 2)
+            v = source_buffer[cell + 3]
+            if source_buffer[cell] == 0xFF:
+                self.buffer[i] = v
+            else:
+                self.buffer[i] = (0 if v == 1 else
+                                  v if v != 0 else self.neutral_value)
 
     def st_show(self):
         """按設定組同步廣播或單台串接 frame，一次過 uart.write。"""

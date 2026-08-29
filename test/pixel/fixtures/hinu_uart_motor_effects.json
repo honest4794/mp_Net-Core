@@ -33,12 +33,12 @@
     {
       "id": 9,
       "name": "uart_motor_dev_sine",
-      "pixel_n": 1,
+      "pixel_n": 4,
       "program": [
-        {"type": "math_now", "F": 10, "l_max": 4095, "l_lim": 2048, "phi": 3071, "end_Time": 500},
-        {"type": "keep", "F": 1, "l_max": 2048, "l_lim": 0, "phi": 0, "end_Time": 750},
-        {"type": "math_now", "F": 10, "l_max": 2048, "l_lim": 16, "phi": 1023, "end_Time": 1250},
-        {"type": "keep", "F": 1, "l_max": 2048, "l_lim": 0, "phi": 0, "end_Time": 1500}
+        {"type": "uart_motor_sine", "direction": "B", "speed_percent": 100, "speed_curve": "Sine", "end_Time": 500},
+        {"type": "uart_motor_stop", "end_Time": 750},
+        {"type": "uart_motor_sine", "direction": "A", "speed_percent": 100, "speed_curve": "Sine", "end_Time": 1250},
+        {"type": "uart_motor_stop", "end_Time": 1500}
       ],
       "step": 1,
       "spacing": 0,
@@ -46,7 +46,7 @@
       "speed": 1,
       "reverse": false,
       "cycles": 6,
-      "hold_value": 2048
+      "hold_raw": 128
     }
   ]
 }

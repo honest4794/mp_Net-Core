@@ -17,6 +17,9 @@ effects.py — 效果範例框架（pixel/effects 層）：單一自包含範例
 不碰硬體、不碰 bus、不碰 pixel_stream。
 """
 
+import math as _math
+from array import array as _array
+
 # PC 直接執行自檢（python3 pixel/effects/effects.py）時，把 slave/ 根補進 sys.path
 # 使 `from lib.sw.effect_core import ...` 成立（裝置上 lib 在根目錄，直接可 import）。
 try:
@@ -166,6 +169,136 @@ class pearl_chain(Effect):
 
 
 register(pearl_chain)
+
+
+# ── Hi-Nu UART DC motor：對齊 patterns_uart_dc_motor.cpp ────────────────
+_UART_MOTOR_PI = 3.14159265358979323846
+
+
+def _percent_from_unit(value):
+    value = 0.0 if value < 0.0 else 1.0 if value > 1.0 else value
+    return int(value * 100.0 + 0.5)
+
+
+def uart_dc_motor_profile_speed(elapsed, duration):
+    """C++ UartDcMotorMotionProfile::Sine：0..duration → 0..100%。"""
+    elapsed = int(elapsed)
+    duration = int(duration)
+    if duration <= 0 or elapsed < 0 or elapsed >= duration:
+        return 0
+    progress = float(elapsed) / float(duration)
+    return _percent_from_unit(_math.sin(_UART_MOTOR_PI * progress))
+
+
+def uart_dc_motor_scale_profile_speed(profile_speed, max_speed=100,
+                                      speed_curve="Sine",
+                                      minimum_moving_speed=0):
+    """對齊 uartDcMotorScaleProfileSpeed（dev mode 使用 Linear/Sine）。"""
+    profile = max(0, min(int(profile_speed), 100))
+    maximum = max(0, min(int(max_speed), 100))
+    minimum = max(0, min(int(minimum_moving_speed), maximum))
+    if profile == 0 or maximum == 0:
+        return 0
+
+    curve = str(speed_curve).lower()
+    if curve == "sine":
+        profile = _percent_from_unit(
+            _math.sin(0.5 * _UART_MOTOR_PI * (float(profile) / 100.0)))
+    elif curve != "linear":
+        raise ValueError("UART motor speed_curve 只支援 Linear/Sine: {}".format(
+            speed_curve))
+    return minimum + ((profile * (maximum - minimum) + 50) // 100)
+
+
+def uart_dc_motor_value(direction, speed_percent):
+    """對齊 uartDcMotorValue：A=Close(0x00 max)，B=Open(0xFF max)。"""
+    speed = max(0, min(int(speed_percent), 100))
+    if speed == 0:
+        return 128
+    direction = str(direction).upper()
+    if direction == "A":
+        return 128 - ((128 * speed + 50) // 100)
+    if direction == "B":
+        return 128 + ((127 * speed + 50) // 100)
+    raise ValueError("UART motor direction 必須是 A 或 B: {}".format(direction))
+
+
+class uart_motor_dev_sine:
+    """JSON 時序 + C++ 雙層 sine；輸出 rgbw 明確 raw motor payload。
+
+    R=4095 是明確 raw 旗標，W=raw<<4。這讓 raw 0x00 不會被 big_buffer
+    的空白 0 安全保護改成 STOP，也保留 raw 0x01 的獨立語義。
+    """
+
+    def __init__(self, name, params=None):
+        params = params or {}
+        self.name = name
+        self.id = params.get("id")
+        self.pixel_n = 4
+        self.program = params.get("program") or []
+        self.cycles = int(params.get("cycles", 1))
+        self.hold_raw = max(0, min(int(params.get("hold_raw", 128)), 255))
+        self._t = 0
+        self._buf = _array('H', [4095, 0, 0, self.hold_raw << 4])
+        self._compiled = []
+
+        previous = 0
+        for segment in self.program:
+            end = int(segment.get("end_Time", 0))
+            if end <= previous:
+                raise ValueError("UART motor end_Time 必須遞增")
+            kind = str(segment.get("type", "uart_motor_stop"))
+            if kind == "uart_motor_sine":
+                direction = str(segment.get("direction", "")).upper()
+                if direction not in ("A", "B"):
+                    raise ValueError("uart_motor_sine direction 必須是 A/B")
+                speed = int(segment.get("speed_percent", 100))
+                curve = str(segment.get("speed_curve", "Sine"))
+            elif kind == "uart_motor_stop":
+                direction, speed, curve = "", 0, "Linear"
+            else:
+                raise ValueError("未知 UART motor program type: {}".format(kind))
+            self._compiled.append((previous, end, kind, direction, speed, curve))
+            previous = end
+        self._total = previous
+
+    def frame(self, t):
+        absolute = int(t)
+        if self._total <= 0 or self.cycles <= 0:
+            raw = self.hold_raw
+        elif absolute >= self._total * self.cycles:
+            raw = self.hold_raw
+        else:
+            phase = absolute % self._total
+            raw = self.hold_raw
+            for start, end, kind, direction, maximum, curve in self._compiled:
+                if phase < end:
+                    if kind == "uart_motor_sine":
+                        profile = uart_dc_motor_profile_speed(
+                            phase - start, end - start)
+                        speed = uart_dc_motor_scale_profile_speed(
+                            profile, maximum, curve)
+                        raw = uart_dc_motor_value(direction, speed)
+                    break
+        self._buf[3] = raw << 4
+        return self._buf
+
+    def release(self):
+        pass
+
+    def restart(self):
+        self._t = 0
+
+    def seek(self, t):
+        self._t = int(t)
+
+    def __next__(self):
+        buf = self.frame(self._t)
+        self._t += 1
+        return buf
+
+
+register(uart_motor_dev_sine)
 
 
 if __name__ == "__main__":
