@@ -359,6 +359,11 @@ class PixelTask(Task):
         self._cur_mode = None
         # 通知播放核（RenderTask）開始取幀；串流播放中不搶渲染旗標
         if not bus.shared.get("stream_active"):
+            # 🔧 切換效果前清空 hub：上一個效果/檔案串流的舊幀還堆在 ring 裡，
+            #    RenderTask 會先把舊幀逐幀渲染完才輪到新幀（約 10 幀 ≈ 330ms），
+            #    看起來就是「轉換慢 / 沒生效」。先 flush 讓新幀立即排到最前。
+            if self._hub is not None:
+                self._hub.flush()
             bus.shared["is_streaming"] = True
             bus.shared["is_ready"] = True
             bus.shared["is_paused"] = False
@@ -375,6 +380,10 @@ class PixelTask(Task):
             # 串流播放中不碰渲染旗標/不熄燈（那些是串流的）
             bus.shared["is_streaming"] = False
             bus.shared["is_ready"] = False
+            # 🔧 先清 hub 再熄燈：否則殘留幀會在 clear_all 之後被 RenderTask
+            #    重新讀出、把熄掉的燈又點亮（轉換時閃一下舊畫面）。
+            if self._hub is not None:
+                self._hub.flush()
             if self._st:
                 self._st.clear_all()
         get_log().info("[Pixel] ■ show 停止")

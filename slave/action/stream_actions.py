@@ -111,8 +111,11 @@ def _direct_mode(ctx, args):
         if len(view) > k:
             view[k:] = bytes(len(view) - k)   # 尾段補中性值（燈=0 熄滅）
         hub.commit()
+    # 只設「渲染旗標」讓 RenderTask 出幀。⚠️ 不要碰 bus.shared["stream_active"]：
+    # 那是「檔案串流供給鏈」的專屬旗標 (StreamTask 獨家管理)，PixelTask 看到它為
+    # True 會直接讓位不計算本地燈效。direct mode 若把它設 True，會殘留並令
+    # 本地燈效/配對模式 (0x3105) 全部停擺。
     bus.shared.update({
-        "stream_active": True,
         "is_ready": True,
         "is_streaming": True,
         "is_paused": False,
