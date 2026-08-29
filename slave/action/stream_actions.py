@@ -82,6 +82,8 @@ def _direct_mode(ctx, args):
     hub = bus.get_service("pixel_stream")
     if hub is None:
         return
+    # stream_active 是 StreamTask 檔案串流供給鏈的專屬旗標。
+    # Direct Mode 只寫入 hub，不可將它設為 True，否則 PixelTask 會持續讓位。
     hub.write_from(args["pixel_data"])
 
 

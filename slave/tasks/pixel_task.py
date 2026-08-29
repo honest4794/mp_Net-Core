@@ -323,6 +323,9 @@ class PixelTask(Task):
         self._cur = None
         self._cur_mode = None
         # 通知播放核（RenderTask）開始取幀
+        # 切換效果前清空 hub，避免 RenderTask 先播完舊幀才輪到新幀。
+        if self._hub is not None:
+            self._hub.flush()
         bus.shared["is_streaming"] = True
         bus.shared["is_ready"] = True
         get_log().info("[Pixel] ▶ show 開始（{} mode(s)）".format(len(self._show_list)))
@@ -334,6 +337,9 @@ class PixelTask(Task):
         self._cur_mode = None
         bus.shared["is_streaming"] = False
         bus.shared["is_ready"] = False
+        # 先清 hub 再熄燈，避免殘留幀在 clear_all 後被 RenderTask 再次讀出。
+        if self._hub is not None:
+            self._hub.flush()
         if self._st:
             # 停止/熄燈：填中性值（燈=0 熄滅，motor=0x80 死區停），
             # 不能全清 0 —— UART-412 的 0 = 全速正轉！
