@@ -15,6 +15,7 @@ class RenderTask(Task):
         self.interval_us = 0
         self.next_tick_us = 0
         self._neutral_pushed = False   # 停止/暫停是否已推過中性幀（只推一次，防 UART 洪水）
+        self._was_active = False       # 🔧 同步起播：追蹤「播放中」上升緣，起播時重設節拍基準
 
     @staticmethod
     def _resolve_interval_ms(sys_cfg):
@@ -48,12 +49,14 @@ class RenderTask(Task):
         fps_ov = bus.shared.get("stream_fps_override")
         if fps_ov and fps_ov != self.stream_fps:
             self.stream_fps = int(fps_ov)
-            self.interval_us = (1000 // self.stream_fps) * 1000   # 只在此時算，熱路徑不碰
+            self.interval_us = 1000000 // self.stream_fps   # 精確整數節拍（純整數除法，避免浮點/截斷），熱路徑不碰
             get_log().info("🔥 [RenderTask] stream fps override -> {} fps".format(self.stream_fps))
 
-        is_streaming = self.fcache_get("is_streaming")
+        # 🔧 實時控制旗標直接讀 bus.shared（不走 fcache）——0x300A 一到就生效，
+        #    否則每台設備被 fcache 的 500ms 窗口拖成 0~500ms 隨機起播差。
+        is_streaming = bus.shared.get("is_streaming")
         if not is_streaming:
-            is_ready = self.fcache_get("is_ready")
+            is_ready = bus.shared.get("is_ready")
             if is_ready == False and not self._neutral_pushed:
                 # 停止/熄燈：填中性值（燈=0 熄滅，motor=0x80 死區停），
                 # 不能全清 0 —— UART-412 的 0 = 全速正轉！
@@ -67,9 +70,10 @@ class RenderTask(Task):
 
             self.next_tick_us = time.ticks_add(time.ticks_us(), 100000)
             self._played_frames = 0
+            self._was_active = False
             return
 
-        is_paused = self.fcache_get("is_paused")
+        is_paused = bus.shared.get("is_paused")
         if is_paused:
             if not self._neutral_pushed:
                 # 暫停：燈保持最後一幀，電機填中性值（0x80 停）歸位，只推一次
@@ -83,6 +87,13 @@ class RenderTask(Task):
 
         # 恢復播放：清掉中性幀旗標，之後新幀會覆寫 big_buffer
         self._neutral_pushed = False
+
+        # 🔧 同步起播：偵測「停止/暫停 → 播放」的上升緣，把節拍基準對齊到「現在」。
+        #    否則停止分支每輪把 next_tick_us 往前推 100ms，起播後第一幀會被這個
+        #    過期 tick 拖住最多 100ms；每台設備拖的量不同 → 起播不同步。
+        if not self._was_active:
+            self._was_active = True
+            self.next_tick_us = time.ticks_us()
 
         now = time.ticks_us()
         if time.ticks_diff(now, self.next_tick_us) > 200000:

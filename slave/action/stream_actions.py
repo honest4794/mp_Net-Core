@@ -40,10 +40,21 @@ def on_stream_state_set(ctx, args):
 
 
 def on_stream_play(ctx, args):
-    """0x300A: 開始播放（可帶 start_frame 中途加入）→ stream_cmd_play"""
-    bus.shared["stream_cmd_play"] = {
-        "start_frame": args.get("start_frame", 0),
-    }
+    """0x300A: 開始播放（可帶 start_frame 中途加入）。
+
+    🔧 正常起播 (start_frame==0)：在 dispatch 裡「同步」把 is_streaming 設 True，
+    讓 RenderTask 下一輪 loop 就起播，不再等 StreamTask 消費 stream_cmd_play 那
+    一跳（那跳每台設備 1~10ms 隨機，是起播不同步的 slave 端來源之一）。
+    StreamTask 仍會消費 stream_cmd_play 把狀態機推上 _PLAYING（冪等）。
+    中途加入 (start_frame>0) 必須走 StreamTask 的 seek，不能提前設 streaming，
+    否則 RenderTask 會在 seek 完成前渲染舊幀。
+    """
+    start_frame = int(args.get("start_frame", 0) or 0)
+    if start_frame > 0:
+        bus.shared["stream_cmd_play"] = {"start_frame": start_frame}
+    else:
+        bus.shared.update({"is_streaming": True, "is_paused": False})
+        bus.shared["stream_cmd_play"] = {"start_frame": 0}
 
 
 def on_stream_pause(ctx, args):
@@ -78,11 +89,36 @@ def on_stream_info(ctx, args):
 
 
 def _direct_mode(ctx, args):
-    """0x3003 Direct Mode: 直接寫入整幀 pixel_data。"""
+    """0x3003 Direct Mode: 直接寫入整幀 pixel_data（純網絡逐幀串流）。
+
+    與檔案串流 (StreamTask) 不同，Direct Mode 不走 stream_cmd_* 命令，但
+    RenderTask 只在 bus.shared["is_streaming"]=True 時才取幀渲染，所以這裡要把
+    streaming 旗標自己架起來，否則幀寫進 hub 也不會上硬體。
+
+    🔧 幀長與 hub slot (st_pixel.total_bytes) 可能不一致：config System.num_pixels
+    是靜態值，實際 slot = 各 controller Q*4 加總（PCA9685 未接時會少 64B）。
+    用 view 模式「多除小補」(與 StreamTask._fill_slot 同源)，否則 write_from
+    整塊切片會因長度不符拋錯、整幀丟失。
+    """
     hub = bus.get_service("pixel_stream")
     if hub is None:
         return
-    hub.write_from(args["pixel_data"])
+    view = hub.get_write_view()
+    if view is not None:
+        data = args.get("pixel_data", b"")
+        k = min(len(data), len(view))
+        view[:k] = data[:k]
+        if len(view) > k:
+            view[k:] = bytes(len(view) - k)   # 尾段補中性值（燈=0 熄滅）
+        hub.commit()
+    bus.shared.update({
+        "stream_active": True,
+        "is_ready": True,
+        "is_streaming": True,
+        "is_paused": False,
+    })
+    # 對外狀態回報也要一致（0x1102 的 stream_active 讀這裡），否則 PC 端看不到 direct 在播
+    _STREAM_STATE["streaming"] = True
 
 
 def register(app):

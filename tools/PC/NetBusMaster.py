@@ -3238,19 +3238,20 @@ class NetBusMaster:
         cache[key] = digest
         return digest
 
-    def _download_remote_manifest(self, tid):
-        """下載設備的 manifest.json → {remote_path: sha_hex}。失敗回 None。"""
+    def _download_manifest_core(self, tid):
+        """純下載設備 manifest.json → {remote_path: sha_hex}。失敗/逾時/離線回 None。
+
+        不碰 _transfer_begin/_transfer_end（那些是終端交互的全局狀態，並行下載時不能
+        重入），供「並行下載」使用：一台卡住不拖住其他台，由呼叫端用 future timeout
+        決定跳過。
+        """
         node = self.slaves.get(tid)
         if not node:
             return None
-        self._transfer_begin()
         try:
             data = self._download_bytes(tid, "/manifest.json", expected_size=None, status="Manifest")
         except Exception:
-            data = None
-        finally:
-            self._transfer_end()
-            self.panel.update_device(tid, status="待機", transfer_label="")
+            return None
         if not data:
             return None
         try:
@@ -3280,36 +3281,21 @@ class NetBusMaster:
             return None
         return node.get("remote_sha")
 
-    def _build_firmware_diff(self, tid, files_to_upload):
-        """依設備 manifest 比對本地/遠端, 回傳每台設備的差異清單。
+    def _diff_against_manifest(self, tid, files_to_upload, man):
+        """用已下載的 manifest 比對本地/遠端, 回傳差異清單 [(local_path, remote_path), ...]。
 
-        優先下載 manifest.json 一次拿到所有遠端 sha (快); 失敗時回退到逐檔查詢。
-        回傳 dict: {tid: [(local_path, remote_path), ...]} — 只含「不同/遠端缺」的檔案。
+        man 由呼叫端 (並行下載後) 傳入；None 表示該台 manifest 拿不到 → 回空清單,
+        由呼叫端把該台標記為「跳過」。不再逐檔查詢 sha——135 檔 × 每檔 timeout 會
+        把整批拖垮 (掉線設備會這樣卡住全部)。
         """
-        # 快取每台設備的 manifest sha 表
-        if not hasattr(self, "_firmware_manifest_cache"):
-            self._firmware_manifest_cache = {}
-        man = self._firmware_manifest_cache.get(tid)
-        if man is None:
-            man = self._download_remote_manifest(tid)
-            self._firmware_manifest_cache[tid] = man if man is not None else {}
-
+        if not man:
+            return []
         diff = []
-        if man:
-            # 用 manifest 快表比對 (sh: hex 字串 vs local digest hex)
-            for l_path, r_path in files_to_upload:
-                local_hex = self._calc_local_sha(l_path).hex()
-                remote_hex = man.get(r_path)
-                if remote_hex is None or remote_hex != local_hex:
-                    diff.append((l_path, r_path))
-        else:
-            # 無 manifest → 逐檔查詢 sha
-            self.panel.log("warn", f"⚠️ [{tid}] 無 manifest, 逐檔查詢 sha (較慢)...")
-            for l_path, r_path in files_to_upload:
-                local_sha = self._calc_local_sha(l_path)
-                remote_sha = self._query_remote_sha(tid, r_path)
-                if remote_sha is None or remote_sha != local_sha:
-                    diff.append((l_path, r_path))
+        for l_path, r_path in files_to_upload:
+            local_hex = self._calc_local_sha(l_path).hex()
+            remote_hex = man.get(r_path)
+            if remote_hex is None or remote_hex != local_hex:
+                diff.append((l_path, r_path))
         return diff
 
     def _update_firmware_files(self):
@@ -3320,18 +3306,45 @@ class NetBusMaster:
             return
 
         print(f"\n🔍 本地固件 {len(files_to_upload)} 個文件; 目標設備 {len(targets)} 台")
-        print("📡 下載設備 manifest (哈希表) 並比對, 找出需要更新的檔案...")
+        print("📡 並行下載設備 manifest (哈希表) 並比對, 找出需要更新的檔案...")
 
-        # 🔧 每次固件更新都重新下載 manifest (哈希表)。保留舊值會在「上傳後再跑一次」
-        #    時拿到過期快取, 比對永遠顯示「全部一致」。
+        # 🔧 每次更新先清掉舊哈希表緩存, 強制每台重新下載 manifest——
+        #    否則「上傳後再跑一次」會拿到過期快取, 比對永遠顯示「全部一致」。
         self._firmware_manifest_cache = {}
-        diff_by_target = {}   # tid -> [(local_path, remote_path)]
-        for idx, tid in enumerate(targets, 1):
-            print(f"  [{idx}/{len(targets)}] {tid}: 下載 manifest + 比對 sha...")
-            diff_by_target[tid] = self._build_firmware_diff(tid, files_to_upload)
+
+        # 🔧 並行下載 manifest: 一台卡住/掉線不阻塞其餘設備；個別逾時直接跳過。
+        manifests = {}   # tid -> dict|None
+        ex = ThreadPoolExecutor(max_workers=min(16, len(targets)))
+        futs = {ex.submit(self._download_manifest_core, tid): tid for tid in targets}
+        for f in futs:
+            tid = futs[f]
+            try:
+                man = f.result(timeout=20.0)
+            except Exception:
+                man = None
+            manifests[tid] = man
+            self._firmware_manifest_cache[tid] = man if man is not None else {}
+        ex.shutdown(wait=False)   # 🔧 不阻塞: 慢/卡住的線程在後台自然結束, 不拖住整批
+
+        diff_by_target = {}
+        skipped = []
+        for tid in targets:
+            man = manifests.get(tid)
+            if man is None:
+                skipped.append(tid)
+                continue
+            diff_by_target[tid] = self._diff_against_manifest(tid, files_to_upload, man)
+
+        # 🔧 剔除 manifest 拿不到的設備, 本次上傳/重啟不再碰它們 (多半半死/掉線)
+        if skipped:
+            for tid in skipped:
+                self.panel.update_device(tid, status="錯誤", error_msg="manifest 下載失敗")
+            targets = [t for t in targets if t not in skipped]
 
         total_diff = sum(len(v) for v in diff_by_target.values())
         print("\n📊 [比對結果]")
+        for tid in skipped:
+            print(f"  ⏭  {tid}: manifest 下載失敗 → 跳過")
         for tid in targets:
             d = diff_by_target[tid]
             if not d:
@@ -3342,7 +3355,10 @@ class NetBusMaster:
                     print(f"      - {r}")
 
         if total_diff == 0:
-            print("\n✅ 所有設備的固件都與本地一致, 無需上傳")
+            if skipped:
+                print(f"\n⚠️ {len(skipped)} 台因 manifest 下載失敗被跳過, 其餘設備已一致")
+            else:
+                print("\n✅ 所有設備的固件都與本地一致, 無需上傳")
             return
 
         print("\n👉 請選擇上傳方式:")

@@ -10,6 +10,12 @@
       ]
     },
     {
+      "cmd": "0x3003", "name": "STREAM_FRAME",
+      "payload": [
+        {"name": "pixel_data", "type": "bytes_rest"}
+      ]
+    },
+    {
       "cmd": "0x3009", "name": "STREAM_STATE_SET",
       "payload": [
         {"name": "file_name", "type": "str_u16len"},
