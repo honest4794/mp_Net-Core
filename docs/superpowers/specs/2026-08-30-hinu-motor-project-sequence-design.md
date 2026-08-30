@@ -12,9 +12,11 @@ configuration for Slave 1–18 is installed. Test Kit modes 0–2 remain separat
 - The complete ordered timeline contains 30 stages:
   `1`–`18`, `18A`, `19`, `19A`, `20`, `20A`, `21`, `21A`, `22`,
   `22A`, `23`, `23A`, `24`.
-- Stages `6`–`10` and `13`–`16` are timed pending stages. Each still consumes
-  one 5000 ms interval and carries the non-null target template
-  `{"slave_id": "X", "addresses": ["X"]}` until its production route is known.
+- Stages `6`–`10` are timed chest stages assigned to Slave 1; their addresses
+  remain unknown and use `{"slave_id": 1, "addresses": ["X"]}`.
+- Stages `13`–`16` are timed pending stages and use
+  `{"slave_id": "X", "addresses": ["X"]}` until their production routes are
+  known. Every pending stage still consumes one 5000 ms interval.
 - Targets in the same stage share the same stage deadline. A target contains one
   production `slave_id` and one or more local UART motor addresses.
 - This file does not change or reuse Test Kit routing. Test Kit Slave1 remains
@@ -29,7 +31,7 @@ configuration for Slave 1–18 is installed. Test Kit modes 0–2 remain separat
 | 3 | `8: 25,26`; `10: 29,30` |
 | 4 | `8: 27`; `10: 31` |
 | 5 | `7: 32,33,34,38,36,37` |
-| 6–10 | pending template `X: X` |
+| 6–10 | chest; pending address template `1: X` |
 | 11 | `1: 41` |
 | 12 | `1: 42` |
 | 13–16 | pending template `X: X` |
@@ -66,8 +68,9 @@ Create `slave/pixel/sequences/hi_nu_motor_project.json` with:
 - `unsequenced_addresses`: known addresses without a sequence.
 - `stages`: ordered objects containing `sequence` and `targets`.
 - each configured target: integer `slave_id` and ordered integer `addresses`.
-- each pending target: string placeholder `slave_id: "X"` and
-  `addresses: ["X"]`; neither field uses `null`.
+- each pending target uses `"X"` only for an unknown value. Stages `6`–`10`
+  retain known integer `slave_id: 1` with `addresses: ["X"]`; stages `13`–`16`
+  use `slave_id: "X"` and `addresses: ["X"]`. No field uses `null`.
 
 ## Out of Scope
 

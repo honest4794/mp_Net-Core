@@ -18,10 +18,17 @@ EXPECTED_ORDER = (
         "22", "22A", "23", "23A", "24",
     ]
 )
-EXPECTED_TEMPLATE_STAGES = {
-    "6", "7", "8", "9", "10", "13", "14", "15", "16",
+EXPECTED_PENDING_TARGETS = {
+    "6": [{"slave_id": 1, "addresses": ["X"]}],
+    "7": [{"slave_id": 1, "addresses": ["X"]}],
+    "8": [{"slave_id": 1, "addresses": ["X"]}],
+    "9": [{"slave_id": 1, "addresses": ["X"]}],
+    "10": [{"slave_id": 1, "addresses": ["X"]}],
+    "13": [{"slave_id": "X", "addresses": ["X"]}],
+    "14": [{"slave_id": "X", "addresses": ["X"]}],
+    "15": [{"slave_id": "X", "addresses": ["X"]}],
+    "16": [{"slave_id": "X", "addresses": ["X"]}],
 }
-TARGET_TEMPLATE = [{"slave_id": "X", "addresses": ["X"]}]
 EXPECTED_ROUTES = {
     "1": [(9, [22]), (11, [23])],
     "2": [(8, [24]), (10, [28])],
@@ -66,18 +73,15 @@ class HiNuMotorProjectSequenceTests(unittest.TestCase):
         templates = {
             stage["sequence"]: stage["targets"]
             for stage in self.stages
-            if stage["sequence"] in EXPECTED_TEMPLATE_STAGES
+            if stage["sequence"] in EXPECTED_PENDING_TARGETS
         }
-        self.assertEqual(
-            {sequence: TARGET_TEMPLATE for sequence in EXPECTED_TEMPLATE_STAGES},
-            templates,
-        )
+        self.assertEqual(EXPECTED_PENDING_TARGETS, templates)
 
     def test_active_stages_route_to_the_approved_slave_addresses(self):
         """Wrong Slave ownership or address would actuate the wrong body part."""
         actual = {}
         for stage in self.stages:
-            if stage["sequence"] in EXPECTED_TEMPLATE_STAGES:
+            if stage["sequence"] in EXPECTED_PENDING_TARGETS:
                 continue
             actual[stage["sequence"]] = [
                 (target["slave_id"], target["addresses"])
