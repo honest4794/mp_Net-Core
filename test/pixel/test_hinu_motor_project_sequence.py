@@ -29,6 +29,28 @@ EXPECTED_PENDING_TARGETS = {
     "15": [{"slave_id": "X", "addresses": ["X"]}],
     "16": [{"slave_id": "X", "addresses": ["X"]}],
 }
+EXPECTED_PENDING_DESCRIPTIONS = {
+    "13": {
+        "position": "肩甲 1（靠近心口）",
+        "action_description": "左右內側肩甲前後展開",
+        "motion_direction": "前甲向前、後甲向後",
+    },
+    "14": {
+        "position": "肩甲 2",
+        "action_description": "左右外側肩甲前後展開",
+        "motion_direction": "前甲向前、後甲向後",
+    },
+    "15": {
+        "position": "前後肩甲中間結構",
+        "action_description": "肩甲中央結構升起",
+        "motion_direction": "垂直向上",
+    },
+    "16": {
+        "position": "背面中央直立組件",
+        "action_description": "中央背包組件升起或調整高度",
+        "motion_direction": "垂直向上",
+    },
+}
 EXPECTED_ROUTES = {
     "1": [(9, [22]), (11, [23])],
     "2": [(8, [24]), (10, [28])],
@@ -76,6 +98,19 @@ class HiNuMotorProjectSequenceTests(unittest.TestCase):
             if stage["sequence"] in EXPECTED_PENDING_TARGETS
         }
         self.assertEqual(EXPECTED_PENDING_TARGETS, templates)
+
+    def test_stages_thirteen_to_sixteen_keep_the_approved_motion_descriptions(self):
+        """Unknown hardware routing must not discard the known mechanism details."""
+        actual = {
+            stage["sequence"]: {
+                "position": stage["position"],
+                "action_description": stage["action_description"],
+                "motion_direction": stage["motion_direction"],
+            }
+            for stage in self.stages
+            if stage["sequence"] in EXPECTED_PENDING_DESCRIPTIONS
+        }
+        self.assertEqual(EXPECTED_PENDING_DESCRIPTIONS, actual)
 
     def test_active_stages_route_to_the_approved_slave_addresses(self):
         """Wrong Slave ownership or address would actuate the wrong body part."""
