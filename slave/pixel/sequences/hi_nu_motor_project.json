@@ -64,31 +64,30 @@
     },
     {
       "sequence": "13",
-      "position": "肩甲 1（靠近心口）",
-      "action_description": "左右內側肩甲前後展開",
-      "motion_direction": "前甲向前、後甲向後",
-      "targets": [{"slave_id": "X", "addresses": ["X"]}]
+      "targets": [
+        {"slave_id": 3, "addresses": ["X"]},
+        {"slave_id": 5, "addresses": ["X"]}
+      ]
     },
     {
       "sequence": "14",
-      "position": "肩甲 2",
-      "action_description": "左右外側肩甲前後展開",
-      "motion_direction": "前甲向前、後甲向後",
-      "targets": [{"slave_id": "X", "addresses": ["X"]}]
+      "targets": [
+        {"slave_id": 3, "addresses": ["X"]},
+        {"slave_id": 5, "addresses": ["X"]}
+      ]
     },
     {
       "sequence": "15",
-      "position": "前後肩甲中間結構",
-      "action_description": "肩甲中央結構升起",
-      "motion_direction": "垂直向上",
-      "targets": [{"slave_id": "X", "addresses": ["X"]}]
+      "targets": [
+        {"slave_id": 3, "addresses": ["X"]},
+        {"slave_id": 5, "addresses": ["X"]}
+      ]
     },
     {
       "sequence": "16",
-      "position": "背面中央直立組件",
-      "action_description": "中央背包組件升起或調整高度",
-      "motion_direction": "垂直向上",
-      "targets": [{"slave_id": "X", "addresses": ["X"]}]
+      "targets": [
+        {"slave_id": 12, "addresses": ["X"]}
+      ]
     },
     {
       "sequence": "17",

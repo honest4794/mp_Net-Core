@@ -24,32 +24,19 @@ EXPECTED_PENDING_TARGETS = {
     "8": [{"slave_id": 1, "addresses": ["X"]}],
     "9": [{"slave_id": 1, "addresses": ["X"]}],
     "10": [{"slave_id": 1, "addresses": ["X"]}],
-    "13": [{"slave_id": "X", "addresses": ["X"]}],
-    "14": [{"slave_id": "X", "addresses": ["X"]}],
-    "15": [{"slave_id": "X", "addresses": ["X"]}],
-    "16": [{"slave_id": "X", "addresses": ["X"]}],
-}
-EXPECTED_PENDING_DESCRIPTIONS = {
-    "13": {
-        "position": "肩甲 1（靠近心口）",
-        "action_description": "左右內側肩甲前後展開",
-        "motion_direction": "前甲向前、後甲向後",
-    },
-    "14": {
-        "position": "肩甲 2",
-        "action_description": "左右外側肩甲前後展開",
-        "motion_direction": "前甲向前、後甲向後",
-    },
-    "15": {
-        "position": "前後肩甲中間結構",
-        "action_description": "肩甲中央結構升起",
-        "motion_direction": "垂直向上",
-    },
-    "16": {
-        "position": "背面中央直立組件",
-        "action_description": "中央背包組件升起或調整高度",
-        "motion_direction": "垂直向上",
-    },
+    "13": [
+        {"slave_id": 3, "addresses": ["X"]},
+        {"slave_id": 5, "addresses": ["X"]},
+    ],
+    "14": [
+        {"slave_id": 3, "addresses": ["X"]},
+        {"slave_id": 5, "addresses": ["X"]},
+    ],
+    "15": [
+        {"slave_id": 3, "addresses": ["X"]},
+        {"slave_id": 5, "addresses": ["X"]},
+    ],
+    "16": [{"slave_id": 12, "addresses": ["X"]}],
 }
 EXPECTED_ROUTES = {
     "1": [(9, [22]), (11, [23])],
@@ -99,18 +86,15 @@ class HiNuMotorProjectSequenceTests(unittest.TestCase):
         }
         self.assertEqual(EXPECTED_PENDING_TARGETS, templates)
 
-    def test_stages_thirteen_to_sixteen_keep_the_approved_motion_descriptions(self):
-        """Unknown hardware routing must not discard the known mechanism details."""
-        actual = {
-            stage["sequence"]: {
-                "position": stage["position"],
-                "action_description": stage["action_description"],
-                "motion_direction": stage["motion_direction"],
-            }
+    def test_stages_thirteen_to_sixteen_only_contain_sequence_and_targets(self):
+        """Project routing data must stay free of descriptive fields."""
+        stages = {
+            stage["sequence"]: stage
             for stage in self.stages
-            if stage["sequence"] in EXPECTED_PENDING_DESCRIPTIONS
+            if stage["sequence"] in {"13", "14", "15", "16"}
         }
-        self.assertEqual(EXPECTED_PENDING_DESCRIPTIONS, actual)
+        for stage in stages.values():
+            self.assertEqual({"sequence", "targets"}, set(stage))
 
     def test_active_stages_route_to_the_approved_slave_addresses(self):
         """Wrong Slave ownership or address would actuate the wrong body part."""

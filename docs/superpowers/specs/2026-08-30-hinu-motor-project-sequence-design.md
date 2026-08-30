@@ -14,9 +14,9 @@ configuration for Slave 1–18 is installed. Test Kit modes 0–2 remain separat
   `22A`, `23`, `23A`, `24`.
 - Stages `6`–`10` are timed chest stages assigned to Slave 1; their addresses
   remain unknown and use `{"slave_id": 1, "addresses": ["X"]}`.
-- Stages `13`–`16` are timed pending stages and use
-  `{"slave_id": "X", "addresses": ["X"]}` until their production routes are
-  known. Every pending stage still consumes one 5000 ms interval.
+- Stages `13`–`15` target Slave 3 and Slave 5; Stage `16` targets Slave 12.
+  Their addresses remain unknown and use `"X"`. Every pending stage still
+  consumes one 5000 ms interval.
 - Targets in the same stage share the same stage deadline. A target contains one
   production `slave_id` and one or more local UART motor addresses.
 - This file does not change or reuse Test Kit routing. Test Kit Slave1 remains
@@ -34,10 +34,10 @@ configuration for Slave 1–18 is installed. Test Kit modes 0–2 remain separat
 | 6–10 | chest; pending address template `1: X` |
 | 11 | `1: 41` |
 | 12 | `1: 42` |
-| 13 | pending template `X: X`; 肩甲 1（靠近心口），左右內側肩甲前後展開，前甲向前／後甲向後 |
-| 14 | pending template `X: X`; 肩甲 2，左右外側肩甲前後展開，前甲向前／後甲向後 |
-| 15 | pending template `X: X`; 前後肩甲中間結構，肩甲中央結構垂直升起 |
-| 16 | pending template `X: X`; 背面中央直立組件，中央背包組件垂直升起或調整高度 |
+| 13 | pending addresses `3: X`; `5: X` |
+| 14 | pending addresses `3: X`; `5: X` |
+| 15 | pending addresses `3: X`; `5: X` |
+| 16 | pending address `12: X` |
 | 17 | `15: 43`; `14: 44` |
 | 18 | `16: 53`; `17: 57` |
 | 18A | `16: 91`; `17: 94` |
@@ -70,12 +70,10 @@ Create `slave/pixel/sequences/hi_nu_motor_project.json` with:
 - `excluded_addresses`: safety records with address, reason, and replacement.
 - `unsequenced_addresses`: known addresses without a sequence.
 - `stages`: ordered objects containing `sequence` and `targets`.
-- known mechanism metadata uses `position`, `action_description`, and
-  `motion_direction`, even when the hardware target is still pending.
 - each configured target: integer `slave_id` and ordered integer `addresses`.
 - each pending target uses `"X"` only for an unknown value. Stages `6`–`10`
-  retain known integer `slave_id: 1` with `addresses: ["X"]`; stages `13`–`16`
-  use `slave_id: "X"` and `addresses: ["X"]`. No field uses `null`.
+  retain `slave_id: 1`; stages `13`–`15` retain Slave IDs 3 and 5; Stage `16`
+  retains Slave ID 12. Their addresses use `["X"]`. No field uses `null`.
 
 ## Out of Scope
 

@@ -18,8 +18,8 @@
 - `motor_open_interval_ms` is `5000`.
 - Stages `6`–`10` are chest stages on Slave 1 with pending address template
   `{"slave_id": 1, "addresses": ["X"]}`.
-- Stages `13`–`16` use the fully pending non-null target template
-  `{"slave_id": "X", "addresses": ["X"]}`.
+- Stages `13`–`15` target Slave 3 and Slave 5 with addresses `["X"]`.
+- Stage `16` targets Slave 12 with addresses `["X"]`.
 - Address `35` is excluded; addresses `39` and `40` are unsequenced.
 
 ---
@@ -51,10 +51,19 @@ EXPECTED_PENDING_TARGETS = {
     "8": [{"slave_id": 1, "addresses": ["X"]}],
     "9": [{"slave_id": 1, "addresses": ["X"]}],
     "10": [{"slave_id": 1, "addresses": ["X"]}],
-    "13": [{"slave_id": "X", "addresses": ["X"]}],
-    "14": [{"slave_id": "X", "addresses": ["X"]}],
-    "15": [{"slave_id": "X", "addresses": ["X"]}],
-    "16": [{"slave_id": "X", "addresses": ["X"]}],
+    "13": [
+        {"slave_id": 3, "addresses": ["X"]},
+        {"slave_id": 5, "addresses": ["X"]},
+    ],
+    "14": [
+        {"slave_id": 3, "addresses": ["X"]},
+        {"slave_id": 5, "addresses": ["X"]},
+    ],
+    "15": [
+        {"slave_id": 3, "addresses": ["X"]},
+        {"slave_id": 5, "addresses": ["X"]},
+    ],
+    "16": [{"slave_id": 12, "addresses": ["X"]}],
 }
 EXPECTED_ROUTES = {
     "1": [(9, [22]), (11, [23])],
