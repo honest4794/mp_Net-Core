@@ -132,7 +132,7 @@ def ensure_netmiko():
     except ImportError:
         pass
     pip_cmd = "pip install netmiko" if os.name == "nt" else "pip3 install netmiko"
-    print("這個腳本需要 Netmiko 程式庫，但目前的 Python 環境還沒安裝。")
+    print("📦 這個腳本需要 Netmiko 程式庫，但目前的 Python 環境還沒安裝。")
     print(f"手動安裝指令: {pip_cmd}")
     ans = input("要現在自動幫你安裝嗎? (yes/no): ").strip().lower()
     if ans == "yes":
@@ -140,11 +140,11 @@ def ensure_netmiko():
         if r.returncode == 0:
             try:
                 import netmiko  # noqa: F401
-                print("安裝完成，繼續執行。\n")
+                print("✅ 安裝完成，繼續執行。\n")
                 return
             except ImportError:
                 pass
-        print("自動安裝失敗。")
+        print("❌ 自動安裝失敗。")
     print(f"請手動執行: {pip_cmd}")
     sys.exit(1)
 
@@ -160,7 +160,7 @@ def connect_real(sw):
     errors = []
     for device_type, label in (("cisco_ios_telnet", "Telnet"), ("cisco_ios", "SSH")):
         try:
-            print(f"連線 {sw['name']} ({sw['host']}) — {label} ...")
+            print(f"🔌 連線 {sw['name']} ({sw['host']}) — {label} ...")
             conn = ConnectHandler(
                 device_type=device_type,
                 host=sw["host"],
@@ -171,17 +171,17 @@ def connect_real(sw):
                 timeout=60,
             )
             conn.enable()
-            print(f"已連上（{label}）")
+            print(f"✅ 已連上（{label}）")
             return conn
         except NetmikoAuthenticationException as e:
             errors.append(f"{label}: 帳號或密碼錯誤 — {e}")
-            print(f"{label} 登入被拒（帳號/密碼錯誤）")
+            print(f"⚠️ {label} 登入被拒（帳號/密碼錯誤）")
         except NetmikoTimeoutException as e:
             errors.append(f"{label}: 連不到裝置（沒有回應）— {e}")
-            print(f"{label} 連不上（沒有回應）")
+            print(f"⚠️ {label} 連不上（沒有回應）")
         except Exception as e:
             errors.append(f"{label}: {e}")
-            print(f"{label} 連不上")
+            print(f"⚠️ {label} 連不上")
     raise ConnectionError(
         f"{sw['name']} ({sw['host']}) Telnet 和 SSH 都連不上:\n  " + "\n  ".join(errors)
     )
@@ -190,13 +190,13 @@ def connect_real(sw):
 def power_on_with_retry(sw, conn, ports, dry_run):
     """恢復供電；失敗就重連重試。全部失敗 → 大聲警告後退出。回傳目前的連線。"""
     cmds = build_power_cmds(ports, "auto")
-    print(f"[{sw['name']}] 恢復供電 ...")
+    print(f"🔌 [{sw['name']}] 恢復供電 ...")
     for attempt in range(1, ON_RETRIES + 1):
         try:
             conn.send_config_set(cmds)
             return conn
         except Exception as e:
-            print(f"恢復供電失敗（第 {attempt}/{ON_RETRIES} 次）: {e}")
+            print(f"⚠️ 恢復供電失敗（第 {attempt}/{ON_RETRIES} 次）: {e}")
             if dry_run or attempt == ON_RETRIES:
                 break
             try:
@@ -206,9 +206,9 @@ def power_on_with_retry(sw, conn, ports, dry_run):
             try:
                 conn = connect_real(sw)
             except Exception as ce:
-                print(f"重新連線也失敗: {ce}")
+                print(f"⚠️ 重新連線也失敗: {ce}")
     print("!" * 60)
-    print(f"嚴重: {sw['name']} 的 port {fmt_ports(ports)} 可能仍在斷電狀態!")
+    print(f"❌ 嚴重: {sw['name']} 的 port {fmt_ports(ports)} 可能仍在斷電狀態!")
     print(f"請立刻手動登入 {sw['host']}，對這些 port 執行: power inline auto")
     print("!" * 60)
     sys.exit(2)
@@ -217,16 +217,16 @@ def power_on_with_retry(sw, conn, ports, dry_run):
 def restart_on_switch(sw, ports, dry_run):
     """單一交換器的完整重啟流程：斷電 → 等待 → 恢復。"""
     conn = DryRunConnection(sw["name"]) if dry_run else connect_real(sw)
-    print(f"\n[{sw['name']}] 斷電 port: {fmt_ports(ports)}")
+    print(f"\n🔌 [{sw['name']}] 斷電 port: {fmt_ports(ports)}")
     conn.send_config_set(build_power_cmds(ports, "never"))
     if dry_run:
         print(f"[DRY-RUN] （這裡會等待 {OFF_DELAY} 秒）")
     else:
-        print(f"等待 {OFF_DELAY} 秒 ...")
+        print(f"⏳ 等待 {OFF_DELAY} 秒 ...")
         time.sleep(OFF_DELAY)
     conn = power_on_with_retry(sw, conn, ports, dry_run)
     conn.disconnect()
-    print(f"[{sw['name']}] 完成，已恢復供電")
+    print(f"✅ [{sw['name']}] 完成，已恢復供電")
 
 
 # ============================================================
@@ -252,7 +252,7 @@ def ask_ports():
 def main():
     dry_run = "--dry-run" in sys.argv
     print("=" * 52)
-    print("  Cisco 3560 PoE Port 重啟工具" + ("  [DRY-RUN 模擬模式]" if dry_run else ""))
+    print("  🔌 Cisco 3560 PoE Port 重啟工具" + ("  [DRY-RUN 模擬模式]" if dry_run else ""))
     print("=" * 52)
     if not dry_run:
         ensure_netmiko()
@@ -294,4 +294,17 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n🛑 已中斷")
+        sys.exit(130)
+    except ConnectionError as e:
+        # 🔧 連線失敗不印 traceback, 與主程式風格一致 (❌ + 提示 + 按 Enter 返回)
+        print(f"\n❌ {e}")
+        input("按 Enter 返回...")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n❌ 未預期的錯誤: {e}")
+        input("按 Enter 返回...")
+        sys.exit(1)

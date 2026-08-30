@@ -8,6 +8,7 @@ import json
 import copy
 import csv
 import shutil
+import subprocess
 import errno
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -167,6 +168,41 @@ PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 os.chdir(SCRIPT_DIR)
+
+# ==================== 專案虛擬環境 (依賴統一裝在 .venv) ====================
+# 不裝在系統環境: macOS Homebrew Python 受 PEP 668 保護, 系統 pip 會被拒且容易弄壞;
+# 一律用專案自己的 venv, Windows / macOS 通用。venv 建立後主程式自動切換執行。
+VENV_DIR = os.path.join(SCRIPT_DIR, ".venv")
+
+
+def _venv_python():
+    """回傳 venv 的 python 執行檔路徑 (Windows: Scripts/python.exe, 其他: bin/python)。"""
+    if os.name == "nt":
+        return os.path.join(VENV_DIR, "Scripts", "python.exe")
+    return os.path.join(VENV_DIR, "bin", "python")
+
+
+def _system_python():
+    """回傳「適合拿來建 venv 的系統 python」。
+
+    這個環境的 Homebrew python (3.11/3.12) 在 macOS 26 上有 pip truststore bug,
+    連 python -m venv 都會失敗; 用 macOS 系統自帶的 /usr/bin/python3 (3.9, 老 pip
+    不踩 truststore) 建 venv 最穩。Windows 一律用目前執行中的 python。
+    """
+    if os.name != "nt" and os.path.isfile("/usr/bin/python3"):
+        return "/usr/bin/python3"
+    return sys.executable
+
+
+def _auto_switch_to_venv():
+    """若 .venv 已建立且目前不是用它跑, os.execv 切換到 venv python (取代行程)。"""
+    venv_py = _venv_python()
+    if not os.path.isfile(venv_py):
+        return
+    if os.path.realpath(sys.executable) == os.path.realpath(venv_py):
+        return
+    print(f"🔁 偵測到專案虛擬環境，切換執行: {venv_py}")
+    os.execv(venv_py, [venv_py] + sys.argv)
 
 # 🔧 輔助檔案集中存放:
 #   slave_map.json 與本程式同目錄 (tools/PC/); 其餘輔助檔案 (log/下載/profile) 放 data/
@@ -1120,7 +1156,19 @@ class NetBusMaster:
     
     def handle_client(self, conn, addr):
         cid = f"PENDING_{addr[1]}"
-        
+
+        # 🔧 TCP keepalive: 半開連線 (對面靜默消失, 無 FIN/RST) 時讓作業系統及早偵測,
+        #    之後 recv 才會拋錯觸發清理, 而不是永久阻塞在 recv 上。
+        try:
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            # macOS 用 TCP_KEEPALIVE、Linux 用 TCP_KEEPIDLE, 都吃秒數; 設 30s 縮短偵測週期
+            for _opt in ("TCP_KEEPALIVE", "TCP_KEEPIDLE"):
+                if hasattr(socket, _opt):
+                    conn.setsockopt(socket.IPPROTO_TCP, getattr(socket, _opt), 30)
+                    break
+        except Exception:
+            pass
+
         try:
             # 🔧 循環讀 HTTP header 直到 \r\n\r\n (TCP 可能切段, 舊版只 recv 一次會
             #    在慢速 Wi-Fi 重連時拿到半截 header → 握手被誤判失敗)
@@ -2020,13 +2068,21 @@ class NetBusMaster:
         return True
 
     def _confirm_file(self, tid, remote_path, wait=3.0):
-        """0x2008 FILE_CONFIRM: 確認覆蓋 → 刪 .bak + 清 pending (正式生效)。"""
+        """0x2008 FILE_CONFIRM: 確認覆蓋 → 刪 .bak + 清 pending (正式生效)。
+
+        以 slave 回覆 0x2006 的 pending 欄位判斷是否真的清掉; 只看「有沒有收到
+        回應」會誤判成功 (slave 找不到 pending 也會回 0x2006), 導致假確認 →
+        3 次重啟自動回滾 → 上傳-回滾無限循環。
+        """
         node = self.slaves.get(tid)
         if not node:
             return False
         node["query_event"].clear()
+        node["remote_pending"] = -1
         self.send_pkt([tid], 0x2008, {"path": remote_path})
-        return node["query_event"].wait(timeout=wait)
+        if not node["query_event"].wait(timeout=wait):
+            return False
+        return node.get("remote_pending", -1) == 0
 
     def _undo_file(self, tid, remote_path, wait=3.0):
         """0x200A FILE_UNDO: 復原 → 刪新檔 + .bak 改回 + 清 pending (立即回滾)。"""
@@ -2034,21 +2090,47 @@ class NetBusMaster:
         if not node:
             return False
         node["query_event"].clear()
+        node["remote_pending"] = -1
         self.send_pkt([tid], 0x200A, {"path": remote_path})
-        return node["query_event"].wait(timeout=wait)
+        if not node["query_event"].wait(timeout=wait):
+            return False
+        return node.get("remote_pending", -1) == 0
 
     def _confirm_path_batch(self, tids, remote_path, wait=3.0):
-        """廣播 0x2008 FILE_CONFIRM 給多台設備 (同時發送), 回傳 {tid: bool}。"""
+        """廣播 0x2008 FILE_CONFIRM 給多台設備 (同時發送), 回傳 {tid: bool}。
+
+        以 slave 回覆的 pending 欄位判定是否真的清掉; 失敗的再重試一次 (slave
+        可能忙線未即時清), 避免假確認留下的 pending 在重啟後被自動回滾。
+        """
         nodes = {}
         for tid in tids:
             node = self.slaves.get(tid)
             if node:
                 node["query_event"].clear()
+                node["remote_pending"] = -1
                 nodes[tid] = node
         if not nodes:
             return {}
         self.send_pkt(list(nodes.keys()), 0x2008, {"path": remote_path})
-        return {tid: node["query_event"].wait(timeout=wait) for tid, node in nodes.items()}
+        res = {}
+        for tid, node in nodes.items():
+            if node["query_event"].wait(timeout=wait):
+                res[tid] = node.get("remote_pending", -1) == 0
+            else:
+                res[tid] = False
+        # 🔧 失敗的重試一次 (pending 可能因 slave 忙線未即時清)
+        retry_tids = [tid for tid, ok in res.items() if not ok]
+        if retry_tids:
+            time.sleep(0.5)
+            rnodes = {tid: self.slaves[tid] for tid in retry_tids if tid in self.slaves}
+            for node in rnodes.values():
+                node["query_event"].clear()
+                node["remote_pending"] = -1
+            self.send_pkt(list(rnodes.keys()), 0x2008, {"path": remote_path})
+            for tid, node in rnodes.items():
+                if node["query_event"].wait(timeout=wait):
+                    res[tid] = node.get("remote_pending", -1) == 0
+        return res
 
     def _undo_path_batch(self, tids, remote_path, wait=3.0):
         """廣播 0x200A FILE_UNDO 給多台設備 (同時發送), 回傳 {tid: bool}。"""
@@ -2057,11 +2139,29 @@ class NetBusMaster:
             node = self.slaves.get(tid)
             if node:
                 node["query_event"].clear()
+                node["remote_pending"] = -1
                 nodes[tid] = node
         if not nodes:
             return {}
         self.send_pkt(list(nodes.keys()), 0x200A, {"path": remote_path})
-        return {tid: node["query_event"].wait(timeout=wait) for tid, node in nodes.items()}
+        res = {}
+        for tid, node in nodes.items():
+            if node["query_event"].wait(timeout=wait):
+                res[tid] = node.get("remote_pending", -1) == 0
+            else:
+                res[tid] = False
+        retry_tids = [tid for tid, ok in res.items() if not ok]
+        if retry_tids:
+            time.sleep(0.5)
+            rnodes = {tid: self.slaves[tid] for tid in retry_tids if tid in self.slaves}
+            for node in rnodes.values():
+                node["query_event"].clear()
+                node["remote_pending"] = -1
+            self.send_pkt(list(rnodes.keys()), 0x200A, {"path": remote_path})
+            for tid, node in rnodes.items():
+                if node["query_event"].wait(timeout=wait):
+                    res[tid] = node.get("remote_pending", -1) == 0
+        return res
 
     def _download_remote_delta(self, tid):
         """下載設備的 /sd/.delta.json → pending dict {path: {...}}。失敗/無 pending 回 {}。
@@ -2697,14 +2797,17 @@ class NetBusMaster:
                     if not ok:
                         _record(tid, r_path, "fail", last_err)
                         continue
-                    # 🔧 root 目標: 上傳到 /sd 暫存後, 搬到 root (自動 .bak 備份 + pending)
-                    #    /sd/... 開頭的路徑表示本來就在 /sd, 不搬運 (例如 data.bin 走 deploy 不在此)
+                    # 🔧 root 目標: _upload_bytes 已把檔案直接寫到 root (兩段式 commit,
+                    #    自動 .bak 備份 + pending)。這裡只需加入「待確認」清單, 之後由
+                    #    auto/prompt confirm 清 pending —— 不能再 promote, 因為 promote
+                    #    是「/sd 暫存 → root」, 而檔案已經在 root; 硬 promote 會因
+                    #    src(/sd/xxx) 不存在而失敗 → pending 永不確認 → 3 次重啟自動
+                    #    回滾 → 上傳-回滾無限循環。
+                    #    /sd/... 開頭的路徑表示本來就在 /sd, 不搬運 (例如 data.bin 走
+                    #    deploy 不在此)。
                     if not r_path.startswith("/sd"):
-                        if self._promote_file(tid, r_path):
-                            local_promoted.append(r_path)
-                            _record(tid, r_path, "ok", "已 promote")
-                        else:
-                            _record(tid, r_path, "fail", "promote 失敗")
+                        local_promoted.append(r_path)
+                        _record(tid, r_path, "ok", "")
                     else:
                         _record(tid, r_path, "ok", "")
                 fails = [p for p, s, _ in results.get(tid, []) if s == "fail"]
@@ -3413,11 +3516,10 @@ class NetBusMaster:
                     print(f"  ❌ {tid} {r_path}: {e}")
                     continue
                 if not r_path.startswith("/sd"):
-                    if self._promote_file(tid, r_path):
-                        promoted.setdefault(tid, []).append(r_path)
-                        print(f"  ✅ {tid} {r_path}: 上傳 + promote 完成")
-                    else:
-                        print(f"  ⚠️ {tid} {r_path}: promote 失敗")
+                    # 🔧 root 檔案已由 _upload_bytes 直接寫到 root (含 .bak + pending),
+                    #    只需待確認; 不再 promote (見 _run_upload_batch 同款修正)。
+                    promoted.setdefault(tid, []).append(r_path)
+                    print(f"  ✅ {tid} {r_path}: 上傳完成 (待確認)")
                 else:
                     print(f"  ✅ {tid} {r_path}: 上傳完成")
                 self.panel.update_device(tid, status="完成", transfer_label="", upload_progress=100)
@@ -5096,6 +5198,137 @@ class NetBusMaster:
             self._bulk_download_all()
         self.panel.start()
 
+    # ==================== Step 9: PoE Restart (Cisco 交換器 PoE port 重啟) ====================
+    def step_9_poe_restart(self):
+        """呼叫 tools/PC/poe_restart.py — 遠端重啟 Cisco 3560 交換器的 PoE port。
+
+        用子行程執行: 該腳本內部有 sys.exit()（取消/失敗退出），獨立行程才不會
+        連帶結束主程式；netmiko 也只有這個工具需要，不必拖累主程式。
+        """
+        self.panel.stop()
+        ConsoleUI.clear_screen()
+        ConsoleUI.show_cursor()
+
+        print("\n🔌 [Step 9] PoE Restart — 交換器 PoE port 重啟 (Cisco 3560)")
+        print("  1. 正式執行 (斷電 → 等待 → 恢復供電)")
+        print("  2. 模擬 Dry-run (只預覽指令, 不連線)")
+        print("  q. 返回")
+
+        choice = input("\n👉 請選擇: ").strip().lower()
+        if choice == 'q':
+            self.panel.start()
+            return
+        if choice not in ('1', '2'):
+            print("❌ 無效選擇")
+            time.sleep(1)
+            self.panel.start()
+            return
+
+        script = os.path.join(SCRIPT_DIR, "poe_restart.py")
+        cmd = [sys.executable, "-B", script]
+        if choice == '2':
+            cmd.append("--dry-run")
+        print(f"\n執行: {' '.join(cmd)}\n")
+        subprocess.run(cmd)
+        input("\n按 Enter 返回...")
+        self.panel.start()
+
+    # ==================== Step I: Install Deps (專案虛擬環境 + 依賴安裝) ====================
+    # 專案用到的第三方套件: (pip 套件名, import 模組名) — 統一裝進 .venv
+    REQUIRED_DEPS = [
+        ("miniaudio", "miniaudio"),   # 音訊播放 (主)
+        ("pygame", "pygame"),         # 音訊備援
+        ("netmiko", "netmiko"),       # poe_restart.py 交換器 PoE port 重啟
+        ("pyserial", "serial"),       # test/protocol/rs485_probe_host.py
+        ("mpremote", "mpremote"),     # mpremote 工具
+        ("websockets", "websockets"), # tools/WebMaster/mock_slave.py
+    ]
+
+    def step_i_install_deps(self):
+        """建立/檢查專案虛擬環境 (.venv) 並安裝缺失模組 (i 模式)。
+
+        不用系統 pip: macOS Homebrew Python 受 PEP 668 保護, 系統環境容易弄壞;
+        改用專案自己的 venv, Windows / macOS 通用。venv 建立後主程式會自動用它跑。
+        """
+        self.panel.stop()
+        ConsoleUI.clear_screen()
+        ConsoleUI.show_cursor()
+
+        # --- 1. 確保 venv 存在 ---
+        if not os.path.isfile(_venv_python()):
+            print("\n📦 [i] Install Deps — 專案虛擬環境 (.venv) 尚未建立")
+            print(f"  將使用系統 Python 建立: {_system_python()}")
+            ans = input("要現在建立嗎? (yes/no): ").strip().lower()
+            if ans != "yes":
+                print("已取消。")
+                input("\n按 Enter 返回...")
+                self.panel.start()
+                return
+            print("\n建立虛擬環境 ...")
+            r = subprocess.run([_system_python(), "-m", "venv", VENV_DIR])
+            if r.returncode != 0 or not os.path.isfile(_venv_python()):
+                print(f"❌ venv 建立失敗 (exit={r.returncode})")
+                input("\n按 Enter 返回...")
+                self.panel.start()
+                return
+            print("✅ 虛擬環境已建立")
+
+        venv_py = _venv_python()
+        print(f"虛擬環境 Python: {venv_py}")
+
+        # --- 2. 用 venv python 檢查依賴 ---
+        print("\n檢查依賴 ...")
+        missing = []
+        for pip_name, import_name in self.REQUIRED_DEPS:
+            r = subprocess.run(
+                [venv_py, "-B", "-c", f"import {import_name}"],
+                capture_output=True, text=True,
+            )
+            ok = r.returncode == 0
+            print(f"  {'✅' if ok else '❌'} {pip_name:<12} (import {import_name})")
+            if not ok:
+                missing.append(pip_name)
+        if not missing:
+            print("\n全部已安裝，不需要動作。")
+            self._print_venv_hint()
+            input("\n按 Enter 返回...")
+            self.panel.start()
+            return
+
+        # --- 3. 用 venv pip 安裝缺失模組 ---
+        print(f"\n以下 {len(missing)} 個模組缺失: {', '.join(missing)}")
+        ans = input("要自動安裝嗎? (yes/no): ").strip().lower()
+        if ans != "yes":
+            print("已取消。可手動安裝:")
+            for p in missing:
+                print(f"  {venv_py} -m pip install {p}")
+            input("\n按 Enter 返回...")
+            self.panel.start()
+            return
+
+        # 先升級 venv 內的 pip, 避免舊版 pip 的問題 (失敗不阻斷)
+        subprocess.run([venv_py, "-m", "pip", "install", "--upgrade", "pip"],
+                       capture_output=True)
+        for p in missing:
+            print(f"\n安裝 {p} ...")
+            r = subprocess.run([venv_py, "-m", "pip", "install", p])
+            if r.returncode == 0:
+                print(f"  ✅ {p} 安裝完成")
+            else:
+                print(f"  ❌ {p} 安裝失敗 (exit={r.returncode})")
+        print("\n完成。")
+        self._print_venv_hint()
+        input("\n按 Enter 返回...")
+        self.panel.start()
+
+    def _print_venv_hint(self):
+        """印出之後怎麼跑主程式 (venv 建好後, 直接跑也會自動切換)。"""
+        print("\n💡 venv 建好後，直接照平常方式啟動主程式即可，程式會自動切到 .venv 執行:")
+        if os.name == "nt":
+            print("    python tools\\PC\\NetBusMaster.py")
+        else:
+            print("    python3 tools/PC/NetBusMaster.py")
+
     def _print_menu(self):
         self.panel.stop()
         ConsoleUI.clear_screen()
@@ -5115,6 +5348,8 @@ class NetBusMaster:
         print(" 6. Sync Play          | 同步播放 (支持暫停/中途加入)")
         print(" 7. Pairing Mode       | 配對: 播放本地燈效並更新 PlayID")
         print(" 8. Profiles           | 每 id Profile (模式/狀態/批次備份)")
+        print(" 9. PoE Restart        | 交換器 PoE port 重啟 (Cisco 3560)")
+        print(" i. Install Deps       | 檢查/安裝缺失的 Python 模組")
         print(" s. STOP ALL           | 緊急停止")
         print(" q. Exit               | 退出程序")
         print("=" * 60)
@@ -5178,6 +5413,12 @@ class NetBusMaster:
             elif ch == '8':
                 self.step_8_profiles()
                 self._print_menu()
+            elif ch == '9':
+                self.step_9_poe_restart()
+                self._print_menu()
+            elif ch == 'i':
+                self.step_i_install_deps()
+                self._print_menu()
             elif ch == 's':
                 self.stop_all()
                 print("✅ 已發送停止信號")
@@ -5193,6 +5434,7 @@ class NetBusMaster:
 
 
 if __name__ == "__main__":
+    _auto_switch_to_venv()
     app = NetBusMaster()
     try:
         app.main_loop()
