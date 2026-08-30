@@ -45,11 +45,11 @@
         {"slave_id": 7, "addresses": [32, 33, 34, 38, 36, 37]}
       ]
     },
-    {"sequence": "6", "targets": []},
-    {"sequence": "7", "targets": []},
-    {"sequence": "8", "targets": []},
-    {"sequence": "9", "targets": []},
-    {"sequence": "10", "targets": []},
+    {"sequence": "6", "targets": [{"slave_id": "X", "addresses": ["X"]}]},
+    {"sequence": "7", "targets": [{"slave_id": "X", "addresses": ["X"]}]},
+    {"sequence": "8", "targets": [{"slave_id": "X", "addresses": ["X"]}]},
+    {"sequence": "9", "targets": [{"slave_id": "X", "addresses": ["X"]}]},
+    {"sequence": "10", "targets": [{"slave_id": "X", "addresses": ["X"]}]},
     {
       "sequence": "11",
       "targets": [
@@ -62,10 +62,10 @@
         {"slave_id": 1, "addresses": [42]}
       ]
     },
-    {"sequence": "13", "targets": []},
-    {"sequence": "14", "targets": []},
-    {"sequence": "15", "targets": []},
-    {"sequence": "16", "targets": []},
+    {"sequence": "13", "targets": [{"slave_id": "X", "addresses": ["X"]}]},
+    {"sequence": "14", "targets": [{"slave_id": "X", "addresses": ["X"]}]},
+    {"sequence": "15", "targets": [{"slave_id": "X", "addresses": ["X"]}]},
+    {"sequence": "16", "targets": [{"slave_id": "X", "addresses": ["X"]}]},
     {
       "sequence": "17",
       "targets": [

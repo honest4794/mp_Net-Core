@@ -18,7 +18,10 @@ EXPECTED_ORDER = (
         "22", "22A", "23", "23A", "24",
     ]
 )
-EXPECTED_NO_OPS = {"6", "7", "8", "9", "10", "13", "14", "15", "16"}
+EXPECTED_TEMPLATE_STAGES = {
+    "6", "7", "8", "9", "10", "13", "14", "15", "16",
+}
+TARGET_TEMPLATE = [{"slave_id": "X", "addresses": ["X"]}]
 EXPECTED_ROUTES = {
     "1": [(9, [22]), (11, [23])],
     "2": [(8, [24]), (10, [28])],
@@ -58,18 +61,23 @@ class HiNuMotorProjectSequenceTests(unittest.TestCase):
         self.assertEqual(5000, self.manifest["motor_open_interval_ms"])
         self.assertEqual(EXPECTED_ORDER, [stage["sequence"] for stage in self.stages])
 
-    def test_reserved_stages_are_timed_no_ops(self):
-        """Reserved timeline slots must not accidentally drive a motor or disappear."""
-        actual_no_ops = {
-            stage["sequence"] for stage in self.stages if not stage["targets"]
+    def test_pending_stages_have_explicit_non_null_target_templates(self):
+        """Unconfigured timeline slots must remain visible and ready to fill in."""
+        templates = {
+            stage["sequence"]: stage["targets"]
+            for stage in self.stages
+            if stage["sequence"] in EXPECTED_TEMPLATE_STAGES
         }
-        self.assertEqual(EXPECTED_NO_OPS, actual_no_ops)
+        self.assertEqual(
+            {sequence: TARGET_TEMPLATE for sequence in EXPECTED_TEMPLATE_STAGES},
+            templates,
+        )
 
     def test_active_stages_route_to_the_approved_slave_addresses(self):
         """Wrong Slave ownership or address would actuate the wrong body part."""
         actual = {}
         for stage in self.stages:
-            if not stage["targets"]:
+            if stage["sequence"] in EXPECTED_TEMPLATE_STAGES:
                 continue
             actual[stage["sequence"]] = [
                 (target["slave_id"], target["addresses"])
@@ -84,6 +92,7 @@ class HiNuMotorProjectSequenceTests(unittest.TestCase):
             for stage in self.stages
             for target in stage["targets"]
             for address in target["addresses"]
+            if isinstance(address, int)
         ]
         self.assertEqual(len(addresses), len(set(addresses)))
         self.assertTrue({12, 15, 19, 21, 35, 39, 40}.isdisjoint(addresses))

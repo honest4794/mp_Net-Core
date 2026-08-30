@@ -4,7 +4,7 @@
 
 **Goal:** Add a canonical, test-protected Project Mode motor stage manifest with a 5000 ms interval and fixed production Slave/address routing.
 
-**Architecture:** Store the sequence as data under `slave/pixel/sequences/`, separate from the Test Kit mode registry. An integration-style unit test loads the real JSON and verifies ordered timing, routing, no-op stages, and excluded addresses without adding runtime behavior.
+**Architecture:** Store the sequence as data under `slave/pixel/sequences/`, separate from the Test Kit mode registry. An integration-style unit test loads the real JSON and verifies ordered timing, routing, pending target templates, and excluded addresses without adding runtime behavior.
 
 **Tech Stack:** JSON, Python 3 `unittest`
 
@@ -16,7 +16,8 @@
 - Do not create `__pycache__` or `*.pyc` files.
 - Preserve Test Kit modes 0–2 and their addresses.
 - `motor_open_interval_ms` is `5000`.
-- Stages `6`–`10` and `13`–`16` remain timed no-op stages.
+- Stages `6`–`10` and `13`–`16` use the non-null target template
+  `{"slave_id": "X", "addresses": ["X"]}`.
 - Address `35` is excluded; addresses `39` and `40` are unsequenced.
 
 ---
@@ -42,7 +43,10 @@ EXPECTED_ORDER = (
     + ["18A", "19", "19A", "20", "20A", "21", "21A",
        "22", "22A", "23", "23A", "24"]
 )
-EXPECTED_NO_OPS = {"6", "7", "8", "9", "10", "13", "14", "15", "16"}
+EXPECTED_TEMPLATE_STAGES = {
+    "6", "7", "8", "9", "10", "13", "14", "15", "16",
+}
+TARGET_TEMPLATE = [{"slave_id": "X", "addresses": ["X"]}]
 EXPECTED_ROUTES = {
     "1": [(9, [22]), (11, [23])],
     "2": [(8, [24]), (10, [28])],
@@ -69,9 +73,10 @@ EXPECTED_ROUTES = {
 ```
 
 Assert that the interval is 5000, ordered stage IDs exactly match
-`EXPECTED_ORDER`, no-op stages have empty targets, active routes exactly match
-`EXPECTED_ROUTES`, addresses are unique, address 35 is excluded with replacement
-38, and 39/40 are unsequenced and absent from targets.
+`EXPECTED_ORDER`, pending stages use `TARGET_TEMPLATE`, active routes exactly
+match `EXPECTED_ROUTES`, configured addresses are unique, address 35 is excluded
+with replacement 38, and 39/40 are unsequenced and absent from configured
+targets.
 
 - [ ] **Step 2: Run the test and verify RED**
 
@@ -87,8 +92,8 @@ not exist.
 - [ ] **Step 3: Add the minimal JSON manifest**
 
 Create the schema described in the spec. Populate all 30 ordered stages, using
-empty `targets` arrays for `6`–`10` and `13`–`16`, and the exact literal routes
-from Step 1 for all active stages.
+the non-null `TARGET_TEMPLATE` for `6`–`10` and `13`–`16`, and the exact literal
+routes from Step 1 for all configured stages.
 
 - [ ] **Step 4: Run focused and regression tests**
 
@@ -118,4 +123,3 @@ then commit:
 git add slave/pixel/sequences/hi_nu_motor_project.json test/pixel/test_hinu_motor_project_sequence.py
 git commit -m "feat(motor): define Hi-Nu project sequence"
 ```
-
