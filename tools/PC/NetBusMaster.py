@@ -41,6 +41,9 @@ DEFAULT_CONFIG = {
     "active_sync_interval_s": 10.0,       # 廣播間隔 (秒)
     # 🔧 播放會話 / 離線自癒: 播放期間定期向 slave 查詢播放進度 (0x1101→0x1102)
     "progress_poll_interval_s": 1.0,      # 進度輪詢間隔 (秒)
+    # 🔧 播放完全自然結束後 (非循環音檔播完), 延遲多少秒才送 0x3002 停止指令
+    #    (slave 端會在檔尾保持最後一幀亮著, 這段延遲 = 最後姿勢定格時間)
+    "post_play_stop_delay_s": 10.0,
     # 🔧 離線裝置自動敲門 (unicast 0x1001 DISCOVER) 間隔: 裝置斷線後被自動叫回
     "reconnect_knock_interval_s": 10.0,   # 敲門間隔 (秒)
     # 🔧 中途加入 (mid-join) 的 prepare/READY 握手重試次數
@@ -970,6 +973,7 @@ class NetBusMaster:
         self.play_session_active = False
         self.audio_finished = False
         self._dev_finished = set()        # 🔧 本次會話「已自然播完」的設備 (重連不再自動續播)
+        self._stop_was_manual = False     # 🔧 本次播放是否由使用者手動停止 (s/q), 決定要不要補「延遲停止」
         self._dev_drift = {}              # 🔧 每台設備的「連續進度偏差」次數 (3 次 → SEEK 校正)
         self._progress_poll_stop = threading.Event()   # 🔧 播放進度輪詢執行緒
         self._progress_poll_thread = None
@@ -4804,6 +4808,7 @@ class NetBusMaster:
             self.paused_since = None
             self.paused_total = 0.0
         self._dev_finished.clear()
+        self._stop_was_manual = False   # 🔧 每次擊發重設: 手動停止 (s/q) 才會被設 True
         
         # 🔧 提前啟動 is_playing, 避免音訊執行緒啟動前的空窗期 (中途加入會漏掉)
         self.is_playing = True
@@ -4897,7 +4902,19 @@ class NetBusMaster:
             with self.play_lock:
                 self.play_session_active = False
             self._dev_finished.clear()
-        
+
+        # 🔧 自然播完 (非循環音檔結束, 非手動 s/q 停止) → 延遲 post_play_stop_delay_s
+        #    後才送 0x3002 停止指令。slave 端在檔尾會保持最後一幀亮著, 這段延遲就是
+        #    「最後姿勢定格」時間; 延遲一到才真正熄燈。手動停止時 stop_all() 已立即
+        #    送過 0x3002, 這裡不重複送 (否則會誤關掉緊接著的下一段準備)。
+        if (not self._stop_was_manual) and (self.current_play_mode != 1):
+            delay = max(0.0, self._cfg_float("post_play_stop_delay_s", 10.0))
+            self.panel.log("info", "🏁 播放自然結束, {} 秒後發送停止指令 (0x3002)...".format(delay))
+            time.sleep(delay)
+            if self.selected_targets:
+                self.send_pkt(self.selected_targets, 0x3002, {})
+                self.panel.log("ok", "🛑 已發送停止指令 (0x3002) — 熄燈")
+
         for tid in self.selected_targets:
             self.panel.update_device(tid, status="待機")
         
@@ -5076,6 +5093,7 @@ class NetBusMaster:
     
     def stop_all(self):
         global mixer
+        self._stop_was_manual = True   # 🔧 使用者手動停止 → 已在此立即送停止, 不需再補延遲停止
         self.is_playing = False
         self.is_paused = False
         # 🔧 播放會話結束 (離線重連不再自動續播)

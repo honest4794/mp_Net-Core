@@ -268,7 +268,11 @@ class StreamTask(Task):
         self.state = _LOADING
         bus.shared.update({
             "stream_active": True,
-            "is_ready": False,
+            # 🔧 準備下一段時保持「有畫面」(is_ready=True), 不要設 False ——
+            #    RenderTask 看到 is_streaming=False 且 is_ready=False 會 clear_all()
+            #    把燈熄掉 (準備下一段時閃黑)。保持 True 讓硬體停留在最後一幀,
+            #    等 0x300A PLAY 時才無縫接上新段落。
+            "is_ready": True,
             "is_streaming": False,
             "is_paused": False,
         })
@@ -378,20 +382,28 @@ class StreamTask(Task):
                     self._reset()
                     return
             else:
-                self._reset()
+                # 🔧 非循環自然播完: 保持最後一幀 (final pose) 不立即熄燈,
+                #    等 master 延遲 10s 後送 0x3002 停止指令才真正熄燈。
+                self._reset(hold=True)
                 return
         self._fill_slot(view, n)
         self.hub.commit()
         self._update_pos()
         stream_actions._STREAM_STATE["frame_count"] += 1
 
-    def _reset(self):
+    def _reset(self, hold=False):
+        """回到 IDLE 並清掉串流狀態。
+
+        hold=True: 自然播完 (檔尾, 非循環) 時用 —— 保持最後一幀亮著, 等 master
+        的延遲停止指令 (0x3002) 才熄燈。hold=False (預設): 明確停止/錯誤 ——
+        is_ready=False 讓 RenderTask 立即熄燈。
+        """
         self._release_src()
         self.state = _IDLE
         bus.shared.update({
             "stream_active": False,
             "is_streaming": False,
-            "is_ready": False,
+            "is_ready": True if hold else False,
             "is_paused": False,
         })
         stream_actions._STREAM_STATE["streaming"] = False

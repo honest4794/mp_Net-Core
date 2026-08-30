@@ -18,6 +18,7 @@
     "active_sync_fps": 0,
     "active_sync_interval_s": 10.0,
     "progress_poll_interval_s": 1.0,
+    "post_play_stop_delay_s": 10.0,
     "reconnect_knock_interval_s": 10.0,
     "join_retry_count": 3,
     "mapping": {
