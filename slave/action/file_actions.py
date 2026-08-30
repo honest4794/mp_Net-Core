@@ -60,9 +60,15 @@ def _send_error(ctx, error_key):
 
 
 def on_file_begin(ctx, args):
-    if args.get("path", False):
-        # 統一前綴：永遠落在 /sd (無卡時 /sd 在 flash 上)
-        args['path'] = fs.resolve(args['path'])[1]
+    path = args.get("path", "")
+    if path:
+        # 路徑路由：/sd、/ram 前綴維持原卷；其餘視為「根目錄韌體」(/boot.py、
+        # /lib/... 等)，保持絕對路徑直接寫 root flash，不再 resolve 到 /sd。
+        p = "/" + str(path).lstrip("/")
+        if p == "/sd" or p.startswith("/sd/") or p == "/ram" or p.startswith("/ram/"):
+            args['path'] = fs.resolve(p)[1]
+        else:
+            args['path'] = p
 
     ok = fs.begin_write(args)
     if ok:
@@ -108,7 +114,7 @@ def on_file_end(ctx, args):
             size = len(data)
             sha_bytes = _hex_to_bytes(sha) if sha else b'\x00' * 32
         else:
-            entry, _ = fs.manifest_lookup(path)
+            entry, _ = fs.manifest_lookup_abs(path)
             if entry:
                 size = entry.get("s", 0)
                 sha_bytes = _hex_to_bytes(entry.get("h", ""))
@@ -303,6 +309,9 @@ def on_file_scan(ctx, args):
         _thread.start_new_thread(fs.scan_sd, ())
     else:
         print("🔄 [File] Local Scan Requested")
+        # 🔧 同步先標記「掃描中」再開背景執行——否則 master 在 thread 尚未跑到
+        #    scan_all() 前就輪詢, 會誤判「掃描已完成」而太早下載 manifest。
+        bus.shared["fs_scan_requested"] = True
         _thread.start_new_thread(fs.scan_all, ())
 
 

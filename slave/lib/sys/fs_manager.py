@@ -500,8 +500,8 @@ class FileSystemManager:
             if old_exists:
                 old_sha = ""
                 old_size = 0
-                d, _, _ = self._manifest_target(path)
-                entry = d.get(path)
+                d, p_abs, _ = self._manifest_target_abs(path)
+                entry = d.get(p_abs)
                 if entry and entry.get("h"):
                     old_sha = entry["h"]
                     old_size = entry.get("s", 0)
@@ -679,7 +679,7 @@ class FileSystemManager:
 
     def partial_query(self, path):
         """FILE_PARTIAL_QUERY (0x200E): 回傳 (partial, written, total_size, sha_hex, full)。"""
-        _, full, _ = self._manifest_target(path)
+        _, full, _ = self._manifest_target_abs(path)
         rec = self.delta.get("partial", {}).get(full)
         if not rec:
             return 0, 0, 0, "", full
@@ -1169,10 +1169,14 @@ class FileSystemManager:
             return None
 
     def free_bytes(self, path):
-        """回傳 path 所在卷的可用位元組數; 失敗回 0。"""
+        """回傳 path 所在卷的可用位元組數; 失敗回 0。
+
+        依「絕對路徑前綴」判斷卷（不 resolve——resolve 會把 /boot.py 映射成 /sd
+        而查錯卷）：/sd 前綴查 SD，其餘（根目錄韌體）查 root flash。
+        """
         try:
-            kind, _, _ = self.resolve(path)
-            if kind == "sd":
+            p = "/" + str(path).lstrip("/")
+            if p == "/sd" or p.startswith("/sd/"):
                 st = os.statvfs("/sd")
             else:
                 st = os.statvfs("/")

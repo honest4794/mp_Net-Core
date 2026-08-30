@@ -29,11 +29,27 @@ def on_connect_request(bus_manager, url):
     """
     try:
         last_url = getattr(bus_manager, "_last_url", None)
-        # 🔧 依 WS connection 狀態判斷 (原設計): 已連到同一個 URL 就維持現況, 不重連。
-        #    之前這裡有 hasattr(bus_manager,"ping") 的死碼 —— NetBus 從未實作 ping(),
-        #    導致 always-poll discovery 時每次收到 DISCOVER 都誤觸 disconnect+重連。
+        # 🔧 防抖動 + 健康檢查 (原設計只防抖動):
+        #   master 每 10s 敲門, 已連到同一個 URL 就維持現況, 避免連線抖動。
+        #   但「已連線」不代表還活著 —— half-open (對面靜默消失, 無 FIN/RST) 時
+        #   connected 卡在 True, 若照舊直接 return True 會把敲門吞掉 → 永久離線。
+        #   因此加一道健康門檻: 近 ws_stale_ms (預設 30s, 對齊 master「30s 無回應
+        #   標離線」的健康檢查) 內有收到資料才算活著; 超過就視為死連線, 放行重連。
         if bus_manager.connected and last_url == url:
-            return True
+            idle = 0
+            try:
+                idle = bus_manager.idle_ms() if hasattr(bus_manager, "idle_ms") else 0
+            except Exception:
+                idle = 0
+            try:
+                stale = int(bus.shared.get("System", {}).get("ws_stale_ms", 30000) or 30000)
+            except Exception:
+                stale = 30000
+            if idle <= stale:
+                return True
+            print("🔄 [Network] WS 逾時無流量 ({}ms > {}ms) → 斷線重連".format(idle, stale))
+            bus_manager.disconnect()
+            time.sleep_ms(50)
 
         # 1. 解析 URL
         parts = url.replace("ws://", "").split("/", 1)

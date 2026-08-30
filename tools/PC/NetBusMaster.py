@@ -1945,6 +1945,7 @@ class NetBusMaster:
         print("  5. 還原/確認 (.bak 備份回滾)")
         print("  6. 重試失敗/續傳 (斷點續傳)")
         print("  7. 軟重啟設備 (0x100F Reboot)")
+        print("  8. 引導修復 (bootstrap 新韌體到 root)")
         print("  q. 返回")
         
         choice = input("\n👉 請選擇: ").strip().lower()
@@ -1965,6 +1966,8 @@ class NetBusMaster:
             self._retry_failed_uploads()
         elif choice == '7':
             self._soft_reboot_devices()
+        elif choice == '8':
+            self._bootstrap_root_fix()
         elif choice == 'q':
             self.panel.start()
             return
@@ -2256,18 +2259,43 @@ class NetBusMaster:
         self._verify_promoted(promoted)
 
     def _verify_promoted(self, promoted):
-        """promote + confirm 後的驗證閉環: 逐一查遠端 sha 對本地 sha, 並下 delta
-        確認 pending 已清空。固件更新講究「馬上檢查哈希表 + delta」, 避免快取/殘留
-        pending 讓「看起來成功」但其實 root 沒落地或 .bak 沒清。
+        """promote + confirm 後的驗證閉環: 重新下載每台設備的 manifest 整批比對,
+        並下 delta 確認 pending 已清空。固件更新講究「馬上檢查哈希表 + delta」,
+        避免快取/殘留 pending 讓「看起來成功」但其實 root 沒落地或 .bak 沒清。
+
+        sha 比對用「整批下載 manifest」而非逐檔 0x2005 查詢——逐檔查詢一次一個
+        round-trip 太慢; manifest 是 write-through 的, 上傳時已同步更新,
+        下載一次即可比對全部。
         """
         if not promoted:
             return
         remote_to_local = {r: l for l, r in getattr(self, "last_upload_files", [])}
-        self.panel.log("info", "🔎 [Verify] promote 後檢查遠端哈希 + delta...")
+        self.panel.log("info", "🔎 [Verify] 重新下載各設備 manifest 整批比對 + 檢查 delta...")
+
+        # 1. 並行重新下載 manifest（取代逐檔 0x2005 查詢）
+        tids = [tid for tid in promoted if tid in self.slaves]
+        manifests = {}
+        if tids:
+            ex = ThreadPoolExecutor(max_workers=min(16, len(tids)))
+            futs = {ex.submit(self._download_manifest_core, tid): tid for tid in tids}
+            for f in futs:
+                tid = futs[f]
+                try:
+                    manifests[tid] = f.result(timeout=20.0)
+                except Exception:
+                    manifests[tid] = None
+            ex.shutdown(wait=False)
+
+        # 2. 整批比對 local sha vs 遠端 manifest
         for tid, paths in promoted.items():
             if isinstance(paths, dict):
                 paths = list(paths.keys())
             if tid not in self.slaves:
+                continue
+            man = manifests.get(tid)
+            if man is None:
+                self.panel.log("err", f"❌ [{tid}]: manifest 重新下載失敗, 無法驗證")
+                self._log_event("FAIL", "promote 驗證 manifest 下載失敗", device_id=tid)
                 continue
             for r in paths:
                 l = remote_to_local.get(r)
@@ -2275,12 +2303,12 @@ class NetBusMaster:
                     self.panel.log("warn", f"⚠️ [{tid}] {r}: 找不到本地來源, 略過 sha 比對")
                     continue
                 local_sha = self._calc_local_sha(l)
-                remote_sha = self._query_remote_sha(tid, r)
-                if remote_sha is None:
-                    self.panel.log("err", f"❌ [{tid}] {r}: 遠端 sha 查詢失敗")
-                    self._log_event("FAIL", f"promote 驗證 sha 查詢失敗 {r}", device_id=tid)
-                elif remote_sha != local_sha:
-                    self.panel.log("err", f"❌ [{tid}] {r}: 哈希不符 (remote {remote_sha.hex()[:8]} != local {local_sha.hex()[:8]})")
+                remote_hex = man.get(r)
+                if remote_hex is None:
+                    self.panel.log("err", f"❌ [{tid}] {r}: 遠端 manifest 缺少此檔")
+                    self._log_event("FAIL", f"promote 驗證遠端缺失 {r}", device_id=tid)
+                elif remote_hex != local_sha.hex():
+                    self.panel.log("err", f"❌ [{tid}] {r}: 哈希不符 (remote {remote_hex[:8]} != local {local_sha.hex()[:8]})")
                     self._log_event("FAIL", f"promote 驗證哈希不符 {r}", device_id=tid)
                 else:
                     self.panel.log("ok", f"✅ [{tid}] {r}: 哈希一致")
@@ -3401,6 +3429,27 @@ class NetBusMaster:
                 diff.append((l_path, r_path))
         return diff
 
+    def _wait_fs_scan_idle(self, tids, timeout=30.0):
+        """等各設備 root flash 掃描完成 (bus.shared.fs_scan_requested 歸零)。
+
+        掃描由 slave 端 FsScanTask 非同步執行, 用 0x1101 STATUS_GET 輪詢
+        fs_scan_busy 旗標 (status_actions 註冊的 provider)。舊韌體無此 provider
+        時該台讀不到 busy → 視為「不阻塞」直接放行 (舊韌體 manifest 本就不可靠)。
+        """
+        deadline = time.time() + timeout
+        pending = set(tids)
+        while pending and time.time() < deadline:
+            for tid in list(pending):
+                st = self.query_status(tid, timeout=2.0)
+                if st is None:
+                    continue          # 離線/逾時: 留在 pending, 由 deadline 兜底
+                if not st.get("fs_scan_busy", 0):
+                    pending.discard(tid)
+            if pending:
+                time.sleep(0.5)
+        if pending:
+            print(f"⚠️ {len(pending)} 台掃描未在 {timeout:.0f}s 內完成, 以現有 manifest 繼續")
+
     def _update_firmware_files(self):
         files_to_upload = self._collect_firmware_files()
         targets = [t for t in self.selected_targets if t in self.slaves]
@@ -3414,6 +3463,13 @@ class NetBusMaster:
         # 🔧 每次更新先清掉舊哈希表緩存, 強制每台重新下載 manifest——
         #    否則「上傳後再跑一次」會拿到過期快取, 比對永遠顯示「全部一致」。
         self._firmware_manifest_cache = {}
+
+        # 🔧 先觸發每台重掃 root flash 重建 manifest, 再下載——確保比對用的是
+        #    最新哈希表, 而不是 slave 記憶體/磁碟上的過期 manifest (例如檔案被
+        #    外部改動、或舊韌體把檔寫到 /sd 導致 root manifest 沒更新)。
+        print("🔄 觸發設備重掃 manifest (0x200B)...")
+        self.send_pkt(targets, 0x200B, {"target": 0})
+        self._wait_fs_scan_idle(targets, timeout=30.0)
 
         # 🔧 並行下載 manifest: 一台卡住/掉線不阻塞其餘設備；個別逾時直接跳過。
         manifests = {}   # tid -> dict|None
@@ -3465,8 +3521,8 @@ class NetBusMaster:
             return
 
         print("\n👉 請選擇上傳方式:")
-        print("  [Enter] 全部更新 (只傳差異 + 直接確認 + 軟重啟) ← 預設")
-        print("  [c] 全部更新 (只傳差異 + 手動確認)")
+        print("  [Enter] 全部更新 (只傳差異 + 上傳後詢問確認 + 軟重啟) ← 預設")
+        print("  [a] 全部更新 (只傳差異 + 直接確認 + 軟重啟)")
         print("  [s] 逐檔上傳 (一個一個來, 每檔即時進度 + 直接確認)")
         print("  [1] 挑選單一檔案上傳到全部設備")
         print("  [q] 返回")
@@ -3474,16 +3530,16 @@ class NetBusMaster:
 
         if ch == "q":
             return
-        elif ch == "c":
-            self._run_upload_batch(diff_by_target, targets=targets, confirm_mode="prompt")
+        elif ch == "a":
+            self._run_upload_batch(diff_by_target, targets=targets, confirm_mode="auto")
         elif ch == "s":
             self._upload_files_sequential(diff_by_target, targets=targets)
             return
         elif ch == "1":
             self._upload_single_file_interactive(files_to_upload, targets=targets)
             return
-        elif ch in ("", "a", "y", "yes"):
-            self._run_upload_batch(diff_by_target, targets=targets, confirm_mode="auto")
+        elif ch in ("", "c", "y", "yes"):
+            self._run_upload_batch(diff_by_target, targets=targets, confirm_mode="prompt")
         else:
             print("❌ 無效選擇")
             return
@@ -3491,6 +3547,65 @@ class NetBusMaster:
         time.sleep(1)
         print("\n✅ 固件更新完成")
         # 🔧 預設軟重啟 (直接確認已在上傳流程內處理)
+        self._reboot_and_confirm(targets=targets, default_yes=True)
+
+    def _bootstrap_root_fix(self):
+        """一次性引導: 把「修復了上傳路徑」的檔案用舊韌體仍支援的 promote 流程
+        (上傳到 /sd → 0x2011 promote 到 root → confirm) 推到每台設備 root。
+
+        背景: 設備目前仍跑舊韌體 (on_file_begin 把 root 路徑強制 resolve 到 /sd),
+        導致新版 PC 端的「直接寫 root」失效 (上傳落 /sd, root manifest 沒更新)。
+        但舊韌體仍支援 0x2011 promote, 用它做一次性引導。重啟後設備跑新韌體,
+        之後的「固件全量更新」就能直接寫 root, 不再需要這個引導。
+        """
+        targets = [t for t in self.selected_targets if t in self.slaves]
+        if not targets:
+            print("⚠️ 無在線設備 (請先 Step 1 選擇/掃描)")
+            return
+
+        boot_files = [
+            (os.path.join(PROJECT_ROOT, "slave", "action", "file_actions.py"), "/action/file_actions.py"),
+            (os.path.join(PROJECT_ROOT, "slave", "lib", "sys", "fs_manager.py"), "/lib/sys/fs_manager.py"),
+            (os.path.join(PROJECT_ROOT, "slave", "action", "status_actions.py"), "/action/status_actions.py"),
+        ]
+        for l, r in boot_files:
+            if not os.path.isfile(l):
+                print(f"❌ 找不到 {l}")
+                return
+
+        print(f"\n🚑 [Bootstrap] 把修復檔 promote 到 {len(targets)} 台設備的 root (一次性引導)...")
+        print("   流程: 上傳到 /sd → promote 到 root → confirm → 重啟")
+
+        self._transfer_begin()
+        try:
+            for tid in targets:
+                for l, r in boot_files:
+                    if self.transfer_cancel.is_set():
+                        break
+                    try:
+                        with open(l, "rb") as f:
+                            data = f.read()
+                        self.panel.update_device(tid, status="上傳中", transfer_label=f"boot {r[:16]}")
+                        # 明確寫 /sd 暫存區 (舊韌體對 /sd 前綴不會再 resolve)
+                        self._upload_bytes(tid, data, "/sd" + r)
+                        if not self._promote_file(tid, r):
+                            self.panel.log("warn", f"⚠️ [{tid}] {r}: promote 失敗")
+                            self._log_event("FAIL", f"bootstrap promote 失敗 {r}", device_id=tid)
+                            continue
+                        if not self._confirm_file(tid, r):
+                            self.panel.log("warn", f"⚠️ [{tid}] {r}: confirm 失敗 (pending 未清)")
+                            self._log_event("FAIL", f"bootstrap confirm 失敗 {r}", device_id=tid)
+                            continue
+                        self.panel.log("ok", f"✅ [{tid}] {r}: 已引導到 root")
+                        self._log_event("OK", f"bootstrap {r}", device_id=tid)
+                    except Exception as e:
+                        self.panel.log("err", f"❌ [{tid}] {r}: {e}")
+                        self._log_event("FAIL", f"bootstrap 失敗 {r}: {e}", device_id=tid)
+                self.panel.update_device(tid, status="完成", transfer_label="")
+        finally:
+            self._transfer_end()
+
+        print("\n✅ Bootstrap 完成, 準備重啟讓新韌體生效...")
         self._reboot_and_confirm(targets=targets, default_yes=True)
 
     def _upload_single_file_to_targets(self, l_path, r_path, targets, confirm_mode="auto"):
@@ -4404,7 +4519,7 @@ class NetBusMaster:
                 valid_tids.append(tid)
                 
         # 批量發送查詢
-        self.send_pkt(valid_tids, 0x2005, {"path": "/data.bin"})
+        self.send_pkt(valid_tids, 0x2005, {"path": "/sd/data.bin"})
         
         tout = self.config.get("deploy_timeout", 120)
         print(f"⏳ 等待設備回報 (Timeout: {tout}s)...")
@@ -4508,10 +4623,10 @@ class NetBusMaster:
         if not node or data is None:
             raise Exception("無數據或離線")
 
-        local_sha = self._upload_bytes(tid, data, "/data.bin", file_idx=1, total_files=1, file_id=1)
+        local_sha = self._upload_bytes(tid, data, "/sd/data.bin", file_idx=1, total_files=1, file_id=1)
         # 🔧 播放數據常改, 不該進「3 次重啟自動回滾」保護帶: 上傳完立即 confirm
         #    (清 .bak + pending)。否則 /data.bin 的備份會留著, 3 次開機後被靜默還原成舊版。
-        if not self._confirm_file(tid, "/data.bin"):
+        if not self._confirm_file(tid, "/sd/data.bin"):
             self._log_event("FAIL", "data.bin 確認失敗 (pending 未清, 可能 3 次重啟後回滾)", device_id=tid)
             self.panel.log("warn", f"⚠️ [{tid}] data.bin 上傳成功但確認失敗 (pending 未清)")
         self.config["mapping"][tid]["last_sha"] = local_sha.hex()

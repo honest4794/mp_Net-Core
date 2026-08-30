@@ -43,6 +43,7 @@
 | [09_cores.md](02_guides/09_cores.md) | cores 核心實例：Core_LVGL / Core_Comm |
 | [10_file_update.md](02_guides/10_file_update.md) | 檔案更新流程：上傳/下載/兩段式 commit/斷點續傳/delta journal |
 | [11_developing_effects.md](02_guides/11_developing_effects.md) | **開發燈效指南**：效果介面 / 三種寫法 / 雙核播放 / 四層設定 / 效能踩坑 |
+| [12_network_switch_setup.md](02_guides/12_network_switch_setup.md) | 交換器設置與連線排障：DHCP snooping trust / half-open / 拿不到 IP / 上傳循環 / SOP |
 
 ## 03_notes — 筆記
 

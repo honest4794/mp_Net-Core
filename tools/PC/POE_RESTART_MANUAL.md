@@ -1,11 +1,16 @@
 # PoE Port 重啟工具使用手冊
 
-`tools/poe_restart.py` — 遠端重啟 Cisco 3560 交換器上的 PoE port（斷電 → 等待 → 恢復供電）。
+`tools/PC/poe_restart.py` — 遠端重啟 Cisco 3560 交換器上的 PoE port（斷電 → 等待 → 恢復供電）。
 適用 macOS / Windows，需要 Python 3.8+。
+
+> 已整合進 `NetBusMaster.py` 主選單的 **9. PoE Restart**（可選正式執行或 Dry-run），
+> 也可以用底下指令單獨執行本腳本。
 
 ## 快速開始
 
 ```bash
+cd tools/PC
+
 # 正式執行
 python3 poe_restart.py
 

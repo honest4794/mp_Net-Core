@@ -168,7 +168,7 @@
   "APA102": {
     "enable": 1,
     "list": [
-      {"GPIO": {"spi": 0},"Q": 290,"order": "BGRW"}
+      {"GPIO": {"spi": 0},"Q": 290,"order": "RGBW"}
     ]
   },
   "PCA9685": {

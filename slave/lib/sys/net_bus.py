@@ -22,6 +22,7 @@ class NetBus:
         self.target_addr = None # UDP 發送對象
         self._peer = None
         self._decode_ctx = {}
+        self._last_rx = 0       # 上次收到資料的 ticks_ms (0 = 從未)，供半開連線偵測
         
         buf_cfg = bus.shared.get('Buffer', {}) or {}
         buf_size = RX_BUF_SIZE
@@ -80,6 +81,7 @@ class NetBus:
                 self._peer = ("0.0.0.0", port, "")
             else:
                 self._peer = (host, port, path)
+            self._last_rx = time.ticks_ms()   # 🔧 連上 = 當下有流量, 供半開連線偵測基準
             print(f"✅ [{self.label}] Initialized")
             return True
         except Exception as e:
@@ -108,7 +110,18 @@ class NetBus:
             self.connected = False
             self.target_addr = None
             self._peer = None
+            self._last_rx = 0   # 🔧 斷線後清掉 liveness 基準, 下次連上重算
             print(f"🔌 [{self.label}] Connection Closed.")
+
+    def idle_ms(self):
+        """距離上次收到資料的毫秒數（0 = 從未收到 / 剛連上）。
+
+        供 on_connect_request 的防抖動 + 健康檢查用：對面靜默消失（沒有 FIN/RST）
+        時 connected 仍會卡在 True，靠這個時間戳判斷連線是否已死。
+        """
+        if not self._last_rx:
+            return 0
+        return time.ticks_diff(time.ticks_ms(), self._last_rx)
 
     def poll(self, **extra_ctx):
         """
@@ -172,6 +185,7 @@ class NetBus:
                                 pass
                         break
 
+                    self._last_rx = time.ticks_ms()   # 🔧 收到資料 → 刷新 liveness 時間戳
                     raw = memoryview(self._buf)[:n]
 
                     mv = raw
@@ -366,6 +380,7 @@ class NetBus:
                         self.connected = False
                     break
 
+                self._last_rx = time.ticks_ms()   # 🔧 收到資料 → 刷新 liveness 時間戳
                 self._commit(view, n)
             return
 

@@ -1,5 +1,5 @@
 {
-    "sync_delay_ms": 150,
+    "sync_delay_ms": -80,
     "ws_port": 8005,
     "upt_port": 9000,
     "deploy_timeout": 120,
@@ -23,78 +23,78 @@
     "mapping": {
         "80F1B2D1F7DE": {
             "play_id": 0,
-            "last_sha": "7c0b8d5fa3d88f58a3c0cf0b8e914dcc6781716985324fea59f8c74d94f1b9e5",
-            "ip": "192.168.8.141"
+            "last_sha": "82f0d3b649030f5377cbf5381de4cb29e514cd7e4ad820bfc26701ff3c7c2e29",
+            "ip": "192.168.8.137"
         },
         "80F1B2D1B758": {
             "play_id": 1,
-            "last_sha": "def7bcc9f544b5a8f226e3a1322463467a55639dcb8bd306ba56eaaac6403768",
-            "ip": "192.168.8.170"
+            "last_sha": "87fc7b9cf9c6c04c20ae41a9d725edd4abcd343b51bb5269ef8103f3b98eca98",
+            "ip": "192.168.8.168"
         },
         "80F1B2D1F5F0": {
             "play_id": 2,
-            "last_sha": "bf9ddf8302cd7167e04095ad062604f6f8bbcee46888ccd415547cedcdd66fad",
-            "ip": "192.168.8.210"
+            "last_sha": "89051d0910fc405020d0cc8eda6794952f831a804ce20af79ea105d714cccfa0",
+            "ip": "192.168.8.207"
         },
         "80F1B2D1F518": {
             "play_id": 3,
-            "last_sha": "db3a3d038a3260a166091576e88dbb86792af682fbdde5ed649b5fed62ee2314",
+            "last_sha": "7ae6e5df4b5cfe5b88436027ce206a79040f20e9124d3cc40f83725f849b4a1a",
             "ip": "192.168.8.144"
         },
         "80F1B2D1F7DC": {
             "play_id": 4,
-            "last_sha": "ce8b35041cb274b949c3b88f6a3a70ada6a5dbf5c2f8f11d097ffb4d27901074",
-            "ip": "192.168.8.142"
+            "last_sha": "66a5dc7a888843fbf252c041a2177b26631a8e9fdf2020bca1b43facc38cf15c",
+            "ip": "192.168.8.135"
         },
         "80F1B2D1F5A1": {
             "play_id": 5,
-            "last_sha": "66b4f554d1cab25697fdf6912701d4d479607345fdff769ba78a7e2a096bec98",
-            "ip": "192.168.8.131"
+            "last_sha": "d9a421c03de25383ca496464b119d41acf2c4a65d81e9a352b5cf311f1eecee2",
+            "ip": "192.168.8.128"
         },
         "80F1B2D1F514": {
             "play_id": 6,
-            "last_sha": "8bbf5f3a71bac751cc401a0b04088d81bc7bb0f0a81bdd5785ed25f7eabed4e1",
-            "ip": "192.168.8.147"
+            "last_sha": "0be0057829d34b803bea2b29f86655f12f24c2395537ba8b16e0e95d6e6b8a97",
+            "ip": "192.168.8.141"
         },
         "80F1B2D1F677": {
             "play_id": 7,
-            "last_sha": "88c9719ed46c454f2ef71fbe33e494c2e2349f9f723c0b7f3bc742436446dbf8",
+            "last_sha": "9b567add0850bc6ccc6b0143bc0473e7b190c2de280259dd5566903b701adbf8",
             "ip": "192.168.8.138"
         },
         "80F1B2D1F614": {
             "play_id": 8,
-            "last_sha": "0e51b8b30283f843b1e6386382630d0f5a1329bbef17306f0832ed2b3e2b50c2",
-            "ip": "192.168.8.189"
+            "last_sha": "b8e9373019eee3465f01bc51cba490ca9dea5fb6fe544e4a5ca25398c589bb15",
+            "ip": "192.168.8.186"
         },
         "80F1B2D1F666": {
             "play_id": 9,
-            "last_sha": "bbba93ccaf6e4eec09151efd222606b0f525a82a01f2b09005203576b1f29ad2",
-            "ip": "192.168.8.122"
+            "last_sha": "2bd2e5bb2b5470ed128bc0f0964fed0f33cb14f5f59c241572eae49dbb773f45",
+            "ip": "192.168.8.118"
         },
         "80F1B2D1B8AC": {
             "play_id": 10,
-            "last_sha": "ab561c9d4912a2210b96ad109e3ced426a206cc76ae25fcc447d0359854ca42e",
-            "ip": "192.168.8.153"
+            "last_sha": "fc7678780765421ad41cd2d901b8d118d965ee731ec8894642ec14880c223f7b",
+            "ip": "192.168.8.150"
         },
         "80F1B2D1F5F2": {
             "play_id": 11,
-            "last_sha": "11b8a7469c66607b96f15d493f032c6a159d4dc175b22c45be623001696635bb",
-            "ip": "192.168.8.212"
+            "last_sha": "c753b0c1dc2caa5c2947add32a002cfd46bb61abc7fdb578f2dfbd4f4db68c08",
+            "ip": "192.168.8.209"
         },
         "80F1B2D1F529": {
             "play_id": 12,
-            "last_sha": "f3a3d6265e5225ee0964790c251c4e24f1dfdb404b9b8f3fccd636ef5c0e316e",
-            "ip": "192.168.8.164"
+            "last_sha": "8ea3f3647b88e995d9f98159e95046596f977a21b59f3448bf3046f1eee1ea13",
+            "ip": "192.168.8.158"
         },
         "80F1B2D1F5C8": {
             "play_id": 13,
-            "last_sha": "0dfd9d6182963b5600c567f1ef383a522c046c3e1ac48fd0b21a7ecb8020ea52",
-            "ip": "192.168.8.171"
+            "last_sha": "9c0e97194110182de8880083b19d23b88da2b14961c131ceeea9b2f163701d2f",
+            "ip": "192.168.8.167"
         },
         "80F1B2D1B82A": {
             "play_id": 14,
-            "last_sha": "8457bcebf5e79c1690685420bb3bf4e5b36a4c575775f9c1fd6875293aa25b5c",
-            "ip": "192.168.8.173"
+            "last_sha": "9d9c9bb5099d65237c27fd7b36040b99a7c8f92905bc1b679d9c5a096648a8cb",
+            "ip": "192.168.8.170"
         },
         "80F1B2D1B75A": {
             "play_id": 15,
@@ -103,178 +103,183 @@
         },
         "80F1B2D1F530": {
             "play_id": 16,
-            "last_sha": "def7bcc9f544b5a8f226e3a1322463467a55639dcb8bd306ba56eaaac6403768",
-            "ip": "192.168.8.168"
+            "last_sha": "99d324dcecee8aececc03e614c3f519b863f3271516b8355e69300505d31e945",
+            "ip": "192.168.8.165"
         },
         "80F1B2D1F81D": {
             "play_id": 17,
-            "last_sha": "bf9ddf8302cd7167e04095ad062604f6f8bbcee46888ccd415547cedcdd66fad",
-            "ip": "192.168.8.150"
+            "last_sha": "3af46dee233c442852255f51a75034aff49a495cb409e721630ad90df74e8ef0",
+            "ip": "192.168.8.147"
         },
         "80F1B2D1F667": {
             "play_id": 18,
-            "last_sha": "db3a3d038a3260a166091576e88dbb86792af682fbdde5ed649b5fed62ee2314",
-            "ip": "192.168.8.123"
+            "last_sha": "9f7cafcf4b9189746d2b630ce3fa42bc8017d3bf15fb377a3a167b41179b6570",
+            "ip": "192.168.8.119"
         },
         "80F1B2D1F613": {
             "play_id": 19,
-            "last_sha": "ce8b35041cb274b949c3b88f6a3a70ada6a5dbf5c2f8f11d097ffb4d27901074",
-            "ip": "192.168.8.188"
+            "last_sha": "7586ae44e8905ad02510ee9d4f9e6f1a7d5fa0c367902870737d33bd640156f6",
+            "ip": "192.168.8.185"
         },
         "80F1B2D1B80F": {
             "play_id": 20,
-            "last_sha": "66b4f554d1cab25697fdf6912701d4d479607345fdff769ba78a7e2a096bec98",
-            "ip": "192.168.8.146"
+            "last_sha": "5618fdea847a0dba194cac7a383d6897acec55616b68d7e4bde0f9fa94823f08",
+            "ip": "192.168.8.143"
         },
         "80F1B2D1B81B": {
             "play_id": 21,
-            "last_sha": "8bbf5f3a71bac751cc401a0b04088d81bc7bb0f0a81bdd5785ed25f7eabed4e1",
-            "ip": "192.168.8.158"
+            "last_sha": "f7986e7715cfcdbb483841b7c4b1f948c38c584025a128a47ffb0e3381ced6df",
+            "ip": "192.168.8.155"
         },
         "80F1B2D1F5F8": {
             "play_id": 22,
-            "last_sha": "88c9719ed46c454f2ef71fbe33e494c2e2349f9f723c0b7f3bc742436446dbf8",
-            "ip": "192.168.8.218"
+            "last_sha": "7520783570e75b3cadda86c7363b2253c7fc47f51ae060115f7ad52dec5ebd47",
+            "ip": "192.168.8.215"
         },
         "80F1B2D1B80C": {
             "play_id": 23,
-            "last_sha": "0e51b8b30283f843b1e6386382630d0f5a1329bbef17306f0832ed2b3e2b50c2",
-            "ip": "192.168.8.143"
+            "last_sha": "fd46f221394b07d4435407fdf7994d68630f66326b920e4baf28baea07d266eb",
+            "ip": "192.168.8.140"
         },
         "80F1B2D1F5CC": {
             "play_id": 24,
-            "last_sha": "bbba93ccaf6e4eec09151efd222606b0f525a82a01f2b09005203576b1f29ad2",
-            "ip": "192.168.8.174"
+            "last_sha": "09c211874b9099af4840e760432253874ee6dee3d98e7265439c0cfafacd0d4d",
+            "ip": "192.168.8.171"
         },
         "80F1B2D1F66B": {
             "play_id": 25,
-            "last_sha": "ab561c9d4912a2210b96ad109e3ced426a206cc76ae25fcc447d0359854ca42e",
-            "ip": "192.168.8.126"
+            "last_sha": "fb2097937f146ed30c301bb132b0dca5a8e0a00286a9185918484be25295f20c",
+            "ip": "192.168.8.123"
         },
         "80F1B2D1B75C": {
             "play_id": 26,
-            "last_sha": "11b8a7469c66607b96f15d493f032c6a159d4dc175b22c45be623001696635bb",
-            "ip": "192.168.8.176"
+            "last_sha": "7b86c95f9596b300e6594bd6e0fc7c257fb9b742ac32f2cfd8a75852e52588ff",
+            "ip": "192.168.8.173"
         },
         "80F1B2D1F81F": {
             "play_id": 27,
-            "last_sha": "f3a3d6265e5225ee0964790c251c4e24f1dfdb404b9b8f3fccd636ef5c0e316e",
-            "ip": "192.168.8.148"
+            "last_sha": "4371fa56421fbc0b4ae016617f82ce542f4fad2dc3e7e32ff6392927d9093a82",
+            "ip": "192.168.8.145"
         },
         "80F1B2D1F7B1": {
             "play_id": 28,
-            "last_sha": "0dfd9d6182963b5600c567f1ef383a522c046c3e1ac48fd0b21a7ecb8020ea52",
-            "ip": "192.168.8.245"
+            "last_sha": "59f88fd7fb8cbb70ecc628b5c0b37fb2397cf676c0aac6a5a2c191856679cbd8",
+            "ip": "192.168.8.242"
         },
         "80F1B2D1B75D": {
             "play_id": 29,
-            "last_sha": "8457bcebf5e79c1690685420bb3bf4e5b36a4c575775f9c1fd6875293aa25b5c",
-            "ip": "192.168.8.175"
+            "last_sha": "0bbaa99343c7deda468a4b43382d09678289c3007df2291a4b5790239fae90b3",
+            "ip": "192.168.8.172"
         },
         "80F1B2D1B820": {
             "play_id": 30,
-            "last_sha": "7c0b8d5fa3d88f58a3c0cf0b8e914dcc6781716985324fea59f8c74d94f1b9e5",
-            "ip": "192.168.8.165"
+            "last_sha": "c36e6f01153d866d4eb3751dd37c50c56a7de82501fa82e70e70aee7ee784469",
+            "ip": "192.168.8.160"
         },
         "80F1B2D1B812": {
             "play_id": 31,
-            "last_sha": "def7bcc9f544b5a8f226e3a1322463467a55639dcb8bd306ba56eaaac6403768",
-            "ip": "192.168.8.149"
+            "last_sha": "4df9bc2ad9927a1053a737f1770c2a705744f91c025f8557489002e6b0c11fa6",
+            "ip": "192.168.8.146"
         },
         "80F1B2D1B80E": {
             "play_id": 32,
-            "last_sha": "bf9ddf8302cd7167e04095ad062604f6f8bbcee46888ccd415547cedcdd66fad",
-            "ip": "192.168.8.145"
+            "last_sha": "465a65518ba4b4619f63b5bb0fc8bf5cde2b8ae7d621748099b179d33c566f3f",
+            "ip": "192.168.8.142"
         },
         "E8F60AE0CC8C": {
             "play_id": 33,
-            "last_sha": "d1e4d8472e12e7466a1b3d893ac359e42c2917cc85a3302ad33f872f9a465234",
-            "ip": "192.168.8.134"
+            "last_sha": "f89308f5aa0843aa9efae5c29a5d6bb456bf8d67e34899cd8cf7b59c96b11c23",
+            "ip": "192.168.8.130"
         },
         "E8F60AE0CCBC": {
             "play_id": 34,
-            "last_sha": "ce8b35041cb274b949c3b88f6a3a70ada6a5dbf5c2f8f11d097ffb4d27901074",
-            "ip": "192.168.8.181"
+            "last_sha": "4f6c3d300b71402a859188996b7aec1e41b1e20a0bd3ff378e8a52e500f77045",
+            "ip": "192.168.8.178"
         },
         "E8F60AE0CC80": {
             "play_id": 35,
-            "last_sha": "66b4f554d1cab25697fdf6912701d4d479607345fdff769ba78a7e2a096bec98",
-            "ip": "192.168.8.121"
+            "last_sha": "4bc129baa1e0a103a5479a1f9c81993f32dd819a98b8a9be4e38bfbf62d53903",
+            "ip": "192.168.8.120"
         },
         "E8F60AE0CEFB": {
             "play_id": 36,
-            "last_sha": "8bbf5f3a71bac751cc401a0b04088d81bc7bb0f0a81bdd5785ed25f7eabed4e1",
-            "ip": "192.168.8.191"
+            "last_sha": "dbd92b8a532297f73e40def58abf7ddbf6aaafc5076d412f43a5d46d29d0fccf",
+            "ip": "192.168.8.189"
         },
         "E8F60AE0CDDB": {
             "play_id": 37,
-            "last_sha": "88c9719ed46c454f2ef71fbe33e494c2e2349f9f723c0b7f3bc742436446dbf8",
-            "ip": "192.168.8.111"
+            "last_sha": "66c7cf504dcbf8eaca9fa64cd23382eb835e7d3e2d5ac4d417c4f7ce34f6f844",
+            "ip": "192.168.8.108"
         },
         "E8F60AE0CBC3": {
             "play_id": 38,
-            "last_sha": "0e51b8b30283f843b1e6386382630d0f5a1329bbef17306f0832ed2b3e2b50c2",
-            "ip": "192.168.8.139"
+            "last_sha": "0557f13cc071cbc2d4636f5ea22f6530b12d95a394c9e938691ba2cb12b752e3",
+            "ip": "192.168.8.136"
         },
         "E8F60AE0CCBF": {
             "play_id": 39,
-            "last_sha": "bbba93ccaf6e4eec09151efd222606b0f525a82a01f2b09005203576b1f29ad2",
-            "ip": "192.168.8.184"
+            "last_sha": "d745f01bdedc0ebd4f9aab4de70701ead822ef28cac70055ff5124c397b4d653",
+            "ip": "192.168.8.181"
         },
         "E8F60AE0CC8B": {
             "play_id": 40,
-            "last_sha": "ab561c9d4912a2210b96ad109e3ced426a206cc76ae25fcc447d0359854ca42e",
-            "ip": "192.168.8.132"
+            "last_sha": "58f7cefa25d4d85ee5c6f4371067c0162b3096d6f6e0aa75607d537ab8a707c4",
+            "ip": "192.168.8.129"
         },
         "E8F60AE0CCBD": {
             "play_id": 41,
-            "last_sha": "11b8a7469c66607b96f15d493f032c6a159d4dc175b22c45be623001696635bb",
-            "ip": "192.168.8.182"
+            "last_sha": "500b13512915257779d902354a1e594dffe82ca9ea45dd01baf695762f19ef20",
+            "ip": "192.168.8.179"
         },
         "E8F60AE0CC93": {
             "play_id": 42,
-            "last_sha": "f3a3d6265e5225ee0964790c251c4e24f1dfdb404b9b8f3fccd636ef5c0e316e",
-            "ip": "192.168.8.140"
+            "last_sha": "9fdbf3d04774db2f8bdb1b47ed53dcf5127a46d85b005b502c98c34e1b7f2c68",
+            "ip": "192.168.8.139"
         },
         "E8F60AE0D2C1": {
             "play_id": 43,
-            "last_sha": "0dfd9d6182963b5600c567f1ef383a522c046c3e1ac48fd0b21a7ecb8020ea52",
-            "ip": "192.168.8.180"
+            "last_sha": "19aa0a16201009d7e66bafffc09b02f8d2563f40da23f2a7d8b4a5d62baa07b8",
+            "ip": "192.168.8.177"
         },
         "E8F60AE0CC32": {
             "play_id": 44,
-            "last_sha": "8457bcebf5e79c1690685420bb3bf4e5b36a4c575775f9c1fd6875293aa25b5c",
-            "ip": "192.168.8.193"
+            "last_sha": "8adbca02cb6f7acaea1cdb7d323111210e29f13dd4d8f9b48020c5723a9349ea",
+            "ip": "192.168.8.190"
         },
         "80F1B2D1F527": {
             "play_id": 47,
-            "last_sha": "",
+            "last_sha": "98a1ba5fb83af6e342a8b0774c974c26438ae30b72b81708aead011249db99b0",
             "ip": "192.168.8.156"
         },
         "80F1B2D1F52B": {
             "play_id": 50,
-            "last_sha": "",
-            "ip": "192.168.8.163"
+            "last_sha": "98a1ba5fb83af6e342a8b0774c974c26438ae30b72b81708aead011249db99b0",
+            "ip": "192.168.8.161"
         },
         "80F1B2D1F5C0": {
             "play_id": 49,
             "last_sha": "",
-            "ip": "192.168.8.161"
+            "ip": "192.168.8.159"
         },
         "E8F60AE0CC8F": {
             "play_id": 45,
-            "last_sha": "",
+            "last_sha": "d3656bdaaa8e27c25bcbcb338b80e04283eeb86c32106579d4061d9d3edd6185",
             "ip": "192.168.8.133"
         },
         "80F1B2D1F79C": {
             "play_id": 46,
             "last_sha": "",
-            "ip": "192.168.8.223"
+            "ip": "192.168.8.221"
         },
         "E8F60AE0CC73": {
             "play_id": 48,
             "last_sha": "",
             "ip": "192.168.8.105"
+        },
+        "80F1B2D1F8DB": {
+            "play_id": 46,
+            "last_sha": "",
+            "ip": "192.168.8.183"
         }
     }
 }
