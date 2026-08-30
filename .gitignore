@@ -219,5 +219,4 @@ temp/old/
 
 # NetBusMaster 執行期輔助檔案 (logs/下載/profile/切分動畫)
 tools/PC/data/
-tools/PC/slave_map.json
-tools/PC/temp_config.json
+
