@@ -33,6 +33,10 @@ class PixelController:
         # 單幀大小 (輸入源統一定義為 R,G,B,W 每像素 4 bytes)
         self.frame_size = self.num_pixels * 4 
 
+        # 全域亮度 (0-255, 255=全亮)。由 MODE_SET 的 brightness (沒輸入=255) 設定,
+        # APA102 亮度頭 (0xE0|bri>>3) 在 _convert 讀此值。
+        self.brightness = 255
+
 
 
     @micropython.native
@@ -62,20 +66,22 @@ class PixelController:
                 dst[d_idx + ro] = src[s_idx]     # R
                 dst[d_idx + go] = src[s_idx + 1] # G
                 dst[d_idx + bo] = src[s_idx + 2] # B
+                if wo >= 0:
+                    dst[d_idx + wo] = src[s_idx + 3]  # W (RGBW 燈珠: 不寫會恆 0)
                 
-        elif tid == 2: # APA102 (Frame: Header[0xE1] + BGR)
+        elif tid == 2: # APA102 (物理幀: [亮度頭, B, G, R]; R/G/B 依 config order 動態對應)
             dst = self.hw.spi_buffer
             ro = int(self._r)
             go = int(self._g)
             bo = int(self._b)
-            wo = int(self._w)
+            bri = int(self.brightness) >> 3    # 全域亮度 0-255 → 5-bit (0-31)
             for i in range(n):
                 s_idx = offset + (i << 2)
                 d_idx = 4 + (i << 2)
-                dst[d_idx + wo] = 0xEF           # 亮度頭部
-                dst[d_idx + ro] = src[s_idx]     # R
-                dst[d_idx + go] = src[s_idx + 1] # G
-                dst[d_idx + bo] = src[s_idx + 2] # B
+                dst[d_idx + 0] = 0xE0 | bri    # 亮度頭 (0xE0 + 5-bit)
+                dst[d_idx + 1] = src[s_idx + bo]  # B
+                dst[d_idx + 2] = src[s_idx + go]  # G
+                dst[d_idx + 3] = src[s_idx + ro]  # R
 
         elif tid == 3: # i2c_pixel (PCA9685)
             # 專門提取 W 通道 (src[+3]) 給 PWM 控制器
@@ -95,6 +101,10 @@ class PixelController:
         if t == 1: self.hw.write()
         elif t == 2: self.hw.show_raw() if hasattr(self.hw, 'show_raw') else self.hw.show()
         elif t == 3: self.hw.show() if hasattr(self.hw, 'show') else self.hw.sync_buffer()
+
+    def set_brightness(self, value):
+        """設定全域亮度 (0-255)。APA102 亮度頭在 _convert 讀此值, 5-bit 封頂由 >>3 做。"""
+        self.brightness = max(0, min(255, int(value)))
 
     def __len__(self):
         return self.num_pixels

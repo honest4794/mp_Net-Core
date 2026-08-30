@@ -67,7 +67,11 @@ def on_mode_set(ctx, args):
     mode_type = args.get("mode_type", 0)
     mode_id = args.get("mode_id", 0)
     start_delay_ms = args.get("start_delay_ms", 0) or 0
-    brightness = args.get("brightness", 255)
+    # 🔧 亮度: 有輸入用輸入, 沒輸入/0 預設 255 (全亮)。套用到渲染核心 (APA102 亮度頭)。
+    brightness = args.get("brightness") or 255
+    st = bus.get_service("st_pixel")
+    if st is not None and hasattr(st, "set_brightness"):
+        st.set_brightness(brightness)
     # 停用串流供給鏈 (stream_active) 與渲染旗標, 避免與本地 show 衝突
     bus.shared.update({
         "stream_active": False,

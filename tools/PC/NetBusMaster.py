@@ -4811,9 +4811,14 @@ class NetBusMaster:
                         stream = miniaudio.stream_file(file_path)
                         device.start(stream)
                         
-                        while device.is_active and self.running and self.is_playing:
+                        # 注意: miniaudio 的 PlaybackDevice 沒有 is_active 屬性,
+                        # 用 running 判斷播放中; callback_generator 被清空 (stream 耗盡)
+                        # 表示音檔已播完 (stop_callback 並非每次都觸發, 不可依賴)。
+                        while device.running and self.running and self.is_playing:
                             while self.is_paused and self.is_playing:
                                 time.sleep(0.1)
+                            if device.callback_generator is None:
+                                break
                             time.sleep(0.1)
                         
                         device.stop()
@@ -4878,16 +4883,18 @@ class NetBusMaster:
                     mixer.music.stop()
             except:
                 pass
+        elif AUDIO_MODE == 'miniaudio':
+            # 中斷 miniaudio 播放: is_playing=False 會讓 _play_task 迴圈退出
+            # (device 由 with 區塊自動 close)
+            self.audio_finished = True
 
     # ==================== Step 7: 配對模式 ====================
     def step_7_pairing(self):
-        """配對模式: 讓 slave 逐一播放本地燈效 (0x3105 MODE_SET), 並更新 PlayID。
+        """配對模式: 讓 slave 播放(本地燈效 或 串流)供肉眼識別, 並更新 PlayID。
 
-        流程 (每個設備):
-          1. 停止串流 (0x3002) 與本地模式 (0x3106)
-          2. 查詢本地燈效清單 (0x3101) → 顯示 mode id/名稱
-          3. 逐一播放每個本地燈效 (0x3105), 使用者確認後播下一個
-          4. 輸入此設備的新 PlayID → 更新 config mapping (存檔)
+        兩種識別方式:
+          1. 本地燈效 (0x3105) — 不需 data.bin, 播板上內建效果
+          2. 串流播放 (0x3009 + 0x300A) — 需該設備已部署 data.bin
         """
         self.load_config()
         self.panel.stop()
@@ -4901,8 +4908,24 @@ class NetBusMaster:
             self.panel.start()
             return
 
-        print("\n🔗 [Step 7] 配對模式 — 逐一播放本地燈效並更新 PlayID")
+        print("\n🔗 [Step 7] 配對模式 — 選擇識別方式")
         print(f"   處理設備數: {len(targets)}")
+        print("   1. 本地燈效 (0x3105) — 不需 data.bin, 播板上內建效果")
+        print("   2. 串流播放 (0x3009 + 0x300A) — 需已部署 data.bin")
+        method = input("\n👉 請選擇 (1/2) [Enter=1]: ").strip()
+
+        if method == '2':
+            self._pairing_by_stream(targets)
+        else:
+            self._pairing_by_local_mode(targets)
+
+        print("\n✅ 配對完成")
+        input("\n按 Enter 返回...")
+        self.panel.start()
+
+    def _pairing_by_local_mode(self, targets):
+        """識別方式 1: 逐一播放本地燈效 (0x3105 MODE_SET), 肉眼確認後更新 PlayID。"""
+        print("\n🔗 [Step 7] 本地燈效識別")
         print("   (slave 需支援 0x31xx pixel 指令, 且已上傳 pixel/modes 本地燈效)")
 
         try:
@@ -4950,8 +4973,6 @@ class NetBusMaster:
                         if ch == 'q':
                             self.send_pkt([cid], 0x3106, {"action": 1})
                             print("\n🛑 配對結束")
-                            input("\n按 Enter 返回...")
-                            self.panel.start()
                             return
                         if ch == 's':
                             self.send_pkt([cid], 0x3106, {"action": 1})
@@ -4982,9 +5003,67 @@ class NetBusMaster:
             for cid in targets:
                 self.send_pkt([cid], 0x3106, {"action": 1})
 
-        print("\n✅ 配對完成")
-        input("\n按 Enter 返回...")
-        self.panel.start()
+    def _pairing_by_stream(self, targets):
+        """識別方式 2: 對單一設備 0x3009+0x300A 串流播放 data.bin, 肉眼識別後更新 PlayID。
+
+        前提: 該設備 SD 卡上已有 data.bin (串流是讀本地檔, 不是即時傳像素)。
+        每次只播一台, 播完停掉再換下一台, 讓使用者能對照「哪塊板 = 哪個 ID」。
+        """
+        print("\n🔗 [Step 7] 串流播放識別 (0x3009 + 0x300A)")
+        print("   (需該設備已部署 data.bin; 串流讀本地 SD 檔, 非即時傳像素)")
+
+        # 先全部停止, 清掉殘留串流/本地模式
+        self.send_pkt(targets, 0x3002, {})
+        self.send_pkt(targets, 0x3106, {"action": 1})
+        time.sleep(0.3)
+
+        try:
+            for cid in targets:
+                node = self.slaves.get(cid)
+                if not node:
+                    print(f"\n❌ {cid}: 離線, 跳過")
+                    continue
+
+                old_pid = self.config["mapping"].get(cid, {}).get("play_id", "?")
+                print(f"\n{'='*60}\n🎯 設備: {cid}  (目前 PlayID: {old_pid})")
+                self.panel.update_device(cid, status="配對中")
+
+                # 只對這一台準備 + 播放 data.bin; 等 READY (0x3008) 再開播,
+                # 避免 0x300A 到時 slave 還在 LOADING 狀態而漏接。
+                node["ready_event"].clear()
+                self.send_pkt([cid], 0x3009, {"file_name": "data.bin", "block_id": 0, "play_mode": 0})
+                if not node["ready_event"].wait(timeout=2.0):
+                    print("   ⚠️ READY 逾時 (data.bin 可能未部署/開檔失敗), 仍嘗試開播")
+                self.send_pkt([cid], 0x300A, {"start_frame": 0})
+                print("   ▶ 串流播放中 (data.bin), 觀察燈效以識別此板...")
+
+                new_pid = input(f"\n   ✏️ 輸入 {cid} 的新 PlayID (Enter=不變, q=停止並結束): ").strip().lower()
+                if new_pid == 'q':
+                    self.send_pkt([cid], 0x3002, {})
+                    print("\n🛑 配對結束")
+                    return
+                if new_pid:
+                    try:
+                        new_pid = int(new_pid)
+                        if cid not in self.config["mapping"]:
+                            self.config["mapping"][cid] = {"play_id": 0, "last_sha": ""}
+                        self.config["mapping"][cid]["play_id"] = new_pid
+                        self.save_config()
+                        total_frames = self.pxld_metadata.get(new_pid, {}).get("total_frames", 0)
+                        self.panel.register_device(cid, new_pid, total_frames)
+                        print(f"   ✅ {cid} PlayID → {new_pid}")
+                    except ValueError:
+                        print("   ❌ 輸入無效, 保持不變")
+
+                # 停掉這台, 再換下一台
+                self.send_pkt([cid], 0x3002, {})
+        except KeyboardInterrupt:
+            print("\n🛑 配對中斷")
+        finally:
+            # 確保所有設備熄燈/停止
+            for cid in targets:
+                self.send_pkt([cid], 0x3002, {})
+                self.send_pkt([cid], 0x3106, {"action": 1})
 
     # ==================== Step 8: Profiles (每 id 一個 profile) ====================
     def step_8_profiles(self):
