@@ -147,7 +147,15 @@ def run_offline_sync_test(mode_ids=(0, 1, 2, 3)):
     modes = []
     for mode_id in mode_ids:
         runs = [_simulate_profile(profile, int(mode_id)) for profile in profiles]
-        same_history = runs[0]["history"] == runs[1]["history"]
+        uniform_within_each_slave = all(
+            len(set(values)) == 1
+            for run in runs
+            for values in run["history"]
+        )
+        same_history = (
+            [values[0] for values in runs[0]["history"]]
+            == [values[0] for values in runs[1]["history"]]
+        )
         same_frame_times = (
             [stamp for stamp, _frame in runs[0]["uart_writes"]]
             == [stamp for stamp, _frame in runs[1]["uart_writes"]]
@@ -157,7 +165,8 @@ def run_offline_sync_test(mode_ids=(0, 1, 2, 3)):
         stop_skew = abs(runs[0]["stop_at_ms"] - runs[1]["stop_at_ms"])
         final_value = runs[0]["final_values"][0]
         passed = (
-            same_history
+            uniform_within_each_slave
+            and same_history
             and same_frame_times
             and start_skew == 0
             and motion_skew == 0
@@ -203,7 +212,7 @@ def _write_report(path, result):
     ]
     write_markdown_report(
         path,
-        "Hi-Nu 兩黑 Slave／四 motor 同步測試紀錄",
+        "Hi-Nu 兩黑 Slave／七 motor 同步測試紀錄",
         "Host 以真實 JSON effect、兩份 black config 及 UART-412 encoder 重播 Mode 0–3。",
         rows,
     )

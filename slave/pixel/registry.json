@@ -17,6 +17,16 @@
           "write": "w"
         }
       ]
+    },
+    {
+      "version": 1,
+      "id": 250,
+      "name": "sync_stress_probe",
+      "index": 250,
+      "play_count": -1,
+      "play_interval": 1,
+      "mapping": "hi_nu_uart_motor_test",
+      "map": []
     }
   ],
   "list": ["motor_diagnostic"]

@@ -124,6 +124,7 @@ def on_mode_set(ctx, args):
             "mode_id": int(mode_id),
             "start_at": start_at,
             "brightness": int(brightness),
+            "start_delay_ms": start_delay_ms,
         }
         bus.shared["pixel_nc4_status"] = {
             "mode_type": int(mode_type),
@@ -132,8 +133,9 @@ def on_mode_set(ctx, args):
             "elapsed_ms": 0,
             "running": 0,
         }
-    print("[Pixel] MODE_SET type={} id={} delay={} bri={}".format(
-        mode_type, mode_id, start_delay_ms, brightness))
+    if int(mode_id) != 250:
+        print("[Pixel] MODE_SET type={} id={} delay={} bri={}".format(
+            mode_type, mode_id, start_delay_ms, brightness))
 
 
 def on_mode_stop(ctx, args):

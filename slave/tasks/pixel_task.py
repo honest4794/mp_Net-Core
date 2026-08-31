@@ -23,6 +23,10 @@ loop() = 播放端：大隊列（registry.list）依序播放，show 循環；mo
 
 import json
 import time
+try:
+    import ubinascii as binascii
+except ImportError:
+    import binascii
 from lib.sys.task import Task
 from lib.sys.sys_bus import bus
 from lib.sys.log_service import get_log
@@ -39,6 +43,43 @@ TYPE_MAP = {"APA102": "apa102", "WS2812": "ws2812", "i2c_pixel": "pca9685",
             "uartMotor1": "uartMotor1"}
 
 WRITE_WHITELIST = ("r", "g", "b", "w", "ww", "rgb", "rgbw", "wwww")
+SCHEDULE_FINE_WAIT_MS = 20
+SYNC_STRESS_LEADS_MS = (300, 100, 50, 20, 10, 5, 2, 1)
+SYNC_STRESS_SAMPLES_PER_LEAD = 100
+SYNC_STRESS_UNSET = 255
+_sync_stress_values = bytearray(
+    [SYNC_STRESS_UNSET]
+    * (len(SYNC_STRESS_LEADS_MS) * SYNC_STRESS_SAMPLES_PER_LEAD)
+)
+_sync_stress_counts = [0] * len(SYNC_STRESS_LEADS_MS)
+
+
+def _record_sync_stress_sample(lead_ms, native_tag, jitter_ms):
+    try:
+        lead_index = SYNC_STRESS_LEADS_MS.index(int(lead_ms))
+    except ValueError:
+        return
+    native_tag = int(native_tag)
+    if native_tag < 1 or native_tag > SYNC_STRESS_SAMPLES_PER_LEAD:
+        return
+    slot = lead_index * SYNC_STRESS_SAMPLES_PER_LEAD + native_tag - 1
+    if _sync_stress_values[slot] == SYNC_STRESS_UNSET:
+        _sync_stress_counts[lead_index] += 1
+    _sync_stress_values[slot] = max(0, min(SYNC_STRESS_UNSET - 1,
+                                           int(jitter_ms)))
+    if _sync_stress_counts[lead_index] != SYNC_STRESS_SAMPLES_PER_LEAD:
+        return
+
+    start = lead_index * SYNC_STRESS_SAMPLES_PER_LEAD
+    end = start + SYNC_STRESS_SAMPLES_PER_LEAD
+    encoded = binascii.hexlify(memoryview(_sync_stress_values)[start:end])
+    if not isinstance(encoded, str):
+        encoded = encoded.decode()
+    print("[SYNC-STRESS-BATCH] lead={} count=100 data={}".format(
+        lead_ms, encoded))
+    for index in range(start, end):
+        _sync_stress_values[index] = SYNC_STRESS_UNSET
+    _sync_stress_counts[lead_index] = 0
 
 
 def _list_json(d):
@@ -543,9 +584,27 @@ class PixelTask(Task):
         scheduled = bus.shared.get("pixel_remote_schedule")
         if scheduled is not None:
             now = time.ticks_ms()
+            remaining_ms = time.ticks_diff(scheduled["start_at"], now)
+            if 0 < remaining_ms <= SCHEDULE_FINE_WAIT_MS:
+                # MODE_SET 已在 decode task 完成；只在 deadline 最後 20ms
+                # 精細等待，避免兩塊獨立 MCU 的一般 task phase 造成 2–20ms skew。
+                time.sleep_ms(remaining_ms)
+                now = time.ticks_ms()
             if time.ticks_diff(now, scheduled["start_at"]) >= 0:
                 bus.shared.pop("pixel_remote_schedule", None)
-                bus.shared["pixel_remote_set"] = scheduled["mode_id"]
+                sync_probe = scheduled["mode_id"] == 250
+                if sync_probe:
+                    wire_tag = scheduled.get("brightness", 255)
+                    native_tag = (
+                        int(wire_tag) * 190 + 127
+                    ) // 254 if int(wire_tag) < 254 else 190
+                    _record_sync_stress_sample(
+                        scheduled.get("start_delay_ms", 0),
+                        native_tag,
+                        time.ticks_diff(now, scheduled["start_at"]),
+                    )
+                else:
+                    bus.shared["pixel_remote_set"] = scheduled["mode_id"]
                 status = bus.shared.get("pixel_nc4_status") or {}
                 status.update({
                     "mode_type": scheduled["mode_type"],

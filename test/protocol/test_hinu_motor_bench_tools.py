@@ -54,6 +54,7 @@ class FakeTime:
     @classmethod
     def sleep_ms(cls, value):
         cls.sleep_calls.append(value)
+        cls.now_ms += value
 
 
 class NonBlockingModeScheduleTests(unittest.TestCase):
@@ -95,6 +96,7 @@ class NonBlockingModeScheduleTests(unittest.TestCase):
                 "mode_id": 2,
                 "start_at": 1300,
                 "brightness": 255,
+                "start_delay_ms": 300,
             },
             bus.shared["pixel_remote_schedule"],
         )
@@ -109,6 +111,7 @@ class NonBlockingModeScheduleTests(unittest.TestCase):
                 "mode_id": 2,
                 "start_at": 1300,
                 "brightness": 255,
+                "start_delay_ms": 300,
             },
             "pixel_nc4_status": {
                 "mode_type": 1,
@@ -122,7 +125,7 @@ class NonBlockingModeScheduleTests(unittest.TestCase):
         task = pixel_task_module.PixelTask("pixel", {})
         task._modes = {2: mode}
 
-        FakeTime.now_ms = 1299
+        FakeTime.now_ms = 1279
         task._consume_cmds()
         self.assertFalse(task._playing)
         self.assertIn("pixel_remote_schedule", bus.shared)
@@ -134,6 +137,81 @@ class NonBlockingModeScheduleTests(unittest.TestCase):
         self.assertNotIn("pixel_remote_schedule", bus.shared)
         self.assertEqual(1, bus.shared["pixel_nc4_status"]["running"])
         self.assertEqual(1300, bus.shared["pixel_nc4_status"]["started_at"])
+
+    def test_pixel_task_waits_the_final_twenty_ms_to_hit_deadline_exactly(self):
+        """Polling past a near deadline would preserve the observed 2–20ms skew."""
+        bus.shared = {
+            "pixel_remote_schedule": {
+                "mode_type": 1,
+                "mode_id": 2,
+                "start_at": 1300,
+                "brightness": 255,
+                "start_delay_ms": 300,
+            },
+            "pixel_nc4_status": {"running": 0},
+        }
+        task = pixel_task_module.PixelTask("pixel", {})
+        task._modes = {2: {"id": 2}}
+
+        FakeTime.now_ms = 1280
+        task._consume_cmds()
+
+        self.assertEqual(1300, FakeTime.now_ms)
+        self.assertEqual([20], FakeTime.sleep_calls)
+        self.assertTrue(task._playing)
+        self.assertEqual(1300, bus.shared["pixel_nc4_status"]["actual_started_at"])
+
+    def test_sync_probe_records_without_driving_a_motor_or_logging_each_sample(self):
+        """Per-sample USB output can block core0 and create the jitter being measured."""
+        messages = []
+        old_print = getattr(pixel_task_module, "print", None)
+        pixel_task_module.print = messages.append
+        bus.shared = {
+            "pixel_remote_schedule": {
+                "mode_type": 1,
+                "mode_id": 250,
+                "start_at": 1300,
+                "brightness": 37,
+                "start_delay_ms": 20,
+            },
+            "pixel_nc4_status": {"running": 0},
+        }
+        task = pixel_task_module.PixelTask("pixel", {})
+        task._modes = {250: {"id": 250}}
+
+        FakeTime.now_ms = 1301
+        try:
+            task._consume_cmds()
+        finally:
+            if old_print is None:
+                del pixel_task_module.print
+            else:
+                pixel_task_module.print = old_print
+
+        self.assertEqual([], messages)
+        self.assertFalse(task._playing)
+        self.assertNotIn("pixel_remote_set", bus.shared)
+
+    def test_sync_probe_emits_one_compact_batch_after_all_one_hundred_tags(self):
+        """A missing tag or per-sample flush must prevent a valid compact batch."""
+        messages = []
+        old_print = getattr(pixel_task_module, "print", None)
+        pixel_task_module.print = messages.append
+        try:
+            for native_tag in range(1, 101):
+                pixel_task_module._record_sync_stress_sample(
+                    lead_ms=20, native_tag=native_tag, jitter_ms=1)
+        finally:
+            if old_print is None:
+                del pixel_task_module.print
+            else:
+                pixel_task_module.print = old_print
+
+        self.assertEqual(1, len(messages))
+        self.assertEqual(
+            "[SYNC-STRESS-BATCH] lead=20 count=100 data=" + "01" * 100,
+            messages[0],
+        )
 
     def test_new_immediate_mode_cancels_an_older_scheduled_mode(self):
         """A stale deadline must not resurrect after a Master retry/mode change."""
@@ -328,6 +406,39 @@ class CommandProgramTests(unittest.TestCase):
             module._pack(0x3105, expected_payload),
         )
 
+    def test_black_master_reboot_command_uses_nc4_u32_delay_payload(self):
+        """A malformed recovery command cannot release a Slave with blocked USB."""
+        class FakePin:
+            OUT = 1
+
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+        fake_machine = types.ModuleType("machine")
+        fake_machine.Pin = FakePin
+        fake_machine.UART = object
+        old_machine = sys.modules.get("machine")
+        sys.modules["machine"] = fake_machine
+        try:
+            path = os.path.join(ROOT, "tools", "ESP", "hinu_motor_master.py")
+            spec = importlib.util.spec_from_file_location("hinu_motor_master_reboot", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        finally:
+            if old_machine is None:
+                sys.modules.pop("machine", None)
+            else:
+                sys.modules["machine"] = old_machine
+
+        frames = []
+        module.Link = lambda: types.SimpleNamespace(
+            send=lambda frame: frames.append(bytes(frame)) or len(frame))
+        module.reboot_slaves(250)
+        _payload, expected = hinu_motor_command_test.encode_nc4(
+            0x100F, {"delay_ms": 250})
+
+        self.assertEqual([expected], frames)
+
     def test_offline_master_command_reaches_both_real_slave_profiles(self):
         """A wrong CID, address list, mode payload, or deadline must fail."""
         result = hinu_motor_command_test.run_offline_mode(
@@ -339,8 +450,8 @@ class CommandProgramTests(unittest.TestCase):
         self.assertEqual("01002c01ff", result["payload_hex"])
         self.assertEqual(
             [
-                {"cid": "0001", "motor_addresses": [15, 19], "start_at_ms": 1300},
-                {"cid": "0002", "motor_addresses": [12, 21], "start_at_ms": 1300},
+                {"cid": "0001", "motor_addresses": [13, 15, 19], "start_at_ms": 1300},
+                {"cid": "0002", "motor_addresses": [10, 12, 17, 21], "start_at_ms": 1300},
             ],
             result["slaves"],
         )
@@ -356,12 +467,12 @@ class CommandProgramTests(unittest.TestCase):
 
 
 class SynchronizationProgramTests(unittest.TestCase):
-    def test_modes_zero_one_two_have_zero_offline_skew_for_all_four_motors(self):
+    def test_modes_zero_one_two_have_zero_offline_skew_for_all_seven_motors(self):
         """Different profile timing or one omitted address must fail the bench."""
         result = hinu_motor_sync_test.run_offline_sync_test((0, 1, 2))
 
         self.assertEqual("PASS", result["result"])
-        self.assertEqual([15, 19, 12, 21], result["motor_addresses"])
+        self.assertEqual([13, 15, 19, 10, 12, 17, 21], result["motor_addresses"])
         for mode in result["modes"]:
             self.assertEqual(0, mode["scheduled_start_skew_ms"])
             self.assertEqual(0, mode["first_motion_skew_ms"])
@@ -376,7 +487,7 @@ class SynchronizationProgramTests(unittest.TestCase):
         self.assertEqual(10000, by_id[1]["stop_at_ms"])
         self.assertEqual(180000, by_id[2]["stop_at_ms"])
 
-    def test_story_mode_motor_uses_one_deadline_and_stops_all_four_motors(self):
+    def test_story_mode_motor_uses_one_deadline_and_stops_all_seven_motors(self):
         """Staggering either black Slave or omitting the final dead-zone STOP is unsafe."""
         try:
             result = hinu_motor_sync_test.run_offline_sync_test((3,))
@@ -384,7 +495,7 @@ class SynchronizationProgramTests(unittest.TestCase):
             self.fail("storyMode_motor mode 3 is not registered")
 
         self.assertEqual("PASS", result["result"])
-        self.assertEqual([15, 19, 12, 21], result["motor_addresses"])
+        self.assertEqual([13, 15, 19, 10, 12, 17, 21], result["motor_addresses"])
         story = result["modes"][0]
         self.assertEqual(3, story["mode_id"])
         self.assertEqual(0, story["scheduled_start_skew_ms"])

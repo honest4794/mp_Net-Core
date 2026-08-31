@@ -69,6 +69,7 @@ class App:
             # Project Slave 用此時間在 10 秒失聯後進入本機 Dev Mode。
             note_master_seen()
             packet_found = True
+            ctx["frame_addr"] = addr
             disp.dispatch(cmd, payload, ctx)
         if packet_found:
             # 收到有效通訊 → 刷新提速的 COMMITTED 層 idle 倒數（通訊空閒超時重置）

@@ -35,12 +35,12 @@ DEPLOY_EFFECTS_PATH = os.path.join(
 SLAVE_PROFILES = {
     1: (
         os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hiNew", "config.json"),
-        [15, 19],
+        [13, 15, 19],
         "0001",
     ),
     2: (
         os.path.join(ROOT, "ports", "S3", "ESP32-S3-1_18", "config.json"),
-        [12, 21],
+        [10, 12, 17, 21],
         "0002",
     ),
 }

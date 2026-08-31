@@ -3,7 +3,7 @@ import machine, time
 import gc
 import os
 import json
-from lib.sys.proto import Proto
+from lib.sys.proto import ADDR_BROADCAST, Proto
 from lib.sys.schema_codec import SchemaCodec
 from lib.sys.sys_bus import bus
 from lib.sys.ConfigManager import cfg_manager
@@ -190,13 +190,17 @@ def on_time_sync(ctx, args):
     TIME_SYNC_RSP {received_at_ms: 本地 ticks_ms()}; PC 用自己發送前後
     的時間差計算 RTT (單向延遲 ≈ RTT/2), 供中途加入時推算最準確的幀號。
     """
+    # Broadcast 是 clock discipline，不是 RTT query。多點 RS485 上若每個
+    # Slave 同時回覆，同一時槽會碰撞並令後續 MODE_SET 堆積。
+    if ctx.get("frame_addr", ADDR_BROADCAST) == ADDR_BROADCAST:
+        return
     app = ctx["app"]
     try:
         received_at = time.ticks_ms()
         cmd_def = app.store.get(0x100B)
         payload = SchemaCodec.encode(cmd_def, {"received_at_ms": received_at})
         if "send" in ctx:
-            ctx["send"](Proto.pack(0x100B, payload))
+            ctx["send"](Proto.pack(0x100B, payload, addr=bus.cid))
     except Exception as e:
         print(f"❌ [TimeSync] Error: {e}")
 

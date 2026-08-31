@@ -16,6 +16,7 @@ VERSION = 4
 BROADCAST = 0xFFFF
 MODE_SET = 0x3105
 MODE_STOP = 0x3106
+REBOOT = 0x100F
 
 
 def _pack(command, payload=b"", address=BROADCAST):
@@ -73,4 +74,11 @@ def send_mode(mode_id, start_delay_ms=300):
 def stop():
     written = Link().send(_pack(MODE_STOP, b"\x01"))
     print("MODE_STOP action=1 bytes={}".format(written))
+    return written
+
+
+def reboot_slaves(delay_ms=100):
+    delay_ms = max(0, min(0xFFFFFFFF, int(delay_ms)))
+    written = Link().send(_pack(REBOOT, struct.pack("<I", delay_ms)))
+    print("REBOOT delay={} bytes={}".format(delay_ms, written))
     return written
