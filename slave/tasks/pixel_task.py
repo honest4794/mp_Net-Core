@@ -122,6 +122,7 @@ class PixelTask(Task):
         self._project_seen_seq = 0
         self._project_policy = None
         self._project_fallback_pending = False
+        self._project_continuous_loop = False
 
     # ── 啟動：依序初始化 ──────────────────────────
     def on_start(self):
@@ -367,6 +368,10 @@ class PixelTask(Task):
         self._project_enabled = bool(int(cfg.get("enable", 0) or 0))
         if not self._project_enabled:
             return
+        self._project_continuous_loop = bool(
+            int(cfg.get("continuous_loop", 0) or 0))
+        bus.shared["project_continuous_loop"] = self._project_continuous_loop
+        bus.shared["project_continuous_suspended"] = False
         timeout_ms = max(1, int(cfg.get("master_timeout_ms", 10000) or 10000))
         self._project_mode_type = int(cfg.get("dev_mode_type", 1) or 1)
         raw_ids = cfg.get("dev_mode_ids")
@@ -394,8 +399,10 @@ class PixelTask(Task):
         bus.shared["project_fallback_active"] = False
         if self._project_mode_ids:
             get_log().info(
-                "[Project] armed: Master timeout={}ms → Dev loop {}".format(
-                    timeout_ms, self._project_mode_ids))
+                "[Project] armed: {} loop {}".format(
+                    "continuous" if self._project_continuous_loop
+                    else "Master timeout={}ms → Dev".format(timeout_ms),
+                    self._project_mode_ids))
         else:
             get_log().info(
                 "[Project] armed: Master timeout={}ms → Dev mode {}".format(
@@ -407,6 +414,24 @@ class PixelTask(Task):
             return
         if now is None:
             now = time.ticks_ms()
+
+        if self._project_continuous_loop:
+            # Demo sidecar 永遠保留 0→1→2 時鐘。MODE_GET 等狀態查詢不可令
+            # 它退出；MODE_SET 只在 _consume_cmds() 以共同 started_at 重新對錶。
+            self._project_seen_seq = int(
+                bus.shared.get("master_seen_seq", 0) or 0)
+            if bus.shared.get("project_continuous_suspended"):
+                return
+            if (bus.shared.get("pixel_remote_set") is not None
+                    or bus.shared.get("pixel_remote_schedule") is not None):
+                return
+            if self._project_loop_deadline is None:
+                self._enter_project_loop(int(now), continuous=True)
+                return
+            if self._project_policy._ticks_diff(
+                    int(now), self._project_loop_deadline) >= 0:
+                self._advance_project_loop(int(now))
+            return
 
         seen_seq = int(bus.shared.get("master_seen_seq", 0) or 0)
         if seen_seq != self._project_seen_seq:
@@ -446,32 +471,7 @@ class PixelTask(Task):
             if (self._project_loop_deadline is not None
                     and self._project_policy._ticks_diff(
                         int(now), self._project_loop_deadline) >= 0):
-                self._stop()
-                self._project_loop_index = (
-                    self._project_loop_index + 1) % len(self._project_mode_ids)
-                mode_id = self._project_mode_ids[self._project_loop_index]
-                self._show_list = [self._modes[mode_id]]
-                self._start()
-                duration = self._project_mode_durations_ms[
-                    self._project_loop_index]
-                try:
-                    self._project_loop_deadline = time.ticks_add(
-                        int(now), duration)
-                except AttributeError:
-                    self._project_loop_deadline = int(now) + duration
-                status = bus.shared.get("pixel_nc4_status") or {}
-                status.update({
-                    "mode_type": self._project_mode_type,
-                    "mode_id": mode_id,
-                    "started_at": int(now),
-                    "actual_started_at": int(now),
-                    "elapsed_ms": 0,
-                    "running": 1,
-                })
-                bus.shared["pixel_nc4_status"] = status
-                get_log().warn(
-                    "[Project] Dev loop → mode {} for {}ms".format(
-                        mode_id, duration))
+                self._advance_project_loop(int(now))
             return
 
         if self._project_policy.poll(now) != "enter":
@@ -483,29 +483,7 @@ class PixelTask(Task):
                 get_log().error(
                     "[Project] Dev loop mode(s) not found: {}".format(missing))
                 return
-            bus.shared.pop("pixel_remote_stop", None)
-            bus.shared.pop("pixel_remote_schedule", None)
-            bus.shared.pop("pixel_remote_set", None)
-            self._project_saved_show_list = self._show_list
-            self._project_loop_index = 0
-            mode_id = self._project_mode_ids[0]
-            duration = self._project_mode_durations_ms[0]
-            self._show_list = [self._modes[mode_id]]
-            self._start()
-            try:
-                self._project_loop_deadline = time.ticks_add(
-                    int(now), duration)
-            except AttributeError:
-                self._project_loop_deadline = int(now) + duration
-            bus.shared["pixel_nc4_status"] = {
-                "mode_type": self._project_mode_type,
-                "mode_id": mode_id,
-                "started_at": int(now),
-                "actual_started_at": int(now),
-                "elapsed_ms": 0,
-                "running": 1,
-            }
-            bus.shared["project_fallback_active"] = True
+            self._enter_project_loop(int(now), continuous=False)
             get_log().warn(
                 "[Project] Master absent for {}ms; entering Dev loop {}".format(
                     self._project_policy.timeout_ms, self._project_mode_ids))
@@ -524,12 +502,88 @@ class PixelTask(Task):
             "actual_started_at": int(now),
             "elapsed_ms": 0,
             "running": 1,
+            "source": "project_loop",
         }
         self._project_fallback_pending = True
         bus.shared["project_fallback_active"] = True
         get_log().warn(
             "[Project] Master absent for {}ms; entering Dev mode {}".format(
                 self._project_policy.timeout_ms, self._project_mode_id))
+
+    @staticmethod
+    def _project_ticks_add(value, delta):
+        try:
+            return time.ticks_add(int(value), int(delta))
+        except AttributeError:
+            return int(value) + int(delta)
+
+    def _enter_project_loop(self, started_at, continuous):
+        missing = [mode_id for mode_id in self._project_mode_ids
+                   if mode_id not in self._modes]
+        if missing:
+            get_log().error(
+                "[Project] Dev loop mode(s) not found: {}".format(missing))
+            return
+        bus.shared.pop("pixel_remote_stop", None)
+        if self._project_saved_show_list is None:
+            self._project_saved_show_list = self._show_list
+        self._project_loop_index = 0
+        mode_id = self._project_mode_ids[0]
+        duration = self._project_mode_durations_ms[0]
+        self._show_list = [self._modes[mode_id]]
+        self._start()
+        self._project_loop_deadline = self._project_ticks_add(
+            started_at, duration)
+        bus.shared["pixel_nc4_status"] = {
+            "mode_type": self._project_mode_type,
+            "mode_id": mode_id,
+            "started_at": started_at,
+            "actual_started_at": started_at,
+            "elapsed_ms": 0,
+            "running": 1,
+            "source": "project_loop",
+        }
+        bus.shared["project_fallback_active"] = not continuous
+        bus.shared["project_loop_active"] = True
+        if continuous:
+            get_log().warn(
+                "[Project] continuous loop started at mode {}".format(mode_id))
+
+    def _advance_project_loop(self, now):
+        # deadline 由上一個共同 deadline 累加，不用各板實際 loop 時刻；因此
+        # +1/+2ms scheduler jitter 不會累積成下一輪相位差。
+        previous_deadline = self._project_loop_deadline
+        self._stop()
+        self._project_loop_index = (
+            self._project_loop_index + 1) % len(self._project_mode_ids)
+        mode_id = self._project_mode_ids[self._project_loop_index]
+        self._show_list = [self._modes[mode_id]]
+        self._start()
+        duration = self._project_mode_durations_ms[self._project_loop_index]
+        self._project_loop_deadline = self._project_ticks_add(
+            previous_deadline, duration)
+        status = bus.shared.get("pixel_nc4_status") or {}
+        status.update({
+            "mode_type": self._project_mode_type,
+            "mode_id": mode_id,
+            "started_at": previous_deadline,
+            "actual_started_at": now,
+            "elapsed_ms": 0,
+            "running": 1,
+        })
+        bus.shared["pixel_nc4_status"] = status
+        get_log().warn(
+            "[Project] Dev loop → mode {} for {}ms".format(mode_id, duration))
+
+    def _rebase_project_loop(self, mode_id, started_at):
+        if (not self._project_continuous_loop
+                or mode_id not in self._project_mode_ids):
+            return
+        self._project_loop_index = self._project_mode_ids.index(mode_id)
+        duration = self._project_mode_durations_ms[self._project_loop_index]
+        self._project_loop_deadline = self._project_ticks_add(
+            started_at, duration)
+        bus.shared["project_loop_active"] = True
 
     def _find_mode(self, ref):
         if isinstance(ref, int):
@@ -639,6 +693,15 @@ class PixelTask(Task):
                     self._orig_show_list = self._show_list
                 self._show_list = [mode]
                 self._start()
+                status = bus.shared.get("pixel_nc4_status") or {}
+                started_at = status.get("started_at")
+                if started_at is None:
+                    try:
+                        started_at = time.ticks_ms()
+                    except AttributeError:
+                        started_at = int(time.monotonic() * 1000)
+                self._rebase_project_loop(
+                    int(rid), int(started_at))
                 get_log().info("[Pixel] ▶ remote play mode {}".format(rid))
             else:
                 get_log().warn("[Pixel] remote mode {} 不存在".format(rid))
@@ -766,8 +829,14 @@ class PixelTask(Task):
     def loop(self):
         if not self.running:
             return
-        self._service_project_mode()
-        self._consume_cmds()
+        if self._project_continuous_loop:
+            # 先消費 STOP/SET，再由常駐時鐘補上漏收的下一個 SET；避免同一
+            # tick 先啟動下一 mode、再被較早收到的 transition STOP 停掉。
+            self._consume_cmds()
+            self._service_project_mode()
+        else:
+            self._service_project_mode()
+            self._consume_cmds()
         if not self._playing or self._paused or self._st is None or self._hub is None:
             return
         # 計算核：全力算幀。hub 滿（播放核來不及消化）→ get_write_view 回 None，

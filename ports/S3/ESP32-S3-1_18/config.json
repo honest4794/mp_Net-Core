@@ -74,7 +74,8 @@
     "master_timeout_ms": 10000,
     "dev_mode_type": 1,
     "dev_mode_ids": [0, 1, 2],
-    "dev_mode_durations_ms": [10000, 10000, 180000]
+    "dev_mode_durations_ms": [10000, 10000, 180000],
+    "continuous_loop": 1
   },
   "SPI": {
     "enable": 0,

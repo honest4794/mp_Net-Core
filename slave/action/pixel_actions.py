@@ -95,6 +95,8 @@ def on_mode_set(ctx, args):
     brightness = args.get("brightness", 255)
     received_at = _ticks_ms()
     start_at = _ticks_add(received_at, start_delay_ms)
+    if bus.shared.get("project_continuous_loop"):
+        bus.shared["project_continuous_suspended"] = False
 
     # Hi-Nu Master 會在 MODE_GET 尚未收斂時重送同一 MODE_SET。Motor mode
     # 必須採 idempotent start：第一個共同 deadline 是唯一啟動點；後來的
@@ -112,7 +114,11 @@ def on_mode_set(ctx, args):
             and int(status.get("mode_type", -1)) == int(mode_type)
             and int(status.get("mode_id", -1)) == int(mode_id)
         )
-        if same_scheduled or same_running:
+        continuous_local_mode = (
+            bool(bus.shared.get("project_continuous_loop"))
+            and status.get("source") == "project_loop"
+        )
+        if same_scheduled or (same_running and not continuous_local_mode):
             print("[Pixel] MODE_SET duplicate type={} id={} ignored".format(
                 mode_type, mode_id))
             return
@@ -139,6 +145,7 @@ def on_mode_set(ctx, args):
             "actual_started_at": received_at,
             "elapsed_ms": 0,
             "running": 1,
+            "source": "remote",
         }
     else:
         bus.shared["pixel_remote_schedule"] = {
@@ -154,6 +161,7 @@ def on_mode_set(ctx, args):
             "scheduled_at": start_at,
             "elapsed_ms": 0,
             "running": 0,
+            "source": "remote",
         }
     if int(mode_id) != 250:
         print("[Pixel] MODE_SET type={} id={} delay={} bri={}".format(
@@ -162,6 +170,11 @@ def on_mode_set(ctx, args):
 
 def on_mode_stop(ctx, args):
     """0x3106: 停止本地模式 (熄燈)。"""
+    action = int(args.get("action", 0) or 0)
+    if bus.shared.get("project_continuous_loop") and action == 1:
+        # action=1 是 Power Off；專用 demo loop 也必須安全停止，
+        # 直到下一個明確 MODE_SET 才重新 arm。action=0 只是 mode 過場。
+        bus.shared["project_continuous_suspended"] = True
     bus.shared.update({
         "stream_active": False,
         "is_streaming": False,

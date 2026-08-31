@@ -7,6 +7,19 @@
 
 ---
 
+## 2026-08-31 continuous demo loop 修正
+
+Black Slave 1／2 的 `ProjectMode.continuous_loop=1` 令 motor demo 常駐循環
+Mode 0 → Mode 1 → Mode 2。一般 `MODE_GET`／status traffic 不再退出本機 loop；
+收到 `MODE_SET` 時，以共同 `started_at` 重設 mode index 與下一個 deadline。
+下一 deadline 由上一 deadline 累加，不用各板實際 wake time，因此 scheduler jitter
+不會逐輪累積。`MODE_STOP action=0` 只保留反向所需安全 dead-zone 過場；
+`action=1` 仍會 suspend loop，直至下一個明確 `MODE_SET`。
+
+若目前同 mode 是由本機 loop 啟動，Master 的同 mode 排程仍會接納，以完成第一次
+對錶；若已由 remote deadline 啟動，後續 repair 仍按 idempotent 規則忽略，避免
+重啟 sine/profile。
+
 ## 〇、一分鐘理解
 
 本輪不用兩個 Git worktree。兩個測試共用同一份 NC4 schema、black Slave config、JSON effect 與 UART-412 encoder；拆成兩個可獨立執行的程式，避免兩套 firmware/config 漂移。

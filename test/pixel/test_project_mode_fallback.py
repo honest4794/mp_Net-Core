@@ -108,6 +108,12 @@ class ProjectModeIntegrationTests(unittest.TestCase):
         task._st = FakeStreamer()
         return task
 
+    def _continuous_loop_task(self):
+        task = self._loop_task()
+        task._project_continuous_loop = True
+        bus.shared["project_continuous_loop"] = True
+        return task
+
     def test_valid_master_packet_records_liveness(self):
         note_master_seen(1234)
         self.assertEqual(1234, bus.shared["master_last_seen_ms"])
@@ -176,6 +182,48 @@ class ProjectModeIntegrationTests(unittest.TestCase):
         self.assertEqual(3, bus.shared["pixel_remote_set"])
         self.assertFalse(bus.shared["project_fallback_active"])
 
+    def test_continuous_demo_starts_immediately_and_status_poll_cannot_stop_it(self):
+        task = self._continuous_loop_task()
+
+        note_master_seen(1)
+        task._service_project_mode(1)
+
+        self.assertEqual([0], [mode["id"] for mode in task._show_list])
+        self.assertTrue(task._playing)
+        self.assertEqual(10001, task._project_loop_deadline)
+
+        note_master_seen(5000)
+        task._service_project_mode(5000)
+        self.assertEqual([0], [mode["id"] for mode in task._show_list])
+        self.assertTrue(task._playing)
+
+        task._service_project_mode(10001)
+        self.assertEqual([1], [mode["id"] for mode in task._show_list])
+        self.assertEqual(20001, task._project_loop_deadline)
+
+        # Slave scheduler wake-up jitter must not become phase drift.
+        task._service_project_mode(20004)
+        self.assertEqual([2], [mode["id"] for mode in task._show_list])
+        self.assertEqual(200001, task._project_loop_deadline)
+
+    def test_remote_mode_rebases_continuous_loop_to_common_start_deadline(self):
+        task = self._continuous_loop_task()
+        task._service_project_mode(1)
+        bus.shared["pixel_remote_set"] = 1
+        bus.shared["pixel_nc4_status"] = {
+            "mode_type": 1,
+            "mode_id": 1,
+            "started_at": 1300,
+            "actual_started_at": 1300,
+            "running": 1,
+        }
+
+        task._consume_cmds()
+
+        self.assertEqual(1, task._project_loop_index)
+        self.assertEqual(11300, task._project_loop_deadline)
+        self.assertEqual([1], [mode["id"] for mode in task._show_list])
+
     def test_black_profiles_enable_standalone_test_loop(self):
         expected = {
             "enable": 1,
@@ -183,6 +231,7 @@ class ProjectModeIntegrationTests(unittest.TestCase):
             "dev_mode_type": 1,
             "dev_mode_ids": [0, 1, 2],
             "dev_mode_durations_ms": [10000, 10000, 180000],
+            "continuous_loop": 1,
         }
         for path in BLACK_PROFILES:
             with open(path, encoding="utf-8") as handle:

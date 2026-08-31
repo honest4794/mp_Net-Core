@@ -281,6 +281,46 @@ class NonBlockingModeScheduleTests(unittest.TestCase):
         self.assertNotIn("pixel_remote_set", bus.shared)
         self.assertEqual(1300, bus.shared["pixel_nc4_status"]["started_at"])
 
+    def test_same_mode_master_schedule_rebases_a_locally_started_demo(self):
+        bus.shared["project_continuous_loop"] = True
+        bus.shared["pixel_nc4_status"] = {
+            "mode_type": 1,
+            "mode_id": 0,
+            "started_at": 200,
+            "actual_started_at": 200,
+            "running": 1,
+            "source": "project_loop",
+        }
+
+        pixel_actions.on_mode_set({}, {
+            "mode_type": 1,
+            "mode_id": 0,
+            "start_delay_ms": 300,
+            "brightness": 255,
+        })
+
+        self.assertEqual(1300, bus.shared["pixel_remote_schedule"]["start_at"])
+
+    def test_same_mode_repair_still_keeps_an_existing_remote_start(self):
+        bus.shared["project_continuous_loop"] = True
+        bus.shared["pixel_nc4_status"] = {
+            "mode_type": 1,
+            "mode_id": 0,
+            "started_at": 900,
+            "actual_started_at": 900,
+            "running": 1,
+            "source": "remote",
+        }
+
+        pixel_actions.on_mode_set({}, {
+            "mode_type": 1,
+            "mode_id": 0,
+            "start_delay_ms": 300,
+            "brightness": 255,
+        })
+
+        self.assertNotIn("pixel_remote_schedule", bus.shared)
+
     def test_stop_cancels_both_pending_and_immediate_mode_commands(self):
         """MODE_STOP must not let an unconsumed motor start run first."""
         pixel_actions.on_mode_set({}, {
@@ -294,6 +334,29 @@ class NonBlockingModeScheduleTests(unittest.TestCase):
         self.assertNotIn("pixel_remote_set", bus.shared)
         self.assertNotIn("pixel_remote_schedule", bus.shared)
         self.assertEqual(1, bus.shared["pixel_remote_stop"])
+
+    def test_transition_stop_keeps_continuous_loop_armed(self):
+        bus.shared["project_continuous_loop"] = True
+
+        pixel_actions.on_mode_stop({}, {"action": 0})
+
+        self.assertEqual(1, bus.shared["pixel_remote_stop"])
+        self.assertNotIn("project_continuous_suspended", bus.shared)
+
+    def test_power_off_suspends_continuous_loop_until_next_mode_set(self):
+        bus.shared["project_continuous_loop"] = True
+
+        pixel_actions.on_mode_stop({}, {"action": 1})
+
+        self.assertTrue(bus.shared["project_continuous_suspended"])
+
+        pixel_actions.on_mode_set({}, {
+            "mode_type": 1,
+            "mode_id": 0,
+            "start_delay_ms": 300,
+            "brightness": 255,
+        })
+        self.assertFalse(bus.shared["project_continuous_suspended"])
 
 
 class CommandProgramTests(unittest.TestCase):
