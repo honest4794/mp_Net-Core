@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Project Slave fallback：Master 失聯 10 秒後本機播放 Dev motor mode。"""
+"""Project Slave fallback：Master 失聯後播放單一 Dev mode 或 motor test loop。"""
 
 import json
 import os
@@ -28,6 +28,26 @@ from tasks.pixel_task import PixelTask
 
 PROFILE = os.path.join(
     ROOT, "ports", "S3", "ESP32-S3_1_18_project_slave7", "config.json")
+BLACK_PROFILES = (
+    os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hiNew", "config.json"),
+    os.path.join(ROOT, "ports", "S3", "ESP32-S3-1_18", "config.json"),
+)
+
+
+class FakeHub:
+    def __init__(self):
+        self.flush_count = 0
+
+    def flush(self):
+        self.flush_count += 1
+
+
+class FakeStreamer:
+    def __init__(self):
+        self.clear_count = 0
+
+    def clear_all(self):
+        self.clear_count += 1
 
 
 class ProjectModePolicyTests(unittest.TestCase):
@@ -78,6 +98,16 @@ class ProjectModeIntegrationTests(unittest.TestCase):
         task._modes = {2: {"id": 2}}
         return task
 
+    def _loop_task(self):
+        task = self._task()
+        task._project_mode_ids = [0, 1, 2]
+        task._project_mode_durations_ms = [10000, 10000, 180000]
+        task._modes = {mode_id: {"id": mode_id} for mode_id in (0, 1, 2)}
+        task._show_list = [{"id": 99}]
+        task._hub = FakeHub()
+        task._st = FakeStreamer()
+        return task
+
     def test_valid_master_packet_records_liveness(self):
         note_master_seen(1234)
         self.assertEqual(1234, bus.shared["master_last_seen_ms"])
@@ -111,6 +141,53 @@ class ProjectModeIntegrationTests(unittest.TestCase):
         task._service_project_mode(22000)
         self.assertEqual(3, bus.shared["pixel_remote_set"])
         self.assertNotIn("pixel_remote_stop", bus.shared)
+
+    def test_timeout_starts_configured_local_mode_loop(self):
+        task = self._loop_task()
+
+        task._service_project_mode(10000)
+
+        self.assertEqual([0], [mode["id"] for mode in task._show_list])
+        self.assertTrue(task._playing)
+        self.assertTrue(bus.shared["project_fallback_active"])
+        self.assertNotIn("pixel_remote_set", bus.shared)
+
+        task._service_project_mode(19999)
+        self.assertEqual([0], [mode["id"] for mode in task._show_list])
+        task._service_project_mode(20000)
+        self.assertEqual([1], [mode["id"] for mode in task._show_list])
+        task._service_project_mode(30000)
+        self.assertEqual([2], [mode["id"] for mode in task._show_list])
+        task._service_project_mode(210000)
+        self.assertEqual([0], [mode["id"] for mode in task._show_list])
+        self.assertEqual(3, task._st.clear_count)
+
+    def test_master_return_stops_local_loop_and_preserves_master_command(self):
+        task = self._loop_task()
+        task._service_project_mode(10000)
+        bus.shared["pixel_remote_set"] = 3
+
+        note_master_seen(11000)
+        task._service_project_mode(11000)
+
+        self.assertEqual([99], [mode["id"] for mode in task._show_list])
+        self.assertFalse(task._playing)
+        self.assertEqual(1, task._st.clear_count)
+        self.assertEqual(3, bus.shared["pixel_remote_set"])
+        self.assertFalse(bus.shared["project_fallback_active"])
+
+    def test_black_profiles_enable_standalone_test_loop(self):
+        expected = {
+            "enable": 1,
+            "master_timeout_ms": 10000,
+            "dev_mode_type": 1,
+            "dev_mode_ids": [0, 1, 2],
+            "dev_mode_durations_ms": [10000, 10000, 180000],
+        }
+        for path in BLACK_PROFILES:
+            with open(path, encoding="utf-8") as handle:
+                profile = json.load(handle)
+            self.assertEqual(expected, profile["ProjectMode"])
 
     def test_slave7_profile_uses_black_gpio12_and_hinu_addresses(self):
         with open(PROFILE, encoding="utf-8") as handle:
