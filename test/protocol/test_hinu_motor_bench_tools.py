@@ -360,6 +360,58 @@ class NonBlockingModeScheduleTests(unittest.TestCase):
 
 
 class CommandProgramTests(unittest.TestCase):
+    def test_black_project_master_loops_zero_one_two_with_transition_stop(self):
+        class FakePin:
+            OUT = 1
+
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+        class FakeUART:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+        fake_machine = types.ModuleType("machine")
+        fake_machine.Pin = FakePin
+        fake_machine.UART = FakeUART
+        old_machine = sys.modules.get("machine")
+        sys.modules["machine"] = fake_machine
+        try:
+            path = os.path.join(ROOT, "tools", "ESP", "hinu_motor_master.py")
+            spec = importlib.util.spec_from_file_location(
+                "hinu_motor_project_sequence", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        finally:
+            if old_machine is None:
+                sys.modules.pop("machine", None)
+            else:
+                sys.modules["machine"] = old_machine
+
+        frames = []
+        sleeps = []
+        link = types.SimpleNamespace(
+            send=lambda frame: frames.append(bytes(frame)) or len(frame))
+        module.run_project_mode(
+            cycles=1,
+            link=link,
+            sleep_ms=sleeps.append,
+        )
+
+        decoded = [
+            (int.from_bytes(frame[5:7], "little"), frame[9:-4])
+            for frame in frames
+        ]
+        self.assertEqual(
+            [
+                (0x3106, b"\x00"), (0x3105, b"\x01\x00\x2c\x01\xff"),
+                (0x3106, b"\x00"), (0x3105, b"\x01\x01\x2c\x01\xff"),
+                (0x3106, b"\x00"), (0x3105, b"\x01\x02\x2c\x01\xff"),
+            ],
+            decoded,
+        )
+        self.assertEqual([10300, 10300, 180300], sleeps)
+
     def test_black_master_uses_gpio9_10_11_rs485_wiring(self):
         """Using the former GPIO14/15/16 map sends valid NC4 bytes to no transceiver."""
         uart_calls = []

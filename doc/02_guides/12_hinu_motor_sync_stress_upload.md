@@ -66,6 +66,20 @@ uvx mpremote connect /dev/cu.usbmodem1121201 reset
 python -B tools/PC/hinu_motor_command_test.py deploy-master --port /dev/cu.usbmodem1127301
 ```
 
+Real-project Black Master 使用開機自動循環版本；`--port` 必須填當次重新列舉並
+核對的 project board port，不可使用上面的 test-kit 範例 port：
+
+```bash
+python -B tools/PC/hinu_motor_command_test.py deploy-project-master \
+  --port /dev/cu.usbmodem<REAL_PROJECT_PORT>
+uvx mpremote connect /dev/cu.usbmodem<REAL_PROJECT_PORT> reset
+```
+
+此命令部署 `/hinu_motor_master.py` 及 `/main.py`。開機後以
+`MODE_STOP action=0 → MODE_SET(start_delay_ms=300)` 依次廣播 Mode 0（10s）、
+Mode 1（10s）、Mode 2（180s），然後回到 Mode 0。RS485 仍採
+EN9／TX10／RX11 及 listen-before-talk；只在實際發送時把 EN 拉高。
+
 由 Black Master 發送 Mode 0、1、2 及安全停止：
 
 ```bash

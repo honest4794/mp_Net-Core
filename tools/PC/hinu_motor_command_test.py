@@ -20,6 +20,8 @@ from hinu_motor_bench_common import (
 
 
 DEVICE_SCRIPT = os.path.join(ROOT, "tools", "ESP", "hinu_motor_master.py")
+PROJECT_MAIN = os.path.join(
+    ROOT, "tools", "ESP", "hinu_motor_project_main.py")
 
 
 def run_offline_mode(mode_id, start_delay_ms=300, received_at_ms=1000):
@@ -91,6 +93,16 @@ def _mpremote(port, expression=None, copy=False):
     return subprocess.run(command, check=False).returncode
 
 
+def _deploy_project_master(port):
+    prefix = _mpremote_prefix() + ["connect", port, "fs", "cp"]
+    if subprocess.run(
+            prefix + [DEVICE_SCRIPT, ":/hinu_motor_master.py"],
+            check=False).returncode:
+        return 1
+    return subprocess.run(
+        prefix + [PROJECT_MAIN, ":/main.py"], check=False).returncode
+
+
 def _write_report(path, results):
     rows = []
     for result in results:
@@ -120,6 +132,11 @@ def main(argv=None):
     sub.add_parser("ports", help="列出 Figma 六板 port mapping")
     deploy = sub.add_parser("deploy-master", help="把 command sender 放到 black Master")
     deploy.add_argument("--port", default=BOARD_PORTS["black_master"])
+    project = sub.add_parser(
+        "deploy-project-master",
+        help="部署開機自動 Mode 0→1→2 的 real-project Black Master",
+    )
+    project.add_argument("--port", required=True)
     send = sub.add_parser("send-mode", help="由 black Master 廣播 MODE_SET")
     send.add_argument("mode", type=int, choices=(0, 1, 2, 3))
     send.add_argument("--start-delay-ms", type=int, default=300)
@@ -143,6 +160,8 @@ def main(argv=None):
         return 0 if all(item["result"] == "PASS" for item in results) else 1
     if args.action == "deploy-master":
         return _mpremote(args.port, copy=True)
+    if args.action == "deploy-project-master":
+        return _deploy_project_master(args.port)
     if args.action == "send-mode":
         expr = "import hinu_motor_master as m; m.send_mode({}, {})".format(
             args.mode, args.start_delay_ms

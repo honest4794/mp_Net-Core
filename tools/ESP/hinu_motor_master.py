@@ -17,6 +17,8 @@ BROADCAST = 0xFFFF
 MODE_SET = 0x3105
 MODE_STOP = 0x3106
 REBOOT = 0x100F
+PROJECT_MODES = ((0, 10000), (1, 10000), (2, 180000))
+PROJECT_START_DELAY_MS = 300
 
 
 def _pack(command, payload=b"", address=BROADCAST):
@@ -60,15 +62,39 @@ class Link:
         return written
 
 
-def send_mode(mode_id, start_delay_ms=300):
+def _send_mode(link, mode_id, start_delay_ms):
     mode_id = int(mode_id)
     if mode_id not in (0, 1, 2, 3):
         raise ValueError("mode_id must be 0, 1, 2, or 3")
     delay = max(0, min(65535, int(start_delay_ms)))
     payload = struct.pack("<BBHB", 1, mode_id, delay, 255)
-    written = Link().send(_pack(MODE_SET, payload))
+    written = link.send(_pack(MODE_SET, payload))
     print("MODE_SET mode={} delay={} bytes={}".format(mode_id, delay, written))
     return written
+
+
+def send_mode(mode_id, start_delay_ms=PROJECT_START_DELAY_MS):
+    return _send_mode(Link(), mode_id, start_delay_ms)
+
+
+def transition_stop(link):
+    """Mode 過場：dead-zone stop，但不等同 action=1 Power Off。"""
+    written = link.send(_pack(MODE_STOP, b"\x00"))
+    print("MODE_STOP action=0 bytes={}".format(written))
+    return written
+
+
+def run_project_mode(cycles=None, link=None, sleep_ms=None):
+    """Real-project Master：持續以共同 deadline 廣播 Mode 0→1→2。"""
+    link = link or Link()
+    sleep_ms = sleep_ms or time.sleep_ms
+    completed = 0
+    while cycles is None or completed < int(cycles):
+        for mode_id, duration_ms in PROJECT_MODES:
+            transition_stop(link)
+            _send_mode(link, mode_id, PROJECT_START_DELAY_MS)
+            sleep_ms(PROJECT_START_DELAY_MS + duration_ms)
+        completed += 1
 
 
 def stop():
