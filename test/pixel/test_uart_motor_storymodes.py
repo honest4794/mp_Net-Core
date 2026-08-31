@@ -89,6 +89,13 @@ def mode_by_id(mode_id):
     raise KeyError(mode_id)
 
 
+def direct_chain(addresses, value):
+    payload = bytearray()
+    for address in addresses:
+        payload.extend((0xFF, address, value, 0xFE))
+    return bytes(payload)
+
+
 class FiniteEffectTests(unittest.TestCase):
     def test_effect_holds_neutral_after_requested_cycles(self):
         """Removing finite-cycle handling must restart an unsafe motor command."""
@@ -173,7 +180,7 @@ class MotorStoryModeTests(unittest.TestCase):
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             bus = FakeHardwareBus([
-                {"id": 2, "baudrate": 9600, "GPIO": {"tx": 17, "rx": None}},
+                {"id": 2, "baudrate": 9600, "GPIO": {"tx": 12, "rx": None}},
             ])
             module.init_uart(bus)
         finally:
@@ -187,8 +194,95 @@ class MotorStoryModeTests(unittest.TestCase):
                 sys.modules["lib.sys.log_service"] = old_log_service
 
         self.assertEqual(2, uart_calls[0][0])
-        self.assertEqual(17, uart_calls[0][1]["tx"].pin)
+        self.assertEqual(12, uart_calls[0][1]["tx"].pin)
         self.assertEqual(-1, uart_calls[0][1]["rx"])
+
+    def test_uart_driver_rx_only_never_drives_shared_rs485_bus(self):
+        """Black sidecars share blue A/B: they may receive, but must never reply."""
+        uart_calls = []
+        pins = {}
+
+        class FakePin:
+            OUT = 1
+
+            def __init__(self, pin, *_args, **kwargs):
+                self.pin = pin
+                self.level = kwargs.get("value")
+                pins[pin] = self
+
+            def value(self, value=None):
+                if value is not None:
+                    self.level = value
+                return self.level
+
+        class FakeMachineUART:
+            def __init__(self, uart_id, **kwargs):
+                self.rx = bytearray(b"NC")
+                self.writes = []
+                uart_calls.append((uart_id, kwargs, self))
+
+            def write(self, data):
+                self.writes.append(bytes(data))
+                return len(data)
+
+            def any(self):
+                return len(self.rx)
+
+            def read(self, n=-1):
+                if n < 0:
+                    n = len(self.rx)
+                data = bytes(self.rx[:n])
+                del self.rx[:n]
+                return data
+
+            def readinto(self, buf):
+                n = min(len(buf), len(self.rx))
+                buf[:n] = self.rx[:n]
+                del self.rx[:n]
+                return n
+
+        fake_machine = types.ModuleType("machine")
+        fake_machine.Pin = FakePin
+        fake_machine.UART = FakeMachineUART
+        fake_log_service = types.ModuleType("lib.sys.log_service")
+        fake_log_service.get_log = lambda: types.SimpleNamespace(info=lambda _msg: None)
+
+        old_machine = sys.modules.get("machine")
+        old_log_service = sys.modules.get("lib.sys.log_service")
+        sys.modules["machine"] = fake_machine
+        sys.modules["lib.sys.log_service"] = fake_log_service
+        try:
+            path = os.path.join(SLAVE, "driver", "uart_drv.py")
+            spec = importlib.util.spec_from_file_location("uart_drv_rx_only", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            bus = FakeHardwareBus([{
+                "id": 1,
+                "baudrate": 115200,
+                "rx_only": 1,
+                "rx_en_level": 0,
+                "GPIO": {"tx": 10, "rx": 11, "en": 9},
+            }])
+            wrapped = module.init_uart(bus)[0]
+        finally:
+            if old_machine is None:
+                sys.modules.pop("machine", None)
+            else:
+                sys.modules["machine"] = old_machine
+            if old_log_service is None:
+                sys.modules.pop("lib.sys.log_service", None)
+            else:
+                sys.modules["lib.sys.log_service"] = old_log_service
+
+        underlying = uart_calls[0][2]
+        self.assertEqual(-1, uart_calls[0][1]["tx"])
+        self.assertEqual(11, uart_calls[0][1]["rx"].pin)
+        self.assertEqual(0, pins[9].level)
+        self.assertEqual(3, wrapped.write(b"ACK"))
+        self.assertEqual([], underlying.writes)
+        self.assertEqual(2, wrapped.any())
+        self.assertEqual(b"NC", wrapped.read(2))
+        self.assertEqual(0, pins[9].level)
 
     def test_motor_driver_forwards_json_sync_settings(self):
         """The runtime driver must not silently drop the synchronization contract."""
@@ -353,8 +447,8 @@ class MotorStoryModeTests(unittest.TestCase):
             self.assertEqual(9600, profile["UART"]["list"][uart_index]["baudrate"])
             addresses = sorted(int(v) for v in motor_cfg["list"][0]["address"])
             self.assertEqual(expected_addresses, addresses)
-            self.assertEqual(21, motor_cfg["list"][0]["sync_broadcast_span"])
-            self.assertEqual(40, motor_cfg["list"][0]["sync_tx_interval_ms"])
+            self.assertNotIn("sync_broadcast_span", motor_cfg["list"][0])
+            self.assertNotIn("sync_tx_interval_ms", motor_cfg["list"][0])
             self.assertNotIn("calib", motor_cfg["list"][0])
 
             uart = FakeUART()
@@ -363,8 +457,10 @@ class MotorStoryModeTests(unittest.TestCase):
                 "addresses": addresses,
                 "uart": uart,
                 "dStay": motor_cfg["list"][0].get("dStay", 2048),
-                "sync_broadcast_span": motor_cfg["list"][0]["sync_broadcast_span"],
-                "sync_tx_interval_ms": motor_cfg["list"][0]["sync_tx_interval_ms"],
+                "sync_broadcast_span": motor_cfg["list"][0].get(
+                    "sync_broadcast_span", 0),
+                "sync_tx_interval_ms": motor_cfg["list"][0].get(
+                    "sync_tx_interval_ms", 0),
             })
             layout = PixelLayout(["uartMotor1"], {"uartMotor1": motor.num_pixels})
             layout.register_mapping(mapping["id"], mapping["name"], mapping["groups"])
@@ -373,11 +469,8 @@ class MotorStoryModeTests(unittest.TestCase):
             motor.st_load_and_convert(frame, 0)
             motor.st_show()
 
-            values = [0x80] * 21
-            for address in expected_addresses:
-                values[address - 1] = 0xFF
-            expected = bytes([0xFF, 0x00] + values + [0xFE])
-            self.assertEqual(expected, uart.writes[-1])
+            self.assertEqual(
+                direct_chain(expected_addresses, 0xFF), uart.writes[-1])
 
     def test_profile_addresses_receive_mode_zero_true_max_a_then_stop(self):
         """All four motors receive raw 0x00 for 500 frames, then raw 0x80."""
@@ -393,8 +486,8 @@ class MotorStoryModeTests(unittest.TestCase):
                 "addresses": expected_addresses,
                 "uart": uart,
                 "dStay": motor_cfg.get("dStay", 2048),
-                "sync_broadcast_span": motor_cfg["sync_broadcast_span"],
-                "sync_tx_interval_ms": motor_cfg["sync_tx_interval_ms"],
+                "sync_broadcast_span": motor_cfg.get("sync_broadcast_span", 0),
+                "sync_tx_interval_ms": motor_cfg.get("sync_tx_interval_ms", 0),
             })
             layout = PixelLayout(["uartMotor1"], {"uartMotor1": motor.num_pixels})
             layout.register_mapping(mapping["id"], mapping["name"], mapping["groups"])
@@ -409,13 +502,8 @@ class MotorStoryModeTests(unittest.TestCase):
                 motor.st_show()
                 return uart.writes[-1]
 
-            moving = [0x80] * 21
-            stopped = [0x80] * 21
-            for address in expected_addresses:
-                moving[address - 1] = 0x00
-
-            self.assertEqual(bytes([0xFF, 0x00] + moving + [0xFE]), emit(0))
-            self.assertEqual(bytes([0xFF, 0x00] + stopped + [0xFE]), emit(500))
+            self.assertEqual(direct_chain(expected_addresses, 0x00), emit(0))
+            self.assertEqual(direct_chain(expected_addresses, 0x80), emit(500))
 
     def test_mode_two_peak_sends_exact_raw_zero_through_rgbw_transport(self):
         """C++ A peak must survive Pixel's blank-W safety rule as explicit raw 0x00."""
@@ -431,8 +519,8 @@ class MotorStoryModeTests(unittest.TestCase):
                 "addresses": expected_addresses,
                 "uart": uart,
                 "dStay": motor_cfg.get("dStay", 2048),
-                "sync_broadcast_span": motor_cfg["sync_broadcast_span"],
-                "sync_tx_interval_ms": motor_cfg["sync_tx_interval_ms"],
+                "sync_broadcast_span": motor_cfg.get("sync_broadcast_span", 0),
+                "sync_tx_interval_ms": motor_cfg.get("sync_tx_interval_ms", 0),
             })
             layout = PixelLayout(["uartMotor1"], {"uartMotor1": motor.num_pixels})
             layout.register_mapping(mapping["id"], mapping["name"], mapping["groups"])
@@ -444,13 +532,10 @@ class MotorStoryModeTests(unittest.TestCase):
             motor.st_load_and_convert(frame, 0)
             motor.st_show()
 
-            values = [0x80] * 21
-            for address in expected_addresses:
-                values[address - 1] = 0x00
-            self.assertEqual(bytes([0xFF, 0x00] + values + [0xFE]),
-                             uart.writes[-1])
+            self.assertEqual(
+                direct_chain(expected_addresses, 0x00), uart.writes[-1])
 
-    def test_profiles_use_hinu_rs485_and_gpio17_motor_hardware(self):
+    def test_profiles_use_black_rs485_and_gpio12_motor_hardware(self):
         """The MicroPython profiles must match the accepted Hi-Nu wiring."""
         for slave_id, (profile_path, _addresses, expected_cid) in SLAVE_PROFILES.items():
             profile = load_json(profile_path)
@@ -467,19 +552,28 @@ class MotorStoryModeTests(unittest.TestCase):
             self.assertEqual(1, rs485["id"])
             self.assertEqual(115200, rs485["baudrate"])
             self.assertEqual(
-                {"tx": 14, "rx": 15, "en": 16},
+                {"tx": 10, "rx": 11, "en": 9},
                 rs485["GPIO"],
             )
+            self.assertEqual(1, rs485["rx_only"])
+            self.assertEqual(0, rs485["rx_en_level"])
             self.assertEqual(1, rs485["en_settle_ms"])
 
             motor_uart = profile["UART"]["list"][1]
             self.assertEqual(2, motor_uart["id"])
             self.assertEqual(9600, motor_uart["baudrate"])
-            self.assertEqual({"tx": 17, "rx": None}, motor_uart["GPIO"])
+            self.assertEqual({"tx": 12, "rx": None}, motor_uart["GPIO"])
             self.assertEqual(
                 1,
                 profile["uartMotor"]["list"][0]["GPIO"]["uart"],
             )
+
+    def test_profiles_use_original_direct_motor_frames(self):
+        """Field ATtiny boards must not depend on the optional broadcast parser."""
+        for profile_path, _addresses, _cid in SLAVE_PROFILES.values():
+            motor = load_json(profile_path)["uartMotor"]["list"][0]
+            self.assertNotIn("sync_broadcast_span", motor)
+            self.assertNotIn("sync_tx_interval_ms", motor)
 
 
 if __name__ == "__main__":

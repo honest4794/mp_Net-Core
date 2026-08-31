@@ -70,7 +70,9 @@ class _RS485:
         self.baud = int(baud)
         self.settle_ms = int(settle_ms)
         self.en_active = int(en_active)
-        self.en.value(0)                       # 閒置 = 接收
+        # 閒置必須是 TX enable 的反相。舊 probe 固定寫 0，令
+        # en_active=0 的接收端一直保持發送，測反相極性時會自行霸住 bus。
+        self.en.value(0 if self.en_active else 1)
 
     def _byte_ms(self):
         return max(1, (10 * 1000) // self.baud)
@@ -206,7 +208,7 @@ def _drain(uart, ms=30):
 
 # ═══════════════════ Stage 1 — GPIO 確認 ═══════════════════
 def run_gpio(tx=TX, rx=RX, en=EN, baud=BAUD, uart_id=UART_ID,
-             en_active=EN_ACTIVE, loopback=LOOPBACK):
+             en_active=EN_ACTIVE, loopback=LOOPBACK, invert=0):
     print("=" * 60)
     print("STAGE 1 — GPIO 確認 (tx={} rx={} en={} baud={} en_active={})".format(
         tx, rx, en, baud, en_active))
@@ -215,7 +217,7 @@ def run_gpio(tx=TX, rx=RX, en=EN, baud=BAUD, uart_id=UART_ID,
     # 1/5 UART 建立
     try:
         uart = UART(int(uart_id), baudrate=int(baud),
-                    tx=Pin(int(tx)), rx=Pin(int(rx)))
+                    tx=Pin(int(tx)), rx=Pin(int(rx)), invert=int(invert))
         print("[1/5][PASS] UART{} 建立成功 tx={} rx={} baud={}".format(
             uart_id, tx, rx, baud))
     except Exception as e:
@@ -231,7 +233,7 @@ def run_gpio(tx=TX, rx=RX, en=EN, baud=BAUD, uart_id=UART_ID,
         time.sleep_ms(500)
         en_pin.value(0 if en_active else 1)
         time.sleep_ms(500)
-    en_pin.value(0)
+    en_pin.value(0 if en_active else 1)
     print("[2/5][CHECK] 請人工確認：電錶/示波器量 GPIO{} 是否跟著 0/3.3V 跳動".format(en))
     print("  （不會跳 → EN 腳錯、短路或腳位被其他外設佔用）")
 
@@ -497,14 +499,15 @@ def _peer_scan(buf):
 
 
 def run_peer(tx=TX, rx=RX, en=EN, baud=BAUD, uart_id=UART_ID,
-             en_active=EN_ACTIVE, settle_ms=SETTLE_MS, seconds=0):
+             en_active=EN_ACTIVE, settle_ms=SETTLE_MS, seconds=0, invert=0):
     """另一塊板當對端：反射 Stage2 probe 幀(seq+1)、模擬顯示器回 Stage3 ack(原樣 echo)。"""
     print("=" * 60)
     print("PEER 模式 — 模擬 PC/顯示器 (tx={} rx={} en={} baud={})".format(tx, rx, en, baud))
     print("對面那塊板請依序跑 run(2, mode='ping') → run(3)")
     print("=" * 60)
-    uart = UART(int(uart_id), baudrate=int(baud), tx=Pin(int(tx)), rx=Pin(int(rx)))
-    en_pin = Pin(int(en), Pin.OUT, value=0)
+    uart = UART(int(uart_id), baudrate=int(baud), tx=Pin(int(tx)), rx=Pin(int(rx)),
+                invert=int(invert))
+    en_pin = Pin(int(en), Pin.OUT, value=(0 if en_active else 1))
     rs = _RS485(uart, en_pin, baud, settle_ms=settle_ms, en_active=en_active)
     _drain(uart, 30)
 
@@ -549,7 +552,8 @@ def run_peer(tx=TX, rx=RX, en=EN, baud=BAUD, uart_id=UART_ID,
 # ═══════════════════ 入口 ═══════════════════
 def run(stage=0, tx=None, rx=None, en=None, baud=None, uart_id=None,
         en_active=None, settle_ms=None, mode="reflect",
-        count=PING_COUNT, interval_ms=PING_INTERVAL_MS, seconds=60, loopback=None):
+        count=PING_COUNT, interval_ms=PING_INTERVAL_MS, seconds=60, loopback=None,
+        invert=0):
     """漸進式測試入口。stage: 1=GPIO 2=通訊 3=系統路徑 9=對端模式。
 
     只覆蓋你傳的參數；Stage3 沒傳的一律用板上 config.json（真實系統值），
@@ -569,12 +573,13 @@ def run(stage=0, tx=None, rx=None, en=None, baud=None, uart_id=None,
     en_active = EN_ACTIVE if en_active is None else int(en_active)
     settle_ms = SETTLE_MS if settle_ms is None else int(settle_ms)
     loopback = LOOPBACK if loopback is None else int(loopback)
+    invert = int(invert)
 
     if stage == 1:
-        run_gpio(tx, rx, en, baud, uart_id, en_active, loopback)
+        run_gpio(tx, rx, en, baud, uart_id, en_active, loopback, invert)
     elif stage == 2:
-        uart = UART(uart_id, baudrate=baud, tx=Pin(tx), rx=Pin(rx))
-        en_pin = Pin(en, Pin.OUT, value=0)
+        uart = UART(uart_id, baudrate=baud, tx=Pin(tx), rx=Pin(rx), invert=invert)
+        en_pin = Pin(en, Pin.OUT, value=(0 if en_active else 1))
         rs = _RS485(uart, en_pin, baud, settle_ms=settle_ms, en_active=en_active)
         _drain(uart, 30)
         if mode == "ping":
@@ -582,7 +587,8 @@ def run(stage=0, tx=None, rx=None, en=None, baud=None, uart_id=None,
         else:
             run_link_reflect(rs, seconds=seconds)
     elif stage == 9:
-        run_peer(tx, rx, en, baud, uart_id, en_active, settle_ms, seconds=seconds)
+        run_peer(tx, rx, en, baud, uart_id, en_active, settle_ms,
+                 seconds=seconds, invert=invert)
     else:
         print(__doc__)
         print("\n用法（逐階段、每階段人工確認後再往下）：")

@@ -6,6 +6,8 @@ uart_drv.py — UART / RS485 管理
 
 RS485 方向腳:
   list 項目可加 "GPIO": {"en": <gpio>} 指定方向控制腳 (DE+RE)。
+  共用總線 sidecar 可加 "rx_only": 1：硬停 UART TX、EN 固定為
+  "rx_en_level"（預設 0），所有 write 回報已消耗但不會驅動總線。
   可加 "en_settle_ms": <ms> 調整 DE 使能穩定時間（預設 1ms，實測 0ms 不穩、1ms 穩定）。
   不填 en、或 en = -1 → 純 UART，行為與原本完全一致。
   有 en 時會包成 _Rs485Uart：write() 自動拉起 en → 等真正送完(txdone) → 放低回接收，
@@ -15,6 +17,31 @@ from machine import UART, Pin
 from lib.sys.sys_bus import bus
 from lib.sys.log_service import get_log
 import time
+
+
+class _RxOnlyUart:
+    """只收 UART：保留讀取介面，但永不驅動共用 RS485 總線。"""
+
+    def __init__(self, uart, en_pin=None, en_level=0):
+        self.io = uart
+        self.en = en_pin
+        self.en_level = 1 if int(en_level) else 0
+        if self.en is not None:
+            self.en.value(self.en_level)
+
+    def write(self, data):
+        # CircuitBus 會重試短寫；回報整段已消耗可抑制所有 reply/retry，
+        # 而底層 UART 的 TX 已在建構時設為 -1，形成雙重保護。
+        return len(data)
+
+    def readinto(self, buf):
+        return self.io.readinto(buf)
+
+    def read(self, n=-1):
+        return self.io.read(n)
+
+    def any(self):
+        return self.io.any()
 
 
 class _Rs485Uart:
@@ -103,6 +130,7 @@ def init_uart(sysbus=None):
     uart_list = []
     for item in cfg.get("list", []):
         gpio = item.get("GPIO", {})
+        rx_only = bool(item.get("rx_only", 0))
         # ESP32 MicroPython treats -1 as an explicitly disabled signal pin.
         # Passing None (the direct JSON null translation) raises
         # ValueError("invalid pin"), so preserve TX-only/RX-only profiles by
@@ -112,17 +140,27 @@ def init_uart(sysbus=None):
         uart = UART(
             item.get("id", 1),
             baudrate=item.get("baudrate", 115200),
-            tx=Pin(tx_pin) if tx_pin is not None else -1,
+            tx=-1 if rx_only else (Pin(tx_pin) if tx_pin is not None else -1),
             rx=Pin(rx_pin) if rx_pin is not None else -1,
             rxbuf=item.get("rxbuf", 16384),     # 接收：≥ 最大幀 8205B，一次給足留餘裕
             txbuf=item.get("txbuf", 16384),     # 發送：≥ 最大幀 8205B，一次給足避免 write 分次/截斷
         )
 
         en = gpio.get("en", -1)
+        en_pin = None
         if en is not None and int(en) >= 0:
+            en_pin = Pin(int(en), Pin.OUT, value=0)
+
+        if rx_only:
+            uart = _RxOnlyUart(
+                uart,
+                en_pin,
+                en_level=item.get("rx_en_level", 0),
+            )
+        elif en_pin is not None:
             uart = _Rs485Uart(
                 uart,
-                Pin(int(en), Pin.OUT, value=0),
+                en_pin,
                 item.get("baudrate", 115200),
                 settle_ms=item.get("en_settle_ms", 1),
             )

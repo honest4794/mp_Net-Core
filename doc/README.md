@@ -55,6 +55,7 @@
 | [05_psram_zero_block_plan.md](03_notes/05_psram_zero_block_plan.md) | PSRAM framebuffer 零阻塞直送計劃（方案 A / B） |
 | [06_raw_sd_plan.md](03_notes/06_raw_sd_plan.md) | Raw SD 繞過 FAT 兩階段計劃（Python 層 + Async C module） |
 | [07_pixel_test_results.md](03_notes/07_pixel_test_results.md) | pixel 測試結果：準確度 / 性能基準 / 未來方向 |
+| [08_hinu_motor_two_stage_test.md](03_notes/08_hinu_motor_two_stage_test.md) | Hi-Nu black Master command 與兩 Slave／四 motor 同步的兩階段測試紀錄 |
 
 ---
 

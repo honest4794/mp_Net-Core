@@ -108,17 +108,19 @@
         "id": 1,
         "baudrate": 115200,
         "GPIO": {
-          "tx": 14,
-          "rx": 15,
-          "en": 16
+          "tx": 10,
+          "rx": 11,
+          "en": 9
         },
+        "rx_only": 1,
+        "rx_en_level": 0,
         "en_settle_ms": 1
       },
       {
         "id": 2,
         "baudrate": 9600,
         "GPIO": {
-          "tx": 17,
+          "tx": 12,
           "rx": null
         }
       }
@@ -302,9 +304,7 @@
           "21"
         ],
         "version": 1,
-        "dStay": 2048,
-        "sync_broadcast_span": 21,
-        "sync_tx_interval_ms": 40
+        "dStay": 2048
       }
     ]
   }

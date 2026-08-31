@@ -5,6 +5,7 @@ from lib.sys.proto import StreamParser, MAX_PAYLOAD, ADDR_BROADCAST
 # from lib.file_rx import FileRx # 已移除
 from action.registry import register_all
 from lib.sys.sys_bus import bus
+from lib.sw.project_mode_fallback import arm_master_watch, note_master_seen
 
 import sys
 IS_MICROPYTHON = (sys.implementation.name == 'micropython')
@@ -19,6 +20,7 @@ else:
 
 class App:
     def __init__(self):
+        arm_master_watch()
         # 1. 核心組件
         self.store = SchemaStore()
         self.store.load_dir("/schema")
@@ -63,6 +65,9 @@ class App:
             _ver, addr, cmd, payload = r
             if addr != ADDR_BROADCAST and addr != my_cid:
                 continue
+            # 只把通過本機 address filter 的完整有效 frame 計作 Master 在線。
+            # Project Slave 用此時間在 10 秒失聯後進入本機 Dev Mode。
+            note_master_seen()
             packet_found = True
             disp.dispatch(cmd, payload, ctx)
         if packet_found:

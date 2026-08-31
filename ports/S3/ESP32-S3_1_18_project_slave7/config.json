@@ -5,9 +5,9 @@
     "System": {
         "dual_core_mode": "0",
         "boot_strict": 0,
-        "c_lum": 1.0,
+        "c_lum": 1,
         "hostname": "",
-        "cID": "0001",
+        "cID": "0007",
         "refresh_rate_ms": 1,
         "master_IP": "",
         "master_port": 0,
@@ -187,12 +187,22 @@
                     "uart": 1
                 },
                 "address": [
-                    "19",
-                    "15"
+                    "32",
+                    "33",
+                    "34",
+                    "38",
+                    "36",
+                    "37"
                 ],
                 "version": 1,
                 "dStay": 2048
             }
         ]
+    },
+    "ProjectMode": {
+        "enable": 1,
+        "master_timeout_ms": 10000,
+        "dev_mode_type": 1,
+        "dev_mode_id": 2
     }
 }

@@ -190,6 +190,27 @@ def uart_dc_motor_profile_speed(elapsed, duration):
     return _percent_from_unit(_math.sin(_UART_MOTOR_PI * progress))
 
 
+def uart_dc_motor_hydraulic_profile_speed(elapsed, duration):
+    """對齊 C++ UartDcMotorMotionProfile::HydraulicCinematic。"""
+    elapsed = int(elapsed)
+    duration = int(duration)
+    if duration <= 0 or elapsed < 0 or elapsed >= duration:
+        return 0
+    progress = float(elapsed) / float(duration)
+    if progress < 0.10:
+        return _percent_from_unit(
+            0.20 * _math.sin(0.5 * _UART_MOTOR_PI * (progress / 0.10)))
+    if progress < 0.25:
+        acceleration = (progress - 0.10) / 0.15
+        acceleration = acceleration * acceleration * (3.0 - 2.0 * acceleration)
+        return _percent_from_unit(0.20 + 0.75 * acceleration)
+    if progress < 0.70:
+        return 95
+    deceleration = (progress - 0.70) / 0.30
+    deceleration = deceleration * deceleration * (3.0 - 2.0 * deceleration)
+    return _percent_from_unit(0.95 * (1.0 - deceleration))
+
+
 def uart_dc_motor_scale_profile_speed(profile_speed, max_speed=100,
                                       speed_curve="Sine",
                                       minimum_moving_speed=0):
@@ -299,6 +320,59 @@ class uart_motor_dev_sine:
 
 
 register(uart_motor_dev_sine)
+
+
+class uart_motor_story_mode:
+    """HiNu storyMode_motor：共同 prelude 後四 motor 同相 hydraulic open。"""
+
+    def __init__(self, name, params=None):
+        params = params or {}
+        self.name = name
+        self.id = params.get("id")
+        self.pixel_n = 4
+        self.program = params.get("program") or []
+        self.hold_raw = max(0, min(int(params.get("hold_raw", 128)), 255))
+        self._t = 0
+        self._buf = _array('H', [4095, 0, 0, self.hold_raw << 4])
+        self._prelude_end = int(self.program[0]["end_Time"])
+        self._movement_end = int(self.program[1]["end_Time"])
+        self._direction = str(self.program[1].get("direction", "B")).upper()
+        self._maximum = int(self.program[1].get("speed_percent", 100))
+        if self._prelude_end < 0 or self._movement_end <= self._prelude_end:
+            raise ValueError("storyMode_motor end_Time 必須遞增")
+        if self._direction not in ("A", "B"):
+            raise ValueError("storyMode_motor direction 必須是 A/B")
+
+    def frame(self, t):
+        frame_no = int(t)
+        raw = self.hold_raw
+        if self._prelude_end <= frame_no < self._movement_end:
+            profile = uart_dc_motor_hydraulic_profile_speed(
+                frame_no - self._prelude_end,
+                self._movement_end - self._prelude_end,
+            )
+            speed = uart_dc_motor_scale_profile_speed(
+                profile, self._maximum, "Linear")
+            raw = uart_dc_motor_value(self._direction, speed)
+        self._buf[3] = raw << 4
+        return self._buf
+
+    def release(self):
+        pass
+
+    def restart(self):
+        self._t = 0
+
+    def seek(self, t):
+        self._t = int(t)
+
+    def __next__(self):
+        buf = self.frame(self._t)
+        self._t += 1
+        return buf
+
+
+register(uart_motor_story_mode)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@
 #     0x3102 MODE_LIST_RSP / 0x3104 MODE_GET_RSP / 0x3108 MODE_DETAIL_RSP
 #
 # 播放端 = PixelTask (Core1, pixel_task.py): 本模組只把指令寫進 bus.shared
-# ("pixel_remote_set"/"pixel_remote_stop"), PixelTask._consume_cmds 消費後
+# ("pixel_remote_schedule"/"pixel_remote_stop"), PixelTask._consume_cmds 消費後
 # 以本地 registry/show 機制播放該單一模式, 不需 PC 串流 data.bin。
 
 import time
@@ -60,6 +60,13 @@ def _ticks_diff(now, then):
         return now - then
 
 
+def _ticks_add(value, delta):
+    try:
+        return time.ticks_add(value, delta)
+    except AttributeError:
+        return value + delta
+
+
 def on_mode_get(ctx, args):
     """0x3103: 回報目前模式，供 Hi-Nu Master 探測及收斂確認。"""
     status = bus.shared.get("pixel_nc4_status") or {}
@@ -84,10 +91,10 @@ def on_mode_set(ctx, args):
     """
     mode_type = args.get("mode_type", 0)
     mode_id = args.get("mode_id", 0)
-    start_delay_ms = args.get("start_delay_ms", 0) or 0
+    start_delay_ms = max(0, min(65535, int(args.get("start_delay_ms", 0) or 0)))
     brightness = args.get("brightness", 255)
-    if start_delay_ms > 0:
-        time.sleep_ms(min(start_delay_ms, 10000))
+    received_at = _ticks_ms()
+    start_at = _ticks_add(received_at, start_delay_ms)
     # 停用串流供給鏈 (stream_active) 與渲染旗標, 避免與本地 show 衝突
     bus.shared.update({
         "stream_active": False,
@@ -95,15 +102,38 @@ def on_mode_set(ctx, args):
         "is_paused": False,
         "is_ready": False,
     })
-    bus.shared["pixel_remote_set"] = mode_id
-    bus.shared["pixel_nc4_status"] = {
-        "mode_type": int(mode_type),
-        "mode_id": int(mode_id),
-        "started_at": _ticks_ms(),
-        "elapsed_ms": 0,
-        "running": 1,
-    }
-    print("[Pixel] MODE_SET type={} id={} bri={}".format(mode_type, mode_id, brightness))
+    # 新 MODE_SET 永遠取代尚未消費的舊命令／deadline。
+    bus.shared.pop("pixel_remote_set", None)
+    bus.shared.pop("pixel_remote_schedule", None)
+    # NC4 handler 只建立 deadline，不可 sleep 阻塞 RS485 decode/response。
+    # PixelTask 在自己的 loop 到點後才原子切換 mode；兩片 Slave 收到同一個
+    # broadcast 時會保存相同的相對 deadline。
+    if start_delay_ms == 0:
+        bus.shared["pixel_remote_set"] = int(mode_id)
+        bus.shared["pixel_nc4_status"] = {
+            "mode_type": int(mode_type),
+            "mode_id": int(mode_id),
+            "started_at": start_at,
+            "actual_started_at": received_at,
+            "elapsed_ms": 0,
+            "running": 1,
+        }
+    else:
+        bus.shared["pixel_remote_schedule"] = {
+            "mode_type": int(mode_type),
+            "mode_id": int(mode_id),
+            "start_at": start_at,
+            "brightness": int(brightness),
+        }
+        bus.shared["pixel_nc4_status"] = {
+            "mode_type": int(mode_type),
+            "mode_id": int(mode_id),
+            "scheduled_at": start_at,
+            "elapsed_ms": 0,
+            "running": 0,
+        }
+    print("[Pixel] MODE_SET type={} id={} delay={} bri={}".format(
+        mode_type, mode_id, start_delay_ms, brightness))
 
 
 def on_mode_stop(ctx, args):
@@ -114,6 +144,8 @@ def on_mode_stop(ctx, args):
         "is_paused": False,
         "is_ready": False,
     })
+    bus.shared.pop("pixel_remote_set", None)
+    bus.shared.pop("pixel_remote_schedule", None)
     bus.shared["pixel_remote_stop"] = 1
     status = bus.shared.get("pixel_nc4_status") or {}
     if status.get("running"):

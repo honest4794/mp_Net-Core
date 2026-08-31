@@ -22,10 +22,12 @@ loop() = 播放端：大隊列（registry.list）依序播放，show 循環；mo
 """
 
 import json
+import time
 from lib.sys.task import Task
 from lib.sys.sys_bus import bus
 from lib.sys.log_service import get_log
 from lib.sw.pixel_layout import PixelLayout
+from lib.sw.project_mode_fallback import ProjectModeFallback
 
 EFFECTS_JSON = "/pixel/effects/effects.json"
 MAP_DIR = "/pixel/map"
@@ -67,6 +69,12 @@ class PixelTask(Task):
         self._mode_idx = 0
         self._cur = None
         self._cur_mode = None   # _cur 對應的 mode（判斷下一個是否同一 mode → 重用生成器）
+        self._project_enabled = False
+        self._project_mode_id = 2
+        self._project_mode_type = 1
+        self._project_seen_seq = 0
+        self._project_policy = None
+        self._project_fallback_pending = False
 
     # ── 啟動：依序初始化 ──────────────────────────
     def on_start(self):
@@ -77,6 +85,7 @@ class PixelTask(Task):
             self._init_layout()
             self._init_modes()
             self._init_show()
+            self._init_project_mode()
             if self._show["auto_play"] and self._show_list:
                 self._start()
         except Exception as e:
@@ -305,6 +314,78 @@ class PixelTask(Task):
         self._show_list = lst
         get_log().info("[Pixel] show: auto_play={} list={} 個".format(show["auto_play"], len(lst)))
 
+    def _init_project_mode(self):
+        """Project Slave：Master 失聯指定時間後，自動播放本機 Dev mode。"""
+        cfg = bus.shared.get("ProjectMode", {}) or {}
+        self._project_enabled = bool(int(cfg.get("enable", 0) or 0))
+        if not self._project_enabled:
+            return
+        timeout_ms = max(1, int(cfg.get("master_timeout_ms", 10000) or 10000))
+        self._project_mode_type = int(cfg.get("dev_mode_type", 1) or 1)
+        self._project_mode_id = int(cfg.get("dev_mode_id", 2) or 2)
+        self._project_policy = ProjectModeFallback(timeout_ms)
+        started_at = bus.shared.get("master_watch_started_ms", time.ticks_ms())
+        self._project_policy.start(started_at)
+        self._project_seen_seq = int(bus.shared.get("master_seen_seq", 0) or 0)
+        last_seen = bus.shared.get("master_last_seen_ms")
+        if last_seen is not None:
+            self._project_policy.note_master(last_seen)
+        bus.shared["project_fallback_active"] = False
+        get_log().info(
+            "[Project] armed: Master timeout={}ms → Dev mode {}".format(
+                timeout_ms, self._project_mode_id))
+
+    def _service_project_mode(self, now=None):
+        """處理 Master liveness edge；由 PixelTask 單一擁有播放切換。"""
+        if not self._project_enabled or self._project_policy is None:
+            return
+        if now is None:
+            now = time.ticks_ms()
+
+        seen_seq = int(bus.shared.get("master_seen_seq", 0) or 0)
+        if seen_seq != self._project_seen_seq:
+            self._project_seen_seq = seen_seq
+            last_seen = bus.shared.get("master_last_seen_ms", now)
+            event = self._project_policy.note_master(last_seen)
+            if event == "leave":
+                # 尚未被播放器消費的 fallback command 要先撤銷；若 Master 已送
+                # 新 MODE_SET／schedule，保留新命令直接接管，唔插入 STOP 覆蓋。
+                if (self._project_fallback_pending
+                        and bus.shared.get("pixel_remote_set") == self._project_mode_id):
+                    bus.shared.pop("pixel_remote_set", None)
+                has_master_mode = (
+                    bus.shared.get("pixel_remote_set") is not None
+                    or bus.shared.get("pixel_remote_schedule") is not None)
+                if not has_master_mode:
+                    bus.shared["pixel_remote_stop"] = 1
+                self._project_fallback_pending = False
+                bus.shared["project_fallback_active"] = False
+                get_log().info(
+                    "[Project] Master online; leaving Dev fallback")
+
+        if self._project_policy.poll(now) != "enter":
+            return
+        if self._project_mode_id not in self._modes:
+            get_log().error(
+                "[Project] Dev mode {} not found".format(self._project_mode_id))
+            return
+        bus.shared.pop("pixel_remote_stop", None)
+        bus.shared.pop("pixel_remote_schedule", None)
+        bus.shared["pixel_remote_set"] = self._project_mode_id
+        bus.shared["pixel_nc4_status"] = {
+            "mode_type": self._project_mode_type,
+            "mode_id": self._project_mode_id,
+            "started_at": int(now),
+            "actual_started_at": int(now),
+            "elapsed_ms": 0,
+            "running": 1,
+        }
+        self._project_fallback_pending = True
+        bus.shared["project_fallback_active"] = True
+        get_log().warn(
+            "[Project] Master absent for {}ms; entering Dev mode {}".format(
+                self._project_policy.timeout_ms, self._project_mode_id))
+
     def _find_mode(self, ref):
         if isinstance(ref, int):
             return self._modes.get(ref)
@@ -354,9 +435,32 @@ class PixelTask(Task):
         if bus.shared.pop("pixel_pause", None) is not None:
             self._paused = not self._paused
             get_log().info("[Pixel] ⏸ paused={}".format(self._paused))
-        # 遠端指定播放單一本地模式 (0x3105 MODE_SET → pixel_actions 寫入)
+        # 遠端指定播放單一本地模式：MODE_SET handler 只排 deadline，避免
+        # start_delay_ms 在 RS485 decode task 內 blocking sleep。
+        scheduled = bus.shared.get("pixel_remote_schedule")
+        if scheduled is not None:
+            now = time.ticks_ms()
+            if time.ticks_diff(now, scheduled["start_at"]) >= 0:
+                bus.shared.pop("pixel_remote_schedule", None)
+                bus.shared["pixel_remote_set"] = scheduled["mode_id"]
+                status = bus.shared.get("pixel_nc4_status") or {}
+                status.update({
+                    "mode_type": scheduled["mode_type"],
+                    "mode_id": scheduled["mode_id"],
+                    # elapsed 以共同 target 計；actual_started_at 供 jitter 診斷。
+                    "started_at": scheduled["start_at"],
+                    "actual_started_at": now,
+                    "elapsed_ms": 0,
+                    "running": 1,
+                })
+                bus.shared["pixel_nc4_status"] = status
+
+        # 到點後才消費 remote_set，原子替換 show list 並開始播放。
         rid = bus.shared.pop("pixel_remote_set", None)
         if rid is not None:
+            if (self._project_fallback_pending
+                    and int(rid) == self._project_mode_id):
+                self._project_fallback_pending = False
             try:
                 mode = self._modes.get(int(rid))
             except (TypeError, ValueError):
@@ -493,6 +597,7 @@ class PixelTask(Task):
     def loop(self):
         if not self.running:
             return
+        self._service_project_mode()
         self._consume_cmds()
         if not self._playing or self._paused or self._st is None or self._hub is None:
             return
