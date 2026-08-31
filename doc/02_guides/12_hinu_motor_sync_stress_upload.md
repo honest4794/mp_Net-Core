@@ -58,7 +58,88 @@ python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem1121201 slave/p
 uvx mpremote connect /dev/cu.usbmodem1121201 reset
 ```
 
-## 4. 上載 Black Master command sender
+## 4. Black Master 燒晶片流程（ESP32-S3 → MicroPython）
+
+只有 boot log 出現 `invalid header: 0xffffffff`，或已確認 flash 沒有可啟動
+firmware 時，才執行 erase。這會清除整塊板原有 firmware 與 filesystem；操作前必須
+重新列舉並由現場人員核對板身份，不能只靠歷史 port 名稱。
+
+### 4.1 核對 port 與 boot 狀態
+
+```bash
+ls -l /dev/cu.usbmodem1101
+python -B -m serial.tools.list_ports -v
+pio device monitor --port /dev/cu.usbmodem1101 --baud 115200 --filter time
+```
+
+若 monitor 正常顯示既有 application，停止本流程，不可 erase。若連續顯示
+`invalid header: 0xffffffff`，代表 boot ROM 找不到有效 image，可以繼續。
+
+### 4.2 核對固定 firmware
+
+本 project 使用 repository 內固定 image，不臨時下載未知版本：
+
+```bash
+ls -lh ext_mod/ESP32_GENERIC_S3_2026_08_21_06_01_18.bin
+shasum -a 256 ext_mod/ESP32_GENERIC_S3_2026_08_21_06_01_18.bin
+```
+
+2026-08-31 記錄的 SHA-256：
+
+```text
+d35aa88d52b352528a7266dc97e7f42525bda99ba8ce99d8b6143d770d2e18e3
+```
+
+### 4.3 Erase 與寫入 image
+
+先關閉佔用該 port 的 monitor，再逐條執行。每條命令都明確指定已核對的 port：
+
+```bash
+'/Users/all.are.mathematics/.platformio/penv/bin/esptool.py' \
+  --chip esp32s3 --port /dev/cu.usbmodem1101 erase-flash
+
+'/Users/all.are.mathematics/.platformio/penv/bin/esptool.py' \
+  --chip esp32s3 --port /dev/cu.usbmodem1101 --baud 460800 \
+  write-flash -z 0x0 ext_mod/ESP32_GENERIC_S3_2026_08_21_06_01_18.bin
+```
+
+必須見到以下兩項才可判定「binary 寫入成功」：
+
+- `Wrote 1799728 bytes ...`
+- `Hash of data verified.`
+
+這只證明 flash 內容正確，不代表 MicroPython／project application 已正常啟動。
+
+### 4.4 驗證 MicroPython REPL
+
+reset 後重新列舉；port 名可能改變，必須再次核對：
+
+```bash
+python -B -m serial.tools.list_ports -v
+uvx mpremote connect /dev/cu.usbmodem1101 exec \
+  'import sys; print(sys.implementation)'
+```
+
+只有輸出包含 `micropython` 才可上載 `.py`。若出現 `could not enter raw repl`，不要
+反覆 erase：先以 serial monitor 讀 boot log，核對 image 的 flash／PSRAM／USB mode
+是否適合該板。2026-08-31 的 real-project `1101` 已完成 erase、write 及 hash verify，
+但當輪仍未取得 REPL；因此當時狀態是「runtime image 已寫入，project files 未部署」。
+
+### 4.5 部署 Black Master project files
+
+REPL 驗證成功後才執行：
+
+```bash
+python -B tools/PC/hinu_motor_command_test.py deploy-project-master \
+  --port /dev/cu.usbmodem1101
+uvx mpremote connect /dev/cu.usbmodem1101 reset
+pio device monitor --port /dev/cu.usbmodem1101 --baud 115200 --filter time
+```
+
+驗收 log 應循環出現 `MODE_STOP action=0`、`MODE_SET mode=0`、`mode=1`、
+`mode=2`；不能只以 upload command exit code 當成 motor project mode 已運行。
+
+## 5. 上載 Black Master command sender
 
 這一步只上載 Black Master 的 NC4 command sender，不取代整套 MicroPython runtime：
 
@@ -103,7 +184,7 @@ pio device monitor --port /dev/cu.usbmodem1121301 --baud 115200
 pio device monitor --port /dev/cu.usbmodem1121201 --baud 115200
 ```
 
-## 5. 上載 Blue Master 同步壓測 firmware
+## 6. 上載 Blue Master 同步壓測 firmware
 
 在 HiNu repository 執行：
 
@@ -120,7 +201,7 @@ pio run -e master_motor_sync_stress -t upload --upload-port /dev/cu.usbmodem1127
 
 `TIME_SYNC` broadcast 只用於維持時鐘，不可由各 Slave 同時回覆；只有 unicast `TIME_SYNC` RTT query 才回覆 `TIME_SYNC_RSP`。否則多塊 Slave 會在 RS485 同一時槽碰撞，令 MODE_SET 積壓並破壞同步。
 
-## 6. 同時監測 Black Slave 1／2
+## 7. 同時監測 Black Slave 1／2
 
 回到 UART Design repository：
 
