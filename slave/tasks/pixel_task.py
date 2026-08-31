@@ -44,6 +44,7 @@ TYPE_MAP = {"APA102": "apa102", "WS2812": "ws2812", "i2c_pixel": "pca9685",
 
 WRITE_WHITELIST = ("r", "g", "b", "w", "ww", "rgb", "rgbw", "wwww")
 SCHEDULE_FINE_WAIT_MS = 20
+SCHEDULE_FINE_SPIN_MS = 5
 SYNC_STRESS_LEADS_MS = (300, 100, 50, 20, 10, 5, 2, 1)
 SYNC_STRESS_SAMPLES_PER_LEAD = 100
 SYNC_STRESS_UNSET = 255
@@ -587,8 +588,14 @@ class PixelTask(Task):
             remaining_ms = time.ticks_diff(scheduled["start_at"], now)
             if 0 < remaining_ms <= SCHEDULE_FINE_WAIT_MS:
                 # MODE_SET 已在 decode task 完成；只在 deadline 最後 20ms
-                # 精細等待，避免兩塊獨立 MCU 的一般 task phase 造成 2–20ms skew。
-                time.sleep_ms(remaining_ms)
+                # 精細等待。先讓出 CPU，到最後 5ms 才用 sleep_us，避免
+                # FreeRTOS tick 將整段 sleep_ms 向後取整而令兩塊 MCU 相差數 ms。
+                if remaining_ms > SCHEDULE_FINE_SPIN_MS:
+                    time.sleep_ms(remaining_ms - SCHEDULE_FINE_SPIN_MS)
+                    remaining_ms = time.ticks_diff(
+                        scheduled["start_at"], time.ticks_ms())
+                if remaining_ms > 0:
+                    time.sleep_us(remaining_ms * 1000)
                 now = time.ticks_ms()
             if time.ticks_diff(now, scheduled["start_at"]) >= 0:
                 bus.shared.pop("pixel_remote_schedule", None)

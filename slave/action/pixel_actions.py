@@ -95,6 +95,28 @@ def on_mode_set(ctx, args):
     brightness = args.get("brightness", 255)
     received_at = _ticks_ms()
     start_at = _ticks_add(received_at, start_delay_ms)
+
+    # Hi-Nu Master 會在 MODE_GET 尚未收斂時重送同一 MODE_SET。Motor mode
+    # 必須採 idempotent start：第一個共同 deadline 是唯一啟動點；後來的
+    # repair frame 不可改 deadline，也不可把已播放的 sine/profile 從頭重啟。
+    # Mode 250 是刻意重複觸發的同步壓測 probe，不能去重。
+    if int(mode_id) != 250:
+        scheduled = bus.shared.get("pixel_remote_schedule") or {}
+        status = bus.shared.get("pixel_nc4_status") or {}
+        same_scheduled = (
+            int(scheduled.get("mode_type", -1)) == int(mode_type)
+            and int(scheduled.get("mode_id", -1)) == int(mode_id)
+        )
+        same_running = (
+            bool(status.get("running"))
+            and int(status.get("mode_type", -1)) == int(mode_type)
+            and int(status.get("mode_id", -1)) == int(mode_id)
+        )
+        if same_scheduled or same_running:
+            print("[Pixel] MODE_SET duplicate type={} id={} ignored".format(
+                mode_type, mode_id))
+            return
+
     # 停用串流供給鏈 (stream_active) 與渲染旗標, 避免與本地 show 衝突
     bus.shared.update({
         "stream_active": False,

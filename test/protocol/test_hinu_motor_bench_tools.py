@@ -38,6 +38,7 @@ import hinu_motor_sync_test
 class FakeTime:
     now_ms = 1000
     sleep_calls = []
+    sleep_us_calls = []
 
     @classmethod
     def ticks_ms(cls):
@@ -56,6 +57,11 @@ class FakeTime:
         cls.sleep_calls.append(value)
         cls.now_ms += value
 
+    @classmethod
+    def sleep_us(cls, value):
+        cls.sleep_us_calls.append(value)
+        cls.now_ms += value // 1000
+
 
 class NonBlockingModeScheduleTests(unittest.TestCase):
     def setUp(self):
@@ -66,6 +72,7 @@ class NonBlockingModeScheduleTests(unittest.TestCase):
         bus.shared = {}
         FakeTime.now_ms = 1000
         FakeTime.sleep_calls = []
+        FakeTime.sleep_us_calls = []
         pixel_actions.time = FakeTime
         pixel_task_module.time = FakeTime
         pixel_task_module.get_log = lambda: types.SimpleNamespace(
@@ -157,7 +164,8 @@ class NonBlockingModeScheduleTests(unittest.TestCase):
         task._consume_cmds()
 
         self.assertEqual(1300, FakeTime.now_ms)
-        self.assertEqual([20], FakeTime.sleep_calls)
+        self.assertEqual([15], FakeTime.sleep_calls)
+        self.assertEqual([5000], FakeTime.sleep_us_calls)
         self.assertTrue(task._playing)
         self.assertEqual(1300, bus.shared["pixel_nc4_status"]["actual_started_at"])
 
@@ -230,6 +238,48 @@ class NonBlockingModeScheduleTests(unittest.TestCase):
 
         self.assertNotIn("pixel_remote_schedule", bus.shared)
         self.assertEqual(1, bus.shared["pixel_remote_set"])
+
+    def test_same_mode_repair_keeps_the_first_scheduled_deadline(self):
+        """A repair frame must not move a shared motor start deadline."""
+        pixel_actions.on_mode_set({}, {
+            "mode_type": 1,
+            "mode_id": 2,
+            "start_delay_ms": 300,
+            "brightness": 255,
+        })
+
+        FakeTime.now_ms = 1253
+        pixel_actions.on_mode_set({}, {
+            "mode_type": 1,
+            "mode_id": 2,
+            "start_delay_ms": 47,
+            "brightness": 255,
+        })
+
+        self.assertEqual(1300, bus.shared["pixel_remote_schedule"]["start_at"])
+        self.assertEqual(300, bus.shared["pixel_remote_schedule"]["start_delay_ms"])
+
+    def test_same_running_mode_repair_does_not_restart_the_motor_effect(self):
+        """A late zero-delay repair must not restart an already running motor."""
+        bus.shared["pixel_nc4_status"] = {
+            "mode_type": 1,
+            "mode_id": 2,
+            "started_at": 1300,
+            "actual_started_at": 1300,
+            "elapsed_ms": 0,
+            "running": 1,
+        }
+        FakeTime.now_ms = 1320
+
+        pixel_actions.on_mode_set({}, {
+            "mode_type": 1,
+            "mode_id": 2,
+            "start_delay_ms": 0,
+            "brightness": 255,
+        })
+
+        self.assertNotIn("pixel_remote_set", bus.shared)
+        self.assertEqual(1300, bus.shared["pixel_nc4_status"]["started_at"])
 
     def test_stop_cancels_both_pending_and_immediate_mode_commands(self):
         """MODE_STOP must not let an unconsumed motor start run first."""
