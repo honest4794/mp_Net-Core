@@ -18,11 +18,12 @@ PYTHON_CACHE_SUFFIXES = {".pyc", ".pyo", ".pyd"}
 class UploadConfig:
     """Validated stable upload settings; USB ports intentionally do not exist."""
 
-    def __init__(self, firmware, source, uploader, chip, baud, address,
-                 esptool, mpremote, reconnect_seconds):
+    def __init__(self, firmware, source, uploader, device_config, chip, baud,
+                 address, esptool, mpremote, reconnect_seconds):
         self.firmware = firmware
         self.source = source
         self.uploader = uploader
+        self.device_config = device_config
         self.chip = chip
         self.baud = baud
         self.address = address
@@ -69,10 +70,16 @@ def load_config(path):
     if reconnect_seconds < 0:
         raise ValueError("reconnect_seconds must not be negative")
 
+    device_config_value = section.get("device_config", "").strip()
+    device_config = (
+        _resolve_path(base_dir, device_config_value)
+        if device_config_value else None
+    )
     return UploadConfig(
         firmware=_resolve_path(base_dir, _required(section, "firmware")),
         source=_resolve_path(base_dir, _required(section, "source")),
         uploader=_resolve_path(base_dir, _required(section, "uploader")),
+        device_config=device_config,
         chip=_required(section, "chip"),
         baud=_required(section, "baud"),
         address=section.get("address", "0x0").strip() or "0x0",
@@ -192,6 +199,9 @@ def deploy_files(config, port, dry_run=False, runner=subprocess.run):
     _require_directory(config.source, "application source")
     _require_file(config.uploader, "normal-REPL uploader")
     mappings = collect_upload_files(config.source)
+    if config.device_config is not None:
+        _require_file(config.device_config, "device config")
+        mappings.insert(0, (config.device_config, "/config.json"))
     if not mappings:
         raise ValueError("application source contains no uploadable files: %s" %
                          config.source)
@@ -215,6 +225,11 @@ def run_all(config, initial_port, erase=False, dry_run=False, input_fn=input,
             runner=subprocess.run, sleep_fn=time.sleep):
     """Flash, require a fresh port decision, then deploy the application."""
     initial_port = _require_port(initial_port)
+    if erase and config.device_config is None:
+        raise ValueError(
+            "all --erase requires device_config so /config.json is restored")
+    if erase:
+        _require_file(config.device_config, "device config")
     if not flash_firmware(
             config, initial_port, erase=erase, dry_run=dry_run,
             input_fn=input_fn, runner=runner):

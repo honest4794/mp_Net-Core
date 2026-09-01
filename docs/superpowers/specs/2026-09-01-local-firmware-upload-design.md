@@ -23,7 +23,8 @@ Rejected alternatives:
 
 - `upload_local.example.ini` is the tracked template.
 - `upload_local.ini` is ignored and stores the firmware image, application
-  source directory, ESP chip, flash baud, and tool commands.
+  source directory, optional board-profile `device_config`, ESP chip, flash
+  baud, and tool commands.
 - `tools/PC/upload_firmware.py` provides:
   - `list`: list currently connected serial ports.
   - `flash --port PORT`: write the configured MicroPython image.
@@ -45,8 +46,9 @@ optionally erases only after confirmation, then writes the image at address
 
 For project files, the CLI walks the local application directory in stable
 order, skips Python cache artifacts, creates required remote directories, and
-uses the existing normal-REPL uploader for each file. It resets the board only
-after every upload succeeds.
+uses the existing normal-REPL uploader for each file. When `device_config` is
+set, it is uploaded first as `/config.json`. The board resets only after every
+upload succeeds.
 
 For `all`, the firmware step and application step are separated by a hard
 reconfirmation boundary. The tool lists current ports after the board returns
@@ -59,6 +61,8 @@ does not silently reuse the pre-flash port.
   before changing the board.
 - A failed erase, flash, file upload, or reset stops immediately with a nonzero
   exit code.
+- `all --erase` fails before flashing unless an existing `device_config` is
+  configured, because erase removes the board's hardware identity/profile.
 - Dry-run prints the exact commands and file mappings without opening a serial
   port or changing hardware.
 - The tool never deletes local files and never stores a USB port.

@@ -175,10 +175,11 @@ Expected: FAIL because the example configuration does not exist.
 - [ ] **Step 3: Add configuration and documentation**
 
 The example and ignored local file contain the fixed image
-`ext_mod/ESP32_GENERIC_S3_2026_08_21_06_01_18.bin`, source `slave`, chip
-`esp32s3`, baud `460800`, uploader path, and command tokens. Neither file
-contains a USB port. Document `list`, `flash`, `files`, `all`, `--dry-run`, and
-the destructive `--erase` confirmation.
+`ext_mod/ESP32_GENERIC_S3_2026_08_21_06_01_18.bin`, source `slave`, optional
+`device_config`, chip `esp32s3`, baud `460800`, uploader path, and command
+tokens. Neither file contains a USB port. Document `list`, `flash`, `files`,
+`all`, `--dry-run`, the destructive `--erase` confirmation, and the rule that
+`all --erase` requires a device profile to restore `/config.json`.
 
 - [ ] **Step 4: Run tests and CLI dry-runs**
 

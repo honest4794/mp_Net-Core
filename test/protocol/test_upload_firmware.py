@@ -2,11 +2,13 @@
 """Contracts for the repository-local firmware upload helper."""
 
 import importlib.util
+import io
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -222,6 +224,40 @@ class UploadWorkflowTests(_UploadFixture):
         self.assertIn(files_port, upload_commands[0])
         self.assertNotIn(self.port, upload_commands[0])
 
+    def test_all_with_erase_refuses_before_flash_without_a_device_profile(self):
+        """Erasing without restoring /config.json leaves hardware identity undefined."""
+        commands = []
+
+        with self.assertRaisesRegex(ValueError, "device_config"):
+            upload_firmware.run_all(
+                self.config,
+                self.port,
+                erase=True,
+                input_fn=lambda _prompt: "ERASE " + self.port,
+                runner=lambda command, **_kwargs: commands.append(command),
+                sleep_fn=lambda _seconds: None,
+            )
+
+        self.assertEqual([], commands)
+
+    def test_configured_device_profile_uploads_to_config_json_first(self):
+        """Restoring the profile after app files could briefly boot unsafe defaults."""
+        (self.root / "profile.json").write_text('{"System": {}}\n', encoding="utf-8")
+        config = upload_firmware.load_config(
+            self.write_ini("device_config = profile.json\n"))
+        commands = []
+
+        count = upload_firmware.deploy_files(
+            config,
+            self.port,
+            runner=lambda command, **_kwargs: commands.append(command),
+        )
+
+        self.assertEqual(2, count)
+        self.assertEqual("/config.json", commands[0][-1])
+        self.assertEqual("/app.py", commands[1][-1])
+        self.assertIn("reset", commands[2])
+
     def test_remote_directory_commands_create_parents_in_order(self):
         """Writing a nested file before its directories exist fails on fresh firmware."""
         self.assertEqual(
@@ -231,6 +267,23 @@ class UploadWorkflowTests(_UploadFixture):
             ],
             repl_upload._mkdir_commands("/lib/sys/module.py"),
         )
+
+
+class RepositoryConfigurationTests(unittest.TestCase):
+    def test_repository_example_supports_files_dry_run(self):
+        """A stale template would make the documented first command fail."""
+        output = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(output):
+            result = upload_firmware.main([
+                "--config", os.fspath(ROOT / "upload_local.example.ini"),
+                "--dry-run",
+                "files",
+                "--port", "/dev/cu.usbmodem-example",
+            ])
+
+        self.assertEqual(0, result, output.getvalue())
+        self.assertIn("/dev/cu.usbmodem-example", output.getvalue())
+        self.assertIn("/app.py", output.getvalue())
 
 
 if __name__ == "__main__":
