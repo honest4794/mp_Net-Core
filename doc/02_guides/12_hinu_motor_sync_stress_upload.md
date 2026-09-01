@@ -2,7 +2,7 @@
 
 本文件記錄兩種獨立測試：
 
-- Black Master 直接向 Black Slave 1／2 發送 motor Mode 0–3。
+- Black Master 直接向 Black Slave13／20 發送 motor Mode 0–3。
 - Blue Hi-Nu Master 使用無 motor 輸出的 Mode 250，量度兩塊 Black Slave 的排程 skew。
 
 設定檔不保存 USB port。每次操作前必須重新列舉，並把本次核對的完整 port 明確寫入每一條 upload／monitor command。以下 `112xxxx` 是 2026-08-31 實測例子；重新插線後不可直接沿用。
@@ -20,42 +20,34 @@ python -B -m serial.tools.list_ports -v
 |---|---|
 | Blue Master | `/dev/cu.usbmodem1127101` |
 | Black Master | `/dev/cu.usbmodem1127301` |
-| Black Slave 1 | `/dev/cu.usbmodem1121301` |
-| Black Slave 2 | `/dev/cu.usbmodem1121201` |
+| Black Slave13 | 每次重新列舉並核對 |
+| Black Slave20 | 每次重新列舉並核對 |
 
 Black motor mapping：
 
-- Slave 1：address `13, 15, 19`
-- Slave 2：address `10, 12, 17, 21`
+- Slave13：address `45, 46, 48, 49`
+- Slave20：address `60, 61, 70, 71`
 
-## 2. 上載 Black Slave 1
+## 2. 上載 Black Slave13
 
 在 UART Design repository 執行：
 
 ```bash
-python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem1121301 ports/S3/ESP32-S3_1_18_hiNew/config.json /config.json
-python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem1121301 slave/app.py /app.py
-python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem1121301 slave/action/sys_actions.py /action/sys_actions.py
-python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem1121301 slave/action/pixel_actions.py /action/pixel_actions.py
-python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem1121301 slave/tasks/pixel_task.py /tasks/pixel_task.py
-python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem1121301 slave/pixel/registry.json /pixel/registry.json
-uvx mpremote connect /dev/cu.usbmodem1121301 reset
+python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem<本次核對的PORT> ports/S3/ESP32-S3_1_18_hinu_black/slave13/config.json /config.json
+# 其餘 runtime 依完整 slave/ 上載流程部署。
+uvx mpremote connect /dev/cu.usbmodem<本次核對的PORT> reset
 ```
 
 `repl_upload.py` / `mpremote exec` 會進入 raw REPL；最後的 `reset` 不可省略，
 否則檔案雖然已上載，Slave 主程式仍然不會運行。`reset` 後 USB port 會短暫消失；
 要重新執行第 1 節的列舉指令，不可假設 port 一定沒變。
 
-## 3. 上載 Black Slave 2
+## 3. 上載 Black Slave20
 
 ```bash
-python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem1121201 ports/S3/ESP32-S3-1_18/config.json /config.json
-python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem1121201 slave/app.py /app.py
-python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem1121201 slave/action/sys_actions.py /action/sys_actions.py
-python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem1121201 slave/action/pixel_actions.py /action/pixel_actions.py
-python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem1121201 slave/tasks/pixel_task.py /tasks/pixel_task.py
-python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem1121201 slave/pixel/registry.json /pixel/registry.json
-uvx mpremote connect /dev/cu.usbmodem1121201 reset
+python -B test/protocol/night_run/repl_upload.py /dev/cu.usbmodem<本次核對的PORT> ports/S3/ESP32-S3_1_18_hinu_black/slave20/config.json /config.json
+# 其餘 runtime 依完整 slave/ 上載流程部署。
+uvx mpremote connect /dev/cu.usbmodem<本次核對的PORT> reset
 ```
 
 ## 4. Black Master 燒晶片流程（ESP32-S3 → MicroPython）
@@ -158,7 +150,7 @@ uvx mpremote connect /dev/cu.usbmodem<REAL_PROJECT_PORT> reset
 
 此命令部署 `/hinu_motor_master.py` 及 `/main.py`。開機後以
 `MODE_STOP action=0 → MODE_SET(start_delay_ms=300)` 依次廣播 Mode 0（10s）、
-Mode 1（10s）、Mode 2（180s），然後回到 Mode 0。RS485 仍採
+Mode 1（raw `255` 最快開啟，10s）、Mode 2（raw `0` 最快關閉，10s），然後回到 Mode 0。RS485 仍採
 EN9／TX10／RX11 及 listen-before-talk；只在實際發送時把 EN 拉高。
 
 由 Black Master 發送 Mode 0、1、2 及安全停止：
@@ -201,7 +193,7 @@ pio run -e master_motor_sync_stress -t upload --upload-port /dev/cu.usbmodem1127
 
 `TIME_SYNC` broadcast 只用於維持時鐘，不可由各 Slave 同時回覆；只有 unicast `TIME_SYNC` RTT query 才回覆 `TIME_SYNC_RSP`。否則多塊 Slave 會在 RS485 同一時槽碰撞，令 MODE_SET 積壓並破壞同步。
 
-## 7. 同時監測 Black Slave 1／2
+## 7. 同時監測 Black Slave13／20
 
 回到 UART Design repository：
 

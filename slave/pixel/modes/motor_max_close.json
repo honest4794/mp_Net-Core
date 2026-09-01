@@ -1,7 +1,7 @@
 {
   "version": 1,
   "id": 2,
-  "name": "motor_dev_sine",
+  "name": "motor_max_close",
   "index": 2,
   "play_count": -1,
   "play_interval": 1,
@@ -9,7 +9,7 @@
   "map": [
     {
       "group": "hi_nu_uart_motor_test.all_uart_motors",
-      "effect": "uart_motor_dev_sine",
+      "effect": "uart_motor_max_close",
       "write": "rgbw"
     }
   ]

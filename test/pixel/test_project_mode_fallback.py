@@ -27,10 +27,12 @@ from tasks.pixel_task import PixelTask
 
 
 PROFILE = os.path.join(
-    ROOT, "ports", "S3", "ESP32-S3_1_18_project_slave7", "config.json")
+    ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black", "slave07", "config.json")
 BLACK_PROFILES = (
-    os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hiNew", "config.json"),
-    os.path.join(ROOT, "ports", "S3", "ESP32-S3-1_18", "config.json"),
+    os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black",
+                 "slave13", "config.json"),
+    os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black",
+                 "slave20", "config.json"),
 )
 
 
@@ -101,7 +103,7 @@ class ProjectModeIntegrationTests(unittest.TestCase):
     def _loop_task(self):
         task = self._task()
         task._project_mode_ids = [0, 1, 2]
-        task._project_mode_durations_ms = [10000, 10000, 180000]
+        task._project_mode_durations_ms = [10000, 10000, 10000]
         task._modes = {mode_id: {"id": mode_id} for mode_id in (0, 1, 2)}
         task._show_list = [{"id": 99}]
         task._hub = FakeHub()
@@ -204,7 +206,7 @@ class ProjectModeIntegrationTests(unittest.TestCase):
         # Slave scheduler wake-up jitter must not become phase drift.
         task._service_project_mode(20004)
         self.assertEqual([2], [mode["id"] for mode in task._show_list])
-        self.assertEqual(200001, task._project_loop_deadline)
+        self.assertEqual(30001, task._project_loop_deadline)
 
     def test_remote_mode_rebases_continuous_loop_to_common_start_deadline(self):
         task = self._continuous_loop_task()
@@ -224,14 +226,12 @@ class ProjectModeIntegrationTests(unittest.TestCase):
         self.assertEqual(11300, task._project_loop_deadline)
         self.assertEqual([1], [mode["id"] for mode in task._show_list])
 
-    def test_black_profiles_enable_standalone_test_loop(self):
+    def test_black_profiles_enable_single_safe_dev_mode(self):
         expected = {
             "enable": 1,
             "master_timeout_ms": 10000,
             "dev_mode_type": 1,
-            "dev_mode_ids": [0, 1, 2],
-            "dev_mode_durations_ms": [10000, 10000, 180000],
-            "continuous_loop": 1,
+            "dev_mode_id": 2,
         }
         for path in BLACK_PROFILES:
             with open(path, encoding="utf-8") as handle:

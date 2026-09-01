@@ -468,25 +468,24 @@ while True:
 
 ---
 
-## Hi-Nu 1/18 JSON 極速測試模式
+## Hi-Nu Black JSON motor 測試模式
 
 共用 mapping：`slave/pixel/map/hi_nu_uart_motor_test.json`。每塊 Slave 控制自己
 `config.json` 內的全部 UART motor：
 
 | Slave profile | UART motor address |
 |---|---|
-| `ports/S3/ESP32-S3_1_18_hiNew/config.json`（Slave 1） | `19`, `15` |
-| `ports/S3/ESP32-S3-1_18/config.json`（Slave 2） | `12`, `21` |
+| `ports/S3/ESP32-S3_1_18_hinu_black/slave13/config.json` | `45`, `46`, `48`, `49` |
+| `ports/S3/ESP32-S3_1_18_hinu_black/slave20/config.json` | `60`, `61`, `70`, `71` |
 
 兩個 profile 均使用 `frame_interval_ms=20`（50 FPS），所以 500 frame = 10 秒。
 兩者的 `uartMotor.GPIO.uart` 都是 list index `1`，對應第二個 UART（`id=2`、9600 baud）。
-兩者亦使用相同 `sync_broadcast_span=21`，每次都送 24-byte frame，四個控制器在
-各自完整 frame 的同一個 `FE` 才套用命令；`sync_tx_interval_ms=40` 防止 Mode 2
-在 9600 baud 形成 TX backlog。Stop 轉換仍會即時發送。
+兩者都使用 GPIO12 TX、9600 baud 與原始 direct motor frame，不依賴 optional
+broadcast parser。Stop 轉換仍會即時發送。
 RenderTask 的 `is_streaming`／`is_ready`／`is_paused` 控制旗標不經 500ms cache，
 MODE_SET 到達後不會因兩塊 Slave 各自的 cache 到期相位而相差一個 render frame。
 
-目前 Hi-Nu 測試 profile **沒有 `calib` 欄位**，所以四台收到相同 raw command，
+目前 Hi-Nu 測試 profile **沒有 `calib` 欄位**，所以八台收到相同 raw command，
 不作逐台速度補償；`calibrate()`、`calib` loader 及所有校準程式碼仍完整保留，
 日後實測需要時可直接啟用。
 
@@ -494,7 +493,7 @@ MODE_SET 到達後不會因兩塊 Slave 各自的 cache 到期相位而相差一
 |---:|---|---|
 | `0` | `motor_diagnostic` | Direction A，effect marker `0x01` 轉 raw `0x00` 真全速，10 秒後保持 `0x80` Stop |
 | `1` | `motor_max_open` | Direction B/Open，raw `0xFF` 真正最高速度，10 秒後保持 Stop |
-| `2` | `motor_dev_sine` | Hi-Nu C++ dev sine：Open 10 秒 → Stop 5 秒 → Close 10 秒 → Stop 5 秒；6 cycle／180 秒後保持 Stop |
+| `2` | `motor_max_close` | Direction A/Close，全部 motor 立即以 raw `0` 最快關閉，10 秒後保持 Stop |
 
 Mode 0 定義直接內嵌於 `slave/pixel/registry.json.modes`，不另建
 `pixel/modes/motor_diagnostic.json`；registry `list` 引用 `motor_diagnostic`，部署時
@@ -516,7 +515,8 @@ Direction A/B raw byte。JSON 的 `direction`、`speed_percent`、`speed_curve` 
 旗標，W 保留完整 `0x00..0xFF`；因此峰值 raw `0x00` 和鄰近 raw `0x01` 不會與
 空白 big-buffer W=`0` 混淆。
 
-2026-08-29 四摩打實機同步複測（無 calibration）：Host 對兩塊 motor board 的
+以下是 2026-08-29 舊 Slave1／2 profiles 的四摩打歷史實機結果，不代表目前
+Slave13／20 八 motor 已完成實機驗證：Host 對兩塊 motor board 的
 `play()` trigger 相差 `31.167 us`；Slave 1 地址 `15/19` 運行 `10002.314 ms`，
 Slave 2 地址 `12/21` 運行 `10002.279 ms`。兩板均以 raw `0x00` 開始並以 raw
 `0x80` 停止。這證明命令開始／停止同步；開迴路推桿若仍有行程差，來源是個體

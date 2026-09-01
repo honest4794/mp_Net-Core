@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test 2: offline timing/frame synchronization of both black motor Slaves."""
+"""Test 2: offline timing/frame synchronization of black Slave13/Slave20."""
 
 import argparse
 import json
@@ -16,7 +16,7 @@ if SLAVE_ROOT not in sys.path:
 from lib.hw.uart_motor import STOP, UartMotor
 from lib.sw.effect_core import Effect
 from lib.sw.pixel_layout import PixelLayout
-from pixel.effects.effects import uart_motor_dev_sine, uart_motor_story_mode
+from pixel.effects.effects import uart_motor_max_close, uart_motor_story_mode
 
 
 EFFECTS_PATH = os.path.join(SLAVE_ROOT, "pixel", "effects", "effects.json")
@@ -26,7 +26,7 @@ MAPPING_PATH = os.path.join(
 MODE_PATHS = {
     0: os.path.join(SLAVE_ROOT, "pixel", "registry.json"),
     1: os.path.join(SLAVE_ROOT, "pixel", "modes", "motor_max_open.json"),
-    2: os.path.join(SLAVE_ROOT, "pixel", "modes", "motor_dev_sine.json"),
+    2: os.path.join(SLAVE_ROOT, "pixel", "modes", "motor_max_close.json"),
     3: os.path.join(SLAVE_ROOT, "pixel", "modes", "story_mode_motor.json"),
 }
 
@@ -65,8 +65,8 @@ def _effect(mode):
     params = next(
         item for item in load_json(EFFECTS_PATH)["effects"] if item["name"] == name
     )
-    if name == "uart_motor_dev_sine":
-        cls = uart_motor_dev_sine
+    if name == "uart_motor_max_close":
+        cls = uart_motor_max_close
     elif name == "uart_motor_story_mode":
         cls = uart_motor_story_mode
     else:
@@ -75,6 +75,8 @@ def _effect(mode):
 
 
 def _duration_frames(params):
+    if "duration_frames" in params:
+        return int(params["duration_frames"])
     if params.get("program"):
         cycle = int(params["program"][-1]["end_Time"])
     else:
@@ -125,7 +127,7 @@ def _simulate_profile(profile, mode_id, scheduled_start_ms=300):
             first_motion_ms = clock.now_ms
 
     final_values = controlled_history[-1]
-    if mode_id == 0:
+    if mode_id in (0, 2):
         peak = min(value for values in controlled_history for value in values)
     else:
         peak = max(value for values in controlled_history for value in values)
@@ -212,8 +214,8 @@ def _write_report(path, result):
     ]
     write_markdown_report(
         path,
-        "Hi-Nu 兩黑 Slave／七 motor 同步測試紀錄",
-        "Host 以真實 JSON effect、兩份 black config 及 UART-412 encoder 重播 Mode 0–3。",
+        "Hi-Nu Slave13／20 八 motor 同步測試紀錄",
+        "Host 以真實 JSON effect、Slave13／20 config 及 UART-412 encoder 重播 Mode 0–3。",
         rows,
     )
 

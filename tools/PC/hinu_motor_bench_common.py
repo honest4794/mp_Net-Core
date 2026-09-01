@@ -19,8 +19,10 @@ from lib.sys.sys_bus import bus
 
 
 BLACK_PROFILES = (
-    os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hiNew", "config.json"),
-    os.path.join(ROOT, "ports", "S3", "ESP32-S3-1_18", "config.json"),
+    os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black",
+                 "slave13", "config.json"),
+    os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black",
+                 "slave20", "config.json"),
 )
 
 BOARD_PORTS = {

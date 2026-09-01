@@ -21,7 +21,7 @@ from pixel.effects.effects import (
     uart_dc_motor_profile_speed,
     uart_dc_motor_scale_profile_speed,
     uart_dc_motor_value,
-    uart_motor_dev_sine,
+    uart_motor_max_close,
 )
 
 
@@ -33,15 +33,17 @@ DEPLOY_EFFECTS_PATH = os.path.join(
     ROOT, "test", "pixel", "fixtures", "hinu_uart_motor_effects.json"
 )
 SLAVE_PROFILES = {
-    1: (
-        os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hiNew", "config.json"),
-        [13, 15, 19],
-        "0001",
+    13: (
+        os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black",
+                     "slave13", "config.json"),
+        [45, 46, 48, 49],
+        "000D",
     ),
-    2: (
-        os.path.join(ROOT, "ports", "S3", "ESP32-S3-1_18", "config.json"),
-        [10, 12, 17, 21],
-        "0002",
+    20: (
+        os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black",
+                     "slave20", "config.json"),
+        [60, 61, 70, 71],
+        "0014",
     ),
 }
 
@@ -134,7 +136,7 @@ class MotorStoryModeTests(unittest.TestCase):
         names = {
             "uart_motor_diagnostic",
             "uart_motor_max_open",
-            "uart_motor_dev_sine",
+            "uart_motor_max_close",
         }
         canonical = {
             item["name"]: item
@@ -341,7 +343,7 @@ class MotorStoryModeTests(unittest.TestCase):
         expected = {
             0: "uart_motor_diagnostic",
             1: "uart_motor_max_open",
-            2: "uart_motor_dev_sine",
+            2: "uart_motor_max_close",
         }
         for mode_id, effect_name in expected.items():
             mode = mode_by_id(mode_id)
@@ -369,35 +371,18 @@ class MotorStoryModeTests(unittest.TestCase):
         self.assertEqual(2048, effect.frame(500)[0])
         self.assertEqual(2048, effect.frame(5000)[0])
 
-    def test_mode_two_repeats_six_sine_cycles_then_stays_stopped(self):
-        """Mode 2 follows storyMode_dev's B/stop/A/stop timing for six cycles."""
-        effect = uart_motor_dev_sine(
-            "uart_motor_dev_sine", effect_params("uart_motor_dev_sine"))
+    def test_mode_two_sends_true_max_close_then_stays_stopped(self):
+        """Any ramp or non-zero close command would make Mode 2 slower."""
+        effect = uart_motor_max_close(
+            "uart_motor_max_close", effect_params("uart_motor_max_close"))
 
-        # rgbw transport: R=4095 is the explicit-raw marker; W=raw << 4.
-        expected_raw = {
-            0: 128,
-            125: 242,
-            250: 255,
-            375: 242,
-            499: 131,
-            500: 128,
-            750: 128,
-            875: 13,
-            1000: 0,
-            1125: 13,
-            1249: 125,
-            1250: 128,
-            1500: 128,
-            9000: 128,
-            20000: 128,
-        }
+        expected_raw = {0: 0, 250: 0, 499: 0, 500: 128, 5000: 128}
         for frame_no, raw in expected_raw.items():
             frame = effect.frame(frame_no)
             self.assertEqual([4095, 0, 0], list(frame[:3]))
             self.assertEqual(raw << 4, frame[3], frame_no)
 
-    def test_mode_two_math_matches_hinu_cpp_reference_vectors(self):
+    def test_uart_motor_sine_math_matches_hinu_cpp_reference_vectors(self):
         """Literal vectors pin patterns_uart_dc_motor.cpp's two-stage sine math."""
         expected = {
             0: (0, 0, 128, 128),
@@ -505,11 +490,11 @@ class MotorStoryModeTests(unittest.TestCase):
             self.assertEqual(direct_chain(expected_addresses, 0x00), emit(0))
             self.assertEqual(direct_chain(expected_addresses, 0x80), emit(500))
 
-    def test_mode_two_peak_sends_exact_raw_zero_through_rgbw_transport(self):
-        """C++ A peak must survive Pixel's blank-W safety rule as explicit raw 0x00."""
+    def test_mode_two_sends_exact_raw_zero_through_rgbw_transport(self):
+        """Max close must survive Pixel's blank-W safety rule as explicit raw 0x00."""
         mapping = load_json(MAPPING_PATH)
-        effect = uart_motor_dev_sine(
-            "uart_motor_dev_sine", effect_params("uart_motor_dev_sine"))
+        effect = uart_motor_max_close(
+            "uart_motor_max_close", effect_params("uart_motor_max_close"))
 
         for _slave_id, (profile_path, expected_addresses, _cid) in SLAVE_PROFILES.items():
             motor_cfg = load_json(profile_path)["uartMotor"]["list"][0]
@@ -527,7 +512,7 @@ class MotorStoryModeTests(unittest.TestCase):
             frame = bytearray(motor.frame_size)
             layout.scatter(
                 frame, mapping["name"], "all_uart_motors",
-                effect.frame(1000), "rgbw",
+                effect.frame(0), "rgbw",
             )
             motor.st_load_and_convert(frame, 0)
             motor.st_show()

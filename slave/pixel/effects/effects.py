@@ -244,63 +244,21 @@ def uart_dc_motor_value(direction, speed_percent):
     raise ValueError("UART motor direction 必須是 A 或 B: {}".format(direction))
 
 
-class uart_motor_dev_sine:
-    """JSON 時序 + C++ 雙層 sine；輸出 rgbw 明確 raw motor payload。
-
-    R=4095 是明確 raw 旗標，W=raw<<4。這讓 raw 0x00 不會被 big_buffer
-    的空白 0 安全保護改成 STOP，也保留 raw 0x01 的獨立語義。
-    """
+class uart_motor_max_close:
+    """Hi-Nu Mode 2：所有 motor 立即以 raw 0x00 全速關閉。"""
 
     def __init__(self, name, params=None):
         params = params or {}
         self.name = name
         self.id = params.get("id")
         self.pixel_n = 4
-        self.program = params.get("program") or []
-        self.cycles = int(params.get("cycles", 1))
+        self.duration_frames = max(0, int(params.get("duration_frames", 0)))
         self.hold_raw = max(0, min(int(params.get("hold_raw", 128)), 255))
         self._t = 0
         self._buf = _array('H', [4095, 0, 0, self.hold_raw << 4])
-        self._compiled = []
-
-        previous = 0
-        for segment in self.program:
-            end = int(segment.get("end_Time", 0))
-            if end <= previous:
-                raise ValueError("UART motor end_Time 必須遞增")
-            kind = str(segment.get("type", "uart_motor_stop"))
-            if kind == "uart_motor_sine":
-                direction = str(segment.get("direction", "")).upper()
-                if direction not in ("A", "B"):
-                    raise ValueError("uart_motor_sine direction 必須是 A/B")
-                speed = int(segment.get("speed_percent", 100))
-                curve = str(segment.get("speed_curve", "Sine"))
-            elif kind == "uart_motor_stop":
-                direction, speed, curve = "", 0, "Linear"
-            else:
-                raise ValueError("未知 UART motor program type: {}".format(kind))
-            self._compiled.append((previous, end, kind, direction, speed, curve))
-            previous = end
-        self._total = previous
 
     def frame(self, t):
-        absolute = int(t)
-        if self._total <= 0 or self.cycles <= 0:
-            raw = self.hold_raw
-        elif absolute >= self._total * self.cycles:
-            raw = self.hold_raw
-        else:
-            phase = absolute % self._total
-            raw = self.hold_raw
-            for start, end, kind, direction, maximum, curve in self._compiled:
-                if phase < end:
-                    if kind == "uart_motor_sine":
-                        profile = uart_dc_motor_profile_speed(
-                            phase - start, end - start)
-                        speed = uart_dc_motor_scale_profile_speed(
-                            profile, maximum, curve)
-                        raw = uart_dc_motor_value(direction, speed)
-                    break
+        raw = 0 if 0 <= int(t) < self.duration_frames else self.hold_raw
         self._buf[3] = raw << 4
         return self._buf
 
@@ -319,7 +277,7 @@ class uart_motor_dev_sine:
         return buf
 
 
-register(uart_motor_dev_sine)
+register(uart_motor_max_close)
 
 
 class uart_motor_story_mode:

@@ -5,9 +5,9 @@
   "System": {
     "dual_core_mode": "0",
     "boot_strict": 0,
-    "c_lum": 1.0,
+    "c_lum": 1,
     "hostname": "",
-    "cID": "0002",
+    "cID": "0005",
     "refresh_rate_ms": 1,
     "master_IP": "",
     "master_port": 0,
@@ -20,10 +20,9 @@
   },
   "Buffer": {
     "rx_hub_buffers": 16,
-    "drop_on_full": 0,
+    "drop_on_full": 1,
     "drain_reads": 1,
-    "fb_mode": "auto",
-    "u8_rx_slots": 8
+    "fb_mode": "auto"
   },
   "Network": {
     "priority": [
@@ -69,45 +68,21 @@
       }
     ]
   },
-  "ProjectMode": {
-    "enable": 1,
-    "master_timeout_ms": 10000,
-    "dev_mode_type": 1,
-    "dev_mode_ids": [0, 1, 2],
-    "dev_mode_durations_ms": [10000, 10000, 180000],
-    "continuous_loop": 1
-  },
   "SPI": {
     "enable": 0,
-    "list": [
-      {
-        "id": 1,
-        "baudrate": 80000000,
-        "phase": 0,
-        "polarity": 0,
-        "GPIO": {
-          "sck": 21,
-          "mosi": null,
-          "miso": null
-        },
-        "data_pins": [
-          14
-        ]
-      }
-    ]
+    "list": []
   },
   "I2C": {
     "enable": 0,
-    "list": [
-      {
-        "id": 0,
-        "freq": 400000,
-        "GPIO": {
-          "scl": 40,
-          "sda": 38
-        }
-      }
-    ]
+    "list": []
+  },
+  "HUSB238": {
+    "enable": 0,
+    "addr": "0x08",
+    "default_voltage": null,
+    "GPIO": {
+      "i2c": 0
+    }
   },
   "UART": {
     "enable": 1,
@@ -136,13 +111,11 @@
   },
   "PWM": {
     "enable": 0,
-    "list": [
-      {
-        "GPIO": 0,
-        "dStay": 0,
-        "type": 0
-      }
-    ]
+    "list": []
+  },
+  "ENC": {
+    "enable": 0,
+    "list": []
   },
   "I2S": {
     "enable": 0,
@@ -151,6 +124,10 @@
   "SDcard": {
     "enable": 0,
     "phat": "/sd",
+    "LDO": {
+      "id": 4,
+      "mv": 3300
+    },
     "config": {
       "slot": 0,
       "width": 4,
@@ -170,58 +147,7 @@
   },
   "PIN": {
     "enable": 0,
-    "list": [
-      {
-        "GPIO": 11,
-        "label": "tft_cs",
-        "mode": "OUT",
-        "initial": 1
-      },
-      {
-        "GPIO": 12,
-        "label": "tft_dc",
-        "mode": "OUT",
-        "initial": 0
-      },
-      {
-        "GPIO": 13,
-        "label": "tft_rst",
-        "mode": "OUT",
-        "initial": 1
-      },
-      {
-        "GPIO": 10,
-        "label": "tft_bl",
-        "mode": "OUT",
-        "initial": 0
-      },
-      {
-        "GPIO": 17,
-        "label": "encC",
-        "mode": "IN",
-        "initial": 0,
-        "pull": "UP"
-      },
-      {
-        "GPIO": 42,
-        "label": "btn",
-        "mode": "IN",
-        "initial": 0,
-        "pull": "UP"
-      }
-    ]
-  },
-  "ENC": {
-    "enable": 0,
-    "list": [
-      {
-        "id": 0,
-        "GPIO": {
-          "a": 18,
-          "b": 8
-        }
-      }
-    ]
+    "list": []
   },
   "TFT": {
     "enable": 0,
@@ -241,64 +167,17 @@
       "bl": "tft_bl"
     }
   },
-  "HUSB238": {
-    "enable": 0,
-    "addr": "0x08",
-    "default_voltage": null,
-    "GPIO": {
-      "i2c": 0
-    }
-  },
   "WS2812": {
     "enable": 0,
-    "list": [
-      {
-        "GPIO": 15,
-        "Q": 10,
-        "order": "GRB",
-        "dStay": 0
-      },
-      {
-        "GPIO": 16,
-        "Q": 10,
-        "order": "GRB",
-        "dStay": 0
-      },
-      {
-        "GPIO": 17,
-        "Q": 10,
-        "order": "GRB",
-        "dStay": 0
-      }
-    ]
+    "list": []
   },
   "APA102": {
     "enable": 0,
-    "list": [
-      {
-        "GPIO": {
-          "spi": 0
-        },
-        "Q": 290,
-        "order": "BGRW",
-        "dStay": 0
-      }
-    ]
+    "list": []
   },
   "PCA9685": {
     "enable": 0,
-    "list": [
-      {
-        "GPIO": {
-          "i2c": 0,
-          "type": 0
-        },
-        "address": [
-          "0x40"
-        ],
-        "dStay": 0
-      }
-    ]
+    "list": []
   },
   "uartMotor": {
     "enable": 1,
@@ -308,14 +187,21 @@
           "uart": 1
         },
         "address": [
-          "10",
-          "12",
-          "17",
-          "21"
+          "73",
+          "75",
+          "74",
+          "76",
+          "77"
         ],
         "version": 1,
         "dStay": 2048
       }
     ]
+  },
+  "ProjectMode": {
+    "enable": 1,
+    "master_timeout_ms": 10000,
+    "dev_mode_type": 1,
+    "dev_mode_id": 2
   }
 }

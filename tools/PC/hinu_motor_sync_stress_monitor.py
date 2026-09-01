@@ -162,7 +162,7 @@ def collect(slave1_port, slave2_port, samples_per_lead, timeout_seconds,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Measure Black Slave1/2 scheduled-start skew")
+        description="Measure two Black Slave scheduled-start skew")
     parser.add_argument("--slave1-port", required=True)
     parser.add_argument("--slave2-port", required=True)
     parser.add_argument("--samples-per-lead", type=int, default=100)

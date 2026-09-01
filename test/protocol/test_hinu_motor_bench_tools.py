@@ -410,7 +410,7 @@ class CommandProgramTests(unittest.TestCase):
             ],
             decoded,
         )
-        self.assertEqual([10300, 10300, 180300], sleeps)
+        self.assertEqual([10300, 10300, 10300], sleeps)
 
     def test_black_master_uses_gpio9_10_11_rs485_wiring(self):
         """Using the former GPIO14/15/16 map sends valid NC4 bytes to no transceiver."""
@@ -615,8 +615,8 @@ class CommandProgramTests(unittest.TestCase):
         self.assertEqual("01002c01ff", result["payload_hex"])
         self.assertEqual(
             [
-                {"cid": "0001", "motor_addresses": [13, 15, 19], "start_at_ms": 1300},
-                {"cid": "0002", "motor_addresses": [10, 12, 17, 21], "start_at_ms": 1300},
+                {"cid": "000D", "motor_addresses": [45, 46, 48, 49], "start_at_ms": 1300},
+                {"cid": "0014", "motor_addresses": [60, 61, 70, 71], "start_at_ms": 1300},
             ],
             result["slaves"],
         )
@@ -632,12 +632,13 @@ class CommandProgramTests(unittest.TestCase):
 
 
 class SynchronizationProgramTests(unittest.TestCase):
-    def test_modes_zero_one_two_have_zero_offline_skew_for_all_seven_motors(self):
+    def test_modes_zero_one_two_have_zero_offline_skew_for_all_eight_motors(self):
         """Different profile timing or one omitted address must fail the bench."""
         result = hinu_motor_sync_test.run_offline_sync_test((0, 1, 2))
 
         self.assertEqual("PASS", result["result"])
-        self.assertEqual([13, 15, 19, 10, 12, 17, 21], result["motor_addresses"])
+        self.assertEqual(
+            [45, 46, 48, 49, 60, 61, 70, 71], result["motor_addresses"])
         for mode in result["modes"]:
             self.assertEqual(0, mode["scheduled_start_skew_ms"])
             self.assertEqual(0, mode["first_motion_skew_ms"])
@@ -648,11 +649,12 @@ class SynchronizationProgramTests(unittest.TestCase):
         by_id = {item["mode_id"]: item for item in result["modes"]}
         self.assertEqual(0x00, by_id[0]["peak_value"])
         self.assertEqual(0xFF, by_id[1]["peak_value"])
+        self.assertEqual(0x00, by_id[2]["peak_value"])
         self.assertEqual(10000, by_id[0]["stop_at_ms"])
         self.assertEqual(10000, by_id[1]["stop_at_ms"])
-        self.assertEqual(180000, by_id[2]["stop_at_ms"])
+        self.assertEqual(10000, by_id[2]["stop_at_ms"])
 
-    def test_story_mode_motor_uses_one_deadline_and_stops_all_seven_motors(self):
+    def test_story_mode_motor_uses_one_deadline_and_stops_all_eight_motors(self):
         """Staggering either black Slave or omitting the final dead-zone STOP is unsafe."""
         try:
             result = hinu_motor_sync_test.run_offline_sync_test((3,))
@@ -660,7 +662,8 @@ class SynchronizationProgramTests(unittest.TestCase):
             self.fail("storyMode_motor mode 3 is not registered")
 
         self.assertEqual("PASS", result["result"])
-        self.assertEqual([13, 15, 19, 10, 12, 17, 21], result["motor_addresses"])
+        self.assertEqual(
+            [45, 46, 48, 49, 60, 61, 70, 71], result["motor_addresses"])
         story = result["modes"][0]
         self.assertEqual(3, story["mode_id"])
         self.assertEqual(0, story["scheduled_start_skew_ms"])

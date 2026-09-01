@@ -1,481 +1,79 @@
 {
-  "version": 1,
+  "version": 2,
   "name": "hi_nu_motor_project",
   "motor_open_interval_ms": 5000,
+  "directions": {
+    "close": {"direction": "A", "raw": 0},
+    "open": {"direction": "B", "raw": 255}
+  },
   "excluded_addresses": [
-    {
-      "address": 35,
-      "reason": "short_circuit",
-      "replacement": 38
-    }
+    {"address": 35, "reason": "short_circuit", "replacement": 38}
   ],
-  "unsequenced_addresses": [
-    39,
-    40
-  ],
+  "unsequenced_addresses": [41],
   "stages": [
     {
       "sequence": "1",
       "targets": [
-        {
-          "slave_id": 9,
-          "addresses": [
-            22
-          ]
-        },
-        {
-          "slave_id": 11,
-          "addresses": [
-            23
-          ]
-        }
+        {"slave_id": 1, "addresses": [40]},
+        {"slave_id": 12, "addresses": [42]}
       ]
     },
     {
       "sequence": "2",
       "targets": [
-        {
-          "slave_id": 8,
-          "addresses": [
-            24
-          ]
-        },
-        {
-          "slave_id": 10,
-          "addresses": [
-            28
-          ]
-        }
+        {"slave_id": 9, "addresses": [22]},
+        {"slave_id": 11, "addresses": [23]},
+        {"slave_id": 8, "addresses": [24, 25, 26]},
+        {"slave_id": 10, "addresses": [28, 29, 30]}
       ]
     },
     {
       "sequence": "3",
       "targets": [
-        {
-          "slave_id": 8,
-          "addresses": [
-            25,
-            26
-          ]
-        },
-        {
-          "slave_id": 10,
-          "addresses": [
-            29,
-            30
-          ]
-        }
+        {"slave_id": 8, "addresses": [27]},
+        {"slave_id": 10, "addresses": [31]},
+        {"slave_id": 7, "addresses": [32, 33, 34, 38, 36, 37]}
       ]
     },
     {
       "sequence": "4",
       "targets": [
-        {
-          "slave_id": 8,
-          "addresses": [
-            27
-          ]
-        },
-        {
-          "slave_id": 10,
-          "addresses": [
-            31
-          ]
-        }
+        {"slave_id": 5, "addresses": [73, 75, 74, 76, 77]},
+        {"slave_id": 3, "addresses": [83, 85, 84, 86, 87]}
+      ],
+      "pending_components": [
+        {"part": "胸", "motion": "正前方"},
+        {"part": "胸", "motion": "兩邊散氣口甲"},
+        {"part": "胸", "motion": "駕駛艙上"},
+        {"part": "胸", "motion": "駕駛艙中"},
+        {"part": "胸", "motion": "駕駛艙下"}
       ]
     },
     {
       "sequence": "5",
       "targets": [
-        {
-          "slave_id": 7,
-          "addresses": [
-            32,
-            33,
-            34,
-            38,
-            36,
-            37
-          ]
-        }
+        {"slave_id": 15, "addresses": [43]},
+        {"slave_id": 14, "addresses": [44]},
+        {"slave_id": 13, "addresses": [45, 46, 48, 49]},
+        {"slave_id": 20, "addresses": [60, 61, 70, 71]}
       ]
     },
     {
       "sequence": "6",
       "targets": [
-        {
-          "slave_id": 1,
-          "addresses": [
-            "X"
-          ]
-        }
+        {"slave_id": 14, "addresses": [53, 91, 63, 101, 54, 92, 64, 102, 55, 93, 65, 103]},
+        {"slave_id": 15, "addresses": [57, 94, 67, 104, 58, 95, 68, 105, 59, 96, 69, 106]}
       ]
     },
     {
       "sequence": "7",
       "targets": [
-        {
-          "slave_id": 1,
-          "addresses": [
-            "X"
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "8",
-      "targets": [
-        {
-          "slave_id": 1,
-          "addresses": [
-            "X"
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "9",
-      "targets": [
-        {
-          "slave_id": 1,
-          "addresses": [
-            "X"
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "10",
-      "targets": [
-        {
-          "slave_id": 1,
-          "addresses": [
-            "X"
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "11",
-      "targets": [
-        {
-          "slave_id": 1,
-          "addresses": [
-            41
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "12",
-      "targets": [
-        {
-          "slave_id": 1,
-          "addresses": [
-            42
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "13",
-      "targets": [
-        {
-          "slave_id": 3,
-          "addresses": [
-            "X"
-          ]
-        },
-        {
-          "slave_id": 5,
-          "addresses": [
-            "X"
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "14",
-      "targets": [
-        {
-          "slave_id": 3,
-          "addresses": [
-            "X"
-          ]
-        },
-        {
-          "slave_id": 5,
-          "addresses": [
-            "X"
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "15",
-      "targets": [
-        {
-          "slave_id": 3,
-          "addresses": [
-            "X"
-          ]
-        },
-        {
-          "slave_id": 5,
-          "addresses": [
-            "X"
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "16",
-      "targets": [
-        {
-          "slave_id": 12,
-          "addresses": [
-            "X"
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "17",
-      "targets": [
-        {
-          "slave_id": 15,
-          "addresses": [
-            43
-          ]
-        },
-        {
-          "slave_id": 14,
-          "addresses": [
-            44
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "18",
-      "targets": [
-        {
-          "slave_id": 16,
-          "addresses": [
-            53
-          ]
-        },
-        {
-          "slave_id": 17,
-          "addresses": [
-            57
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "18A",
-      "targets": [
-        {
-          "slave_id": 16,
-          "addresses": [
-            91
-          ]
-        },
-        {
-          "slave_id": 17,
-          "addresses": [
-            94
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "19",
-      "targets": [
-        {
-          "slave_id": 16,
-          "addresses": [
-            63
-          ]
-        },
-        {
-          "slave_id": 17,
-          "addresses": [
-            67
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "19A",
-      "targets": [
-        {
-          "slave_id": 16,
-          "addresses": [
-            101
-          ]
-        },
-        {
-          "slave_id": 17,
-          "addresses": [
-            104
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "20",
-      "targets": [
-        {
-          "slave_id": 16,
-          "addresses": [
-            54
-          ]
-        },
-        {
-          "slave_id": 17,
-          "addresses": [
-            58
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "20A",
-      "targets": [
-        {
-          "slave_id": 16,
-          "addresses": [
-            92
-          ]
-        },
-        {
-          "slave_id": 17,
-          "addresses": [
-            95
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "21",
-      "targets": [
-        {
-          "slave_id": 16,
-          "addresses": [
-            64
-          ]
-        },
-        {
-          "slave_id": 17,
-          "addresses": [
-            68
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "21A",
-      "targets": [
-        {
-          "slave_id": 16,
-          "addresses": [
-            102
-          ]
-        },
-        {
-          "slave_id": 17,
-          "addresses": [
-            105
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "22",
-      "targets": [
-        {
-          "slave_id": 16,
-          "addresses": [
-            55
-          ]
-        },
-        {
-          "slave_id": 17,
-          "addresses": [
-            59
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "22A",
-      "targets": [
-        {
-          "slave_id": 16,
-          "addresses": [
-            93
-          ]
-        },
-        {
-          "slave_id": 17,
-          "addresses": [
-            96
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "23",
-      "targets": [
-        {
-          "slave_id": 16,
-          "addresses": [
-            65
-          ]
-        },
-        {
-          "slave_id": 17,
-          "addresses": [
-            69
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "23A",
-      "targets": [
-        {
-          "slave_id": 16,
-          "addresses": [
-            103
-          ]
-        },
-        {
-          "slave_id": 17,
-          "addresses": [
-            106
-          ]
-        }
-      ]
-    },
-    {
-      "sequence": "24",
-      "targets": [
-        {
-          "slave_id": 13,
-          "addresses": [
-            45,
-            46,
-            48,
-            49,
-            60,
-            61,
-            70,
-            71
-          ]
-        }
+        {"slave_id": 1, "addresses": [39]}
+      ],
+      "pending_components": [
+        {"part": "盾", "motion": "中間兩邊"},
+        {"part": "盾", "motion": "頂"},
+        {"part": "盾", "motion": "尾兩邊"}
       ]
     }
   ]

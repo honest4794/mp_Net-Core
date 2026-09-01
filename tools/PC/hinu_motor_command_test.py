@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test 1: black Master NC4 command control of black Slave1/Slave2 motors."""
+"""Test 1: black Master NC4 command control of black Slave13/Slave20 motors."""
 
 import argparse
 import json
@@ -108,14 +108,14 @@ def _write_report(path, results):
     for result in results:
         rows.append((
             "MODE_SET {}".format(result["mode_id"]),
-            "CID 0001/0002 start_at={}ms，payload={}".format(
+            "CID 000D/0014 start_at={}ms，payload={}".format(
                 result["slaves"][0]["start_at_ms"], result["payload_hex"]),
             result["result"],
         ))
     write_markdown_report(
         path,
         "Hi-Nu 黑板 Master→Slaves motor command 測試紀錄",
-        "兩個 black Slave profile 使用同一 NC4 broadcast deadline；hardware 未接。",
+        "Slave13／20 profiles 使用同一 NC4 broadcast deadline；hardware 未接。",
         rows,
     )
 
