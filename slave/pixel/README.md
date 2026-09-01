@@ -136,6 +136,9 @@ scatter/effect/controller**——未來彩色 effect 再接；controller 整合�
 {
   "version": 1,
   "auto_play": false,
+  "remote_mode_aliases": [
+    {"mode_type": 2, "mode_id": 2, "local_mode_id": 3}
+  ],
   "modes": [
     {"id": 0, "name": "diagnostic", "mapping": "gundam", "map": []}
   ],
@@ -144,6 +147,7 @@ scatter/effect/controller**——未來彩色 effect 再接；controller 整合�
 ```
 
 - `modes`（選用）：直接內嵌 mode 定義；適合專案診斷／短清單，不需另建 mode 檔。
+- `remote_mode_aliases`（選用）：依遠端 `(mode_type, mode_id)` 選擇本機 mode；`local_mode_id=null` 表示安全 STOP，但 NC4 status 仍回報原遠端 key。Hi-Nu 用它保留 LED bench ID，同時對齊正式 Servo ID 0–3。
 - `list`：mode 名稱（或 id）依序播放 = 大隊列；順序即播放順序，播完一輪 → 再從頭循環。
 - `auto_play=false`（或檔案不存在）→ 不自動播放，等指令層下 `pixel_play`。
 

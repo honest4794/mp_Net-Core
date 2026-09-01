@@ -1,6 +1,12 @@
 {
   "version": 1,
   "auto_play": false,
+  "remote_mode_aliases": [
+    {"mode_type": 2, "mode_id": 0, "local_mode_id": null},
+    {"mode_type": 2, "mode_id": 1, "local_mode_id": null},
+    {"mode_type": 2, "mode_id": 2, "local_mode_id": 3},
+    {"mode_type": 2, "mode_id": 3, "local_mode_id": 2}
+  ],
   "modes": [
     {
       "version": 1,

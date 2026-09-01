@@ -104,6 +104,7 @@ class PixelTask(Task):
         self._modes = {}
         self._show = {"auto_play": False, "list": []}
         self._show_list = []
+        self._remote_mode_aliases = {}
         self._orig_show_list = None   # 遠端單模式播放前的原始 show list (結束後還原)
         self._playing = False
         self._paused = False
@@ -340,16 +341,23 @@ class PixelTask(Task):
     def _init_show(self):
         """載入 registry.json（播放清單 + auto_play）→ bus.shared["pixel_show"]。"""
         show = {"auto_play": False, "list": []}
+        aliases = {}
         try:
             with open(REGISTRY_JSON) as f:
                 d = json.load(f)
             show["auto_play"] = bool(d.get("auto_play", False))
             show["list"] = d.get("list", [])
+            for entry in d.get("remote_mode_aliases", []):
+                key = (int(entry["mode_type"]), int(entry["mode_id"]))
+                local_mode_id = entry.get("local_mode_id")
+                aliases[key] = (None if local_mode_id is None
+                                else int(local_mode_id))
         except OSError:
             get_log().warn("[Pixel] 找不到 {} — 關閉自動播放".format(REGISTRY_JSON))
         except Exception as e:
             get_log().error("[Pixel] 載入 {} 失敗: {}".format(REGISTRY_JSON, e))
         self._show = show
+        self._remote_mode_aliases = aliases
         bus.shared["pixel_show"] = show
 
         lst = []
@@ -684,11 +692,26 @@ class PixelTask(Task):
             if (self._project_fallback_pending
                     and int(rid) == self._project_mode_id):
                 self._project_fallback_pending = False
+            remote_mode_type = 0
             try:
-                mode = self._modes.get(int(rid))
+                remote_mode_id = int(rid)
+                status = bus.shared.get("pixel_nc4_status") or {}
+                remote_mode_type = int(status.get("mode_type", 0) or 0)
+                alias_key = (remote_mode_type, remote_mode_id)
+                local_mode_id = self._remote_mode_aliases.get(
+                    alias_key, remote_mode_id)
+                mode = (None if local_mode_id is None
+                        else self._modes.get(local_mode_id))
             except (TypeError, ValueError):
+                remote_mode_id = rid
+                local_mode_id = rid
                 mode = None
-            if mode:
+            if local_mode_id is None:
+                self._stop()
+                get_log().info(
+                    "[Pixel] remote mode type={} id={} → motor STOP".format(
+                        remote_mode_type, remote_mode_id))
+            elif mode:
                 if self._orig_show_list is None:
                     self._orig_show_list = self._show_list
                 self._show_list = [mode]
@@ -701,10 +724,14 @@ class PixelTask(Task):
                     except AttributeError:
                         started_at = int(time.monotonic() * 1000)
                 self._rebase_project_loop(
-                    int(rid), int(started_at))
-                get_log().info("[Pixel] ▶ remote play mode {}".format(rid))
+                    int(remote_mode_id), int(started_at))
+                get_log().info(
+                    "[Pixel] ▶ remote play type={} id={} → local mode {}".format(
+                        remote_mode_type, remote_mode_id, local_mode_id))
             else:
-                get_log().warn("[Pixel] remote mode {} 不存在".format(rid))
+                get_log().warn(
+                    "[Pixel] remote mode type={} id={}（local {}）不存在".format(
+                        remote_mode_type, remote_mode_id, local_mode_id))
         # 遠端停止本地模式 (0x3106 MODE_STOP) → 熄燈並還原 show list
         if bus.shared.pop("pixel_remote_stop", None) is not None:
             if self._orig_show_list is not None:
