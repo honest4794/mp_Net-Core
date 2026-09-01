@@ -56,6 +56,7 @@
 | [06_raw_sd_plan.md](03_notes/06_raw_sd_plan.md) | Raw SD 繞過 FAT 兩階段計劃（Python 層 + Async C module） |
 | [07_pixel_test_results.md](03_notes/07_pixel_test_results.md) | pixel 測試結果：準確度 / 性能基準 / 未來方向 |
 | [08_hinu_motor_two_stage_test.md](03_notes/08_hinu_motor_two_stage_test.md) | Hi-Nu black Master command 與兩 Slave／四 motor 同步的兩階段測試紀錄 |
+| [09_hinu_black_slave15_safe_upload.md](03_notes/09_hinu_black_slave15_safe_upload.md) | Figma wiring 無法核對時，黑色 Slave15 的零輸出安全設定與最小上載範圍 |
 
 ---
 

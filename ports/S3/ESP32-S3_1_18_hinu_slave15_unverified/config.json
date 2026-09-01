@@ -1,0 +1,110 @@
+{
+    "scan_ignore": [
+        "/sd"
+    ],
+    "System": {
+        "dual_core_mode": "0",
+        "boot_strict": 0,
+        "c_lum": 1.0,
+        "hostname": "",
+        "cID": "000F",
+        "refresh_rate_ms": 1,
+        "debug_level": 1,
+        "master_IP": "",
+        "master_port": 0,
+        "discovery_port": 9000,
+        "heartbeat_interval": 10000,
+        "frame_interval_ms": 20,
+        "num_pixels": 0,
+        "buffer_frames": 1,
+        "log_interval_ms": 1000
+    },
+    "Buffer": {
+        "rx_hub_buffers": 16,
+        "drop_on_full": 1,
+        "drain_reads": 1,
+        "fb_mode": "auto",
+        "u8_rx_slots": 8
+    },
+    "Network": {
+        "priority": [],
+        "lan": {
+            "enable": 0
+        },
+        "wifi": {
+            "enable": 0,
+            "timeout": 300,
+            "ssid": "",
+            "ssid_pw": ""
+        },
+        "ESP_now": {
+            "enable": 0,
+            "channel": 6
+        }
+    },
+    "CircuitDecode": {
+        "enable": 0,
+        "list": []
+    },
+    "ProjectMode": {
+        "enable": 0,
+        "master_timeout_ms": 10000,
+        "dev_mode_type": 1,
+        "dev_mode_ids": [],
+        "dev_mode_durations_ms": [],
+        "continuous_loop": 0
+    },
+    "SPI": {
+        "enable": 0,
+        "list": []
+    },
+    "I2C": {
+        "enable": 0,
+        "list": []
+    },
+    "UART": {
+        "enable": 0,
+        "list": []
+    },
+    "PWM": {
+        "enable": 0,
+        "list": []
+    },
+    "I2S": {
+        "enable": 0,
+        "list": []
+    },
+    "SDcard": {
+        "enable": 0
+    },
+    "PIN": {
+        "enable": 0,
+        "list": []
+    },
+    "ENC": {
+        "enable": 0,
+        "list": []
+    },
+    "TFT": {
+        "enable": 0
+    },
+    "HUSB238": {
+        "enable": 0
+    },
+    "WS2812": {
+        "enable": 0,
+        "list": []
+    },
+    "APA102": {
+        "enable": 0,
+        "list": []
+    },
+    "PCA9685": {
+        "enable": 0,
+        "list": []
+    },
+    "uartMotor": {
+        "enable": 0,
+        "list": []
+    }
+}
