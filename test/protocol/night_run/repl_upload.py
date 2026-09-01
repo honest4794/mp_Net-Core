@@ -15,10 +15,28 @@
 """
 
 import base64
+import posixpath
 import sys
 import time
 
 import serial
+
+
+def _mkdir_commands(remote_path):
+    """Build idempotent normal-REPL commands for remote parent directories."""
+    parent = posixpath.dirname(remote_path)
+    if not remote_path.startswith("/") or parent in ("", "/"):
+        return []
+
+    commands = []
+    current = "/"
+    for name in parent.strip("/").split("/"):
+        next_path = posixpath.join(current, name)
+        commands.append(
+            "os.mkdir(%r) if %r not in os.listdir(%r) else None" %
+            (next_path, name, current))
+        current = next_path
+    return commands
 
 
 def upload(port, local_path, remote_path):
@@ -39,6 +57,13 @@ def upload(port, local_path, remote_path):
     s.write(b'\x02')   # ctrl-B 離開 raw REPL
     time.sleep(0.6)
     s.reset_input_buffer()
+
+    # Fresh firmware has no /lib, /tasks, etc. Create remote parents first.
+    s.write(b"import os\r\n")
+    time.sleep(0.2)
+    for command in _mkdir_commands(remote_path):
+        s.write((command + "\r\n").encode())
+        time.sleep(0.2)
 
     # 分塊寫入 b64 到暫存檔
     s.write(b"f=open('/_up.b64','wb')\r\n")

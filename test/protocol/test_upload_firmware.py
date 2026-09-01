@@ -4,6 +4,7 @@
 import importlib.util
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
@@ -15,8 +16,13 @@ spec = importlib.util.spec_from_file_location("upload_firmware", MODULE_PATH)
 upload_firmware = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(upload_firmware)
 
+REPL_UPLOADER_PATH = ROOT / "test" / "protocol" / "night_run" / "repl_upload.py"
+repl_spec = importlib.util.spec_from_file_location("repl_upload", REPL_UPLOADER_PATH)
+repl_upload = importlib.util.module_from_spec(repl_spec)
+repl_spec.loader.exec_module(repl_upload)
 
-class UploadConfigurationTests(unittest.TestCase):
+
+class _UploadFixture(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
@@ -44,6 +50,9 @@ class UploadConfigurationTests(unittest.TestCase):
             encoding="utf-8",
         )
         return path
+
+
+class UploadConfigurationTests(_UploadFixture):
 
     def test_rejects_a_saved_usb_port(self):
         """Accepting a saved port could flash a different board after reconnect."""
@@ -120,6 +129,108 @@ class UploadConfigurationTests(unittest.TestCase):
             port, lambda _prompt: "yes"))
         self.assertTrue(upload_firmware.confirm_erase(
             port, lambda _prompt: "ERASE " + port))
+
+
+class UploadWorkflowTests(_UploadFixture):
+    def setUp(self):
+        super().setUp()
+        (self.root / "slave" / "app.py").write_text("app = 1\n", encoding="utf-8")
+        self.config = upload_firmware.load_config(self.write_ini())
+        self.port = "/dev/cu.usbmodem-initial"
+
+    def test_flash_erase_runs_nothing_when_exact_confirmation_is_missing(self):
+        """A cancelled erase must not fall through into writing firmware."""
+        commands = []
+
+        result = upload_firmware.flash_firmware(
+            self.config,
+            self.port,
+            erase=True,
+            input_fn=lambda _prompt: "yes",
+            runner=lambda command, **_kwargs: commands.append(command),
+        )
+
+        self.assertFalse(result)
+        self.assertEqual([], commands)
+
+    def test_flash_with_erase_uses_the_explicit_port_for_both_commands(self):
+        """The destructive command and write command must target the same verified board."""
+        commands = []
+
+        result = upload_firmware.flash_firmware(
+            self.config,
+            self.port,
+            erase=True,
+            input_fn=lambda _prompt: "ERASE " + self.port,
+            runner=lambda command, **_kwargs: commands.append(command),
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(2, len(commands))
+        self.assertIn(self.port, commands[0])
+        self.assertIn("erase-flash", commands[0])
+        self.assertIn(self.port, commands[1])
+        self.assertIn("write-flash", commands[1])
+
+    def test_file_failure_stops_before_reset_and_later_files(self):
+        """Resetting after a partial deploy can boot an inconsistent application tree."""
+        (self.root / "slave" / "later.py").write_text("later = 1\n", encoding="utf-8")
+        commands = []
+
+        def failing_runner(command, **_kwargs):
+            commands.append(command)
+            raise subprocess.CalledProcessError(1, command)
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            upload_firmware.deploy_files(
+                self.config, self.port, runner=failing_runner)
+
+        self.assertEqual(1, len(commands))
+        self.assertNotIn("reset", commands[0])
+
+    def test_dry_run_prints_workflow_without_calling_hardware_runner(self):
+        """Dry-run that opens serial hardware is not a safe preview."""
+        commands = []
+
+        count = upload_firmware.deploy_files(
+            self.config,
+            self.port,
+            dry_run=True,
+            runner=lambda command, **_kwargs: commands.append(command),
+        )
+
+        self.assertEqual(1, count)
+        self.assertEqual([], commands)
+
+    def test_all_reconfirms_port_before_deploying_application_files(self):
+        """Silently reusing the pre-flash port can deploy to a re-enumerated board."""
+        files_port = "/dev/cu.usbmodem-after-flash"
+        commands = []
+
+        result = upload_firmware.run_all(
+            self.config,
+            self.port,
+            input_fn=lambda _prompt: files_port,
+            runner=lambda command, **_kwargs: commands.append(command),
+            sleep_fn=lambda _seconds: None,
+        )
+
+        self.assertTrue(result)
+        self.assertIn(self.port, commands[0])
+        upload_commands = [command for command in commands if os.fspath(self.config.uploader) in command]
+        self.assertEqual(1, len(upload_commands))
+        self.assertIn(files_port, upload_commands[0])
+        self.assertNotIn(self.port, upload_commands[0])
+
+    def test_remote_directory_commands_create_parents_in_order(self):
+        """Writing a nested file before its directories exist fails on fresh firmware."""
+        self.assertEqual(
+            [
+                "os.mkdir('/lib') if 'lib' not in os.listdir('/') else None",
+                "os.mkdir('/lib/sys') if 'sys' not in os.listdir('/lib') else None",
+            ],
+            repl_upload._mkdir_commands("/lib/sys/module.py"),
+        )
 
 
 if __name__ == "__main__":
