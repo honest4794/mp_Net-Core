@@ -119,7 +119,16 @@ class HinuBlackSlaveConfigTests(unittest.TestCase):
                 self.assertEqual(1, len(profile["UART"]["list"]))
 
             self.assertEqual(1, profile["ProjectMode"]["enable"])
-            self.assertEqual(2, profile["ProjectMode"]["dev_mode_id"])
+            self.assertEqual(
+                {
+                    "enable": 1,
+                    "master_timeout_ms": 10000,
+                    "dev_mode_type": 1,
+                    "dev_mode_ids": [2, 1],
+                    "dev_mode_durations_ms": [15000, 15000],
+                },
+                profile["ProjectMode"],
+            )
 
         self.assertEqual(63, len(seen_addresses))
         self.assertNotIn(35, seen_addresses)

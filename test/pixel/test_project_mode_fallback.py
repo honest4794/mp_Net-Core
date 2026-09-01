@@ -28,11 +28,12 @@ from tasks.pixel_task import PixelTask
 
 PROFILE = os.path.join(
     ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black", "slave07", "config.json")
-BLACK_PROFILES = (
-    os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black",
-                 "slave13", "config.json"),
-    os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black",
-                 "slave20", "config.json"),
+BLACK_PROFILE_ROOT = os.path.join(
+    ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black")
+BLACK_PROFILES = tuple(
+    os.path.join(BLACK_PROFILE_ROOT, name, "config.json")
+    for name in sorted(os.listdir(BLACK_PROFILE_ROOT))
+    if name.startswith("slave")
 )
 
 
@@ -226,12 +227,13 @@ class ProjectModeIntegrationTests(unittest.TestCase):
         self.assertEqual(11300, task._project_loop_deadline)
         self.assertEqual([1], [mode["id"] for mode in task._show_list])
 
-    def test_black_profiles_enable_single_safe_dev_mode(self):
+    def test_black_profiles_loop_close_stop_open_stop_without_master(self):
         expected = {
             "enable": 1,
             "master_timeout_ms": 10000,
             "dev_mode_type": 1,
-            "dev_mode_id": 2,
+            "dev_mode_ids": [2, 1],
+            "dev_mode_durations_ms": [15000, 15000],
         }
         for path in BLACK_PROFILES:
             with open(path, encoding="utf-8") as handle:
@@ -245,7 +247,8 @@ class ProjectModeIntegrationTests(unittest.TestCase):
         self.assertEqual("0007", profile["System"]["cID"])
         self.assertEqual(
             {"enable": 1, "master_timeout_ms": 10000,
-             "dev_mode_type": 1, "dev_mode_id": 2},
+             "dev_mode_type": 1, "dev_mode_ids": [2, 1],
+             "dev_mode_durations_ms": [15000, 15000]},
             profile["ProjectMode"],
         )
         rs485 = profile["UART"]["list"][0]

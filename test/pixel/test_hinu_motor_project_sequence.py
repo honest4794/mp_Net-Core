@@ -11,7 +11,7 @@ MANIFEST_PATH = os.path.join(
     ROOT, "slave", "pixel", "sequences", "hi_nu_motor_project.json"
 )
 
-EXPECTED_ORDER = [str(value) for value in range(1, 8)]
+EXPECTED_ORDER = [str(value) for value in range(1, 7)]
 EXPECTED_ROUTES = {
     "1": [(1, [40]), (12, [42])],
     "2": [
@@ -31,10 +31,10 @@ EXPECTED_ROUTES = {
         (13, [45, 46, 48, 49]), (20, [60, 61, 70, 71]),
     ],
     "6": [
+        (1, [39]),
         (14, [53, 91, 63, 101, 54, 92, 64, 102, 55, 93, 65, 103]),
         (15, [57, 94, 67, 104, 58, 95, 68, 105, 59, 96, 69, 106]),
     ],
-    "7": [(1, [39])],
 }
 EXPECTED_PENDING_COMPONENTS = {
     "4": [
@@ -44,7 +44,7 @@ EXPECTED_PENDING_COMPONENTS = {
         {"part": "胸", "motion": "駕駛艙中"},
         {"part": "胸", "motion": "駕駛艙下"},
     ],
-    "7": [
+    "6": [
         {"part": "盾", "motion": "中間兩邊"},
         {"part": "盾", "motion": "頂"},
         {"part": "盾", "motion": "尾兩邊"},

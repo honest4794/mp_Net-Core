@@ -201,6 +201,8 @@ def deploy_files(config, port, dry_run=False, runner=subprocess.run):
     mappings = collect_upload_files(config.source)
     if config.device_config is not None:
         _require_file(config.device_config, "device config")
+        mappings = [mapping for mapping in mappings
+                    if mapping[1] != "/config.json"]
         mappings.insert(0, (config.device_config, "/config.json"))
     if not mappings:
         raise ValueError("application source contains no uploadable files: %s" %

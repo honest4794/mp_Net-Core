@@ -240,8 +240,10 @@ class UploadWorkflowTests(_UploadFixture):
 
         self.assertEqual([], commands)
 
-    def test_configured_device_profile_uploads_to_config_json_first(self):
-        """Restoring the profile after app files could briefly boot unsafe defaults."""
+    def test_configured_device_profile_replaces_source_config_json(self):
+        """Uploading the source default after a profile loses the board identity."""
+        source_config = self.root / "slave" / "config.json"
+        source_config.write_text('{"System": {"cID": ""}}\n', encoding="utf-8")
         (self.root / "profile.json").write_text('{"System": {}}\n', encoding="utf-8")
         config = upload_firmware.load_config(
             self.write_ini("device_config = profile.json\n"))
@@ -255,7 +257,9 @@ class UploadWorkflowTests(_UploadFixture):
 
         self.assertEqual(2, count)
         self.assertEqual("/config.json", commands[0][-1])
+        self.assertEqual(os.fspath(config.device_config), commands[0][-2])
         self.assertEqual("/app.py", commands[1][-1])
+        self.assertNotIn(os.fspath(source_config), [command[-2] for command in commands])
         self.assertIn("reset", commands[2])
 
     def test_remote_directory_commands_create_parents_in_order(self):

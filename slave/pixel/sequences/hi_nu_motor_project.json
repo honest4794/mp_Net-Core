@@ -61,14 +61,9 @@
     {
       "sequence": "6",
       "targets": [
+        {"slave_id": 1, "addresses": [39]},
         {"slave_id": 14, "addresses": [53, 91, 63, 101, 54, 92, 64, 102, 55, 93, 65, 103]},
         {"slave_id": 15, "addresses": [57, 94, 67, 104, 58, 95, 68, 105, 59, 96, 69, 106]}
-      ]
-    },
-    {
-      "sequence": "7",
-      "targets": [
-        {"slave_id": 1, "addresses": [39]}
       ],
       "pending_components": [
         {"part": "盾", "motion": "中間兩邊"},
