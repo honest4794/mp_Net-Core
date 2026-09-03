@@ -37,13 +37,13 @@ SLAVE_PROFILES = {
         os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black",
                      "slave13", "config.json"),
         [45, 46, 48, 49],
-        "000D",
+        "010D",
     ),
     20: (
         os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black",
                      "slave20", "config.json"),
         [60, 61, 70, 71],
-        "0014",
+        "0114",
     ),
 }
 
@@ -149,8 +149,8 @@ class MotorStoryModeTests(unittest.TestCase):
         }
         self.assertEqual(canonical, deployed)
 
-    def test_uart_driver_translates_json_null_to_disabled_rx_pin(self):
-        """MicroPython rejects rx=None; JSON null must become the ESP32 -1 sentinel."""
+    def test_uart_driver_omits_json_null_rx_pin(self):
+        """MicroPython 1.28 rejects rx=None and rx=-1, so omit the argument."""
         uart_calls = []
 
         class FakePin:
@@ -197,7 +197,7 @@ class MotorStoryModeTests(unittest.TestCase):
 
         self.assertEqual(2, uart_calls[0][0])
         self.assertEqual(12, uart_calls[0][1]["tx"].pin)
-        self.assertEqual(-1, uart_calls[0][1]["rx"])
+        self.assertNotIn("rx", uart_calls[0][1])
 
     def test_uart_driver_rx_only_never_drives_shared_rs485_bus(self):
         """Black sidecars share blue A/B: they may receive, but must never reply."""
@@ -277,7 +277,7 @@ class MotorStoryModeTests(unittest.TestCase):
                 sys.modules["lib.sys.log_service"] = old_log_service
 
         underlying = uart_calls[0][2]
-        self.assertEqual(-1, uart_calls[0][1]["tx"])
+        self.assertNotIn("tx", uart_calls[0][1])
         self.assertEqual(11, uart_calls[0][1]["rx"].pin)
         self.assertEqual(0, pins[9].level)
         self.assertEqual(3, wrapped.write(b"ACK"))

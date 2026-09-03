@@ -131,20 +131,21 @@ def init_uart(sysbus=None):
     for item in cfg.get("list", []):
         gpio = item.get("GPIO", {})
         rx_only = bool(item.get("rx_only", 0))
-        # ESP32 MicroPython treats -1 as an explicitly disabled signal pin.
-        # Passing None (the direct JSON null translation) raises
-        # ValueError("invalid pin"), so preserve TX-only/RX-only profiles by
-        # translating absent pins to the native sentinel.
+        # MicroPython 1.28 on ESP32-S3 rejects both None and -1 when they are
+        # explicitly passed as UART pins.  Preserve TX-only/RX-only profiles
+        # by omitting the unused keyword entirely.
         tx_pin = gpio.get("tx")
         rx_pin = gpio.get("rx")
-        uart = UART(
-            item.get("id", 1),
-            baudrate=item.get("baudrate", 115200),
-            tx=-1 if rx_only else (Pin(tx_pin) if tx_pin is not None else -1),
-            rx=Pin(rx_pin) if rx_pin is not None else -1,
-            rxbuf=item.get("rxbuf", 16384),     # 接收：≥ 最大幀 8205B，一次給足留餘裕
-            txbuf=item.get("txbuf", 16384),     # 發送：≥ 最大幀 8205B，一次給足避免 write 分次/截斷
-        )
+        uart_kwargs = {
+            "baudrate": item.get("baudrate", 115200),
+            "rxbuf": item.get("rxbuf", 16384),  # ≥ 最大幀 8205B
+            "txbuf": item.get("txbuf", 16384),  # ≥ 最大幀 8205B
+        }
+        if not rx_only and tx_pin is not None:
+            uart_kwargs["tx"] = Pin(tx_pin)
+        if rx_pin is not None:
+            uart_kwargs["rx"] = Pin(rx_pin)
+        uart = UART(item.get("id", 1), **uart_kwargs)
 
         en = gpio.get("en", -1)
         en_pin = None
