@@ -228,23 +228,25 @@ class ProjectModeIntegrationTests(unittest.TestCase):
         self.assertEqual([1], [mode["id"] for mode in task._show_list])
 
     def test_black_profiles_loop_close_stop_open_stop_without_master(self):
-        expected = {
-            "enable": 1,
-            "master_timeout_ms": 10000,
-            "dev_mode_type": 1,
-            "dev_mode_ids": [2, 1],
-            "dev_mode_durations_ms": [15000, 15000],
-        }
         for path in BLACK_PROFILES:
             with open(path, encoding="utf-8") as handle:
                 profile = json.load(handle)
+            profile_name = os.path.basename(os.path.dirname(path))
+            open_mode = 11 if profile_name in ("slave14", "slave15") else 1
+            expected = {
+                "enable": 1,
+                "master_timeout_ms": 10000,
+                "dev_mode_type": 1,
+                "dev_mode_ids": [2, open_mode],
+                "dev_mode_durations_ms": [15000, 15000],
+            }
             self.assertEqual(expected, profile["ProjectMode"])
 
     def test_slave7_profile_uses_black_gpio12_and_hinu_addresses(self):
         with open(PROFILE, encoding="utf-8") as handle:
             profile = json.load(handle)
 
-        self.assertEqual("0007", profile["System"]["cID"])
+        self.assertEqual("0107", profile["System"]["cID"])
         self.assertEqual(
             {"enable": 1, "master_timeout_ms": 10000,
              "dev_mode_type": 1, "dev_mode_ids": [2, 1],

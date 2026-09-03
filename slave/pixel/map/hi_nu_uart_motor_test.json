@@ -9,6 +9,21 @@
       "sel": [
         {"type": "uartMotor1", "sel": ":"}
       ]
+    },
+    {
+      "id": 2,
+      "name": "funnel_lids_and_extra",
+      "sel": [
+        {"type": "uartMotor1", "sel": "0:2"},
+        {"type": "uartMotor1", "sel": "3:13:2"}
+      ]
+    },
+    {
+      "id": 3,
+      "name": "funnel_points",
+      "sel": [
+        {"type": "uartMotor1", "sel": "2:13:2"}
+      ]
     }
   ]
 }

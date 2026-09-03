@@ -46,6 +46,12 @@ SLAVE_PROFILES = {
         "0114",
     ),
 }
+FUNNEL_DEV_PROFILES = {
+    14: os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black",
+                     "slave14", "config.json"),
+    15: os.path.join(ROOT, "ports", "S3", "ESP32-S3_1_18_hinu_black",
+                     "slave15", "config.json"),
+}
 
 
 class FakeUART:
@@ -370,6 +376,59 @@ class MotorStoryModeTests(unittest.TestCase):
         self.assertEqual(4095, effect.frame(499)[0])
         self.assertEqual(2048, effect.frame(500)[0])
         self.assertEqual(2048, effect.frame(5000)[0])
+
+    def test_funnel_dev_open_caps_points_at_4_5s_but_lids_at_10s(self):
+        """A point selector or duration regression could break the funnel parts."""
+        mapping = load_json(MAPPING_PATH)
+        mode = mode_by_id(11)
+        entries = {entry["group"]: entry for entry in mode["map"]}
+        normal = Effect(
+            "uart_motor_max_open", effect_params("uart_motor_max_open"))
+        safe = Effect(
+            "uart_motor_funnel_point_safe_open",
+            effect_params("uart_motor_funnel_point_safe_open"),
+        )
+
+        self.assertEqual(
+            "uart_motor_max_open",
+            entries["hi_nu_uart_motor_test.funnel_lids_and_extra"]["effect"],
+        )
+        self.assertEqual(
+            "uart_motor_funnel_point_safe_open",
+            entries["hi_nu_uart_motor_test.funnel_points"]["effect"],
+        )
+
+        for slave_id, profile_path in FUNNEL_DEV_PROFILES.items():
+            profile = load_json(profile_path)
+            addresses = [
+                int(value)
+                for value in profile["uartMotor"]["list"][0]["address"]
+            ]
+            layout = PixelLayout(
+                ["uartMotor1"], {"uartMotor1": len(addresses)})
+            layout.register_mapping(
+                mapping["id"], mapping["name"], mapping["groups"])
+
+            def raw_values(frame_no):
+                frame = bytearray(len(addresses) * 4)
+                layout.scatter(
+                    frame, mapping["name"], "funnel_lids_and_extra",
+                    normal.frame(frame_no), "w",
+                )
+                layout.scatter(
+                    frame, mapping["name"], "funnel_points",
+                    safe.frame(frame_no), "w",
+                )
+                return [frame[(index * 4) + 3] for index in range(len(addresses))]
+
+            self.assertEqual([255] * len(addresses), raw_values(224), slave_id)
+            expected_after_cap = [
+                128 if index >= 2 and index % 2 == 0 else 255
+                for index in range(len(addresses))
+            ]
+            self.assertEqual(expected_after_cap, raw_values(225), slave_id)
+            self.assertEqual(expected_after_cap, raw_values(499), slave_id)
+            self.assertEqual([128] * len(addresses), raw_values(500), slave_id)
 
     def test_mode_two_sends_true_max_close_then_stays_stopped(self):
         """Any ramp or non-zero close command would make Mode 2 slower."""

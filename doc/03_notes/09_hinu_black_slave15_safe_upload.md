@@ -14,9 +14,9 @@ ports/S3/ESP32-S3_1_18_hinu_black/  # Master＋18 塊實體 Slave 的 config.jso
 
 `slave/` 必須保留完整目錄結構，不可只取個別 Python 檔案。設定檔共需 19 份部署副本：Master 一份，以及 18 塊實體 Slave 各一份。每份 `config.json` 都必須保持與板角色及 `System.cID` 的對應關係，不可用同一份通用設定取代全部裝置。
 
-Slave14 與原 Slave16 已合併為同一塊實體 Slave，由 Slave14 的 `System.cID=000E` 統一控制。Slave14 保留翼 Address `44`，並吸收原 Slave16 的全部左浮游炮 motor addresses；不再部署 `slave16/config.json`。
+Slave14 與原 Slave16 已合併為同一塊實體 Slave，由 Slave14 的 `System.cID=010E` 統一控制。Slave14 保留翼 Address `44`，並吸收原 Slave16 的全部左浮游炮 motor addresses；不再部署 `slave16/config.json`。
 
-Slave15 與原 Slave17 已合併為同一塊實體 Slave，由 Slave15 的 `System.cID=000F` 統一控制。原 Slave17 的全部右浮游炮 motor addresses 已加入 Slave15；不再部署 `slave17/config.json`，避免同一組 motors 被拆成兩個 Slave 身份。
+Slave15 與原 Slave17 已合併為同一塊實體 Slave，由 Slave15 的 `System.cID=010F` 統一控制。原 Slave17 的全部右浮游炮 motor addresses 已加入 Slave15；不再部署 `slave17/config.json`，避免同一組 motors 被拆成兩個 Slave 身份。
 
 Slave20 的硬體／module 設定以 Slave13 為範本，但兩者的板身份及 motor address 不同。複製後必須保留 Slave20 自己的 `System.cID`，並把 `uartMotor` address 設為右燃料管的 `60`、`61`、`70`、`71`；不可沿用 Slave13 左燃料管的 `45`、`46`、`48`、`49`。
 
@@ -50,7 +50,7 @@ Address `35` 不存在，右前裙甲使用 Address `38`。Address `41` 保留�
 - Kai 4：胸正前方、兩邊散氣口甲、駕駛艙上、駕駛艙中、駕駛艙下。
 - Kai 6：盾中間兩邊、盾頂、盾尾兩邊。
 
-Master 未連線超過 `10000 ms` 時，全部 Black Slave 進入本機 Dev loop：Mode 2 最快 Close `10000 ms`，保持 `0x80 STOP` `5000 ms`，再以 Mode 1 最快 Open `10000 ms`，保持 `0x80 STOP` `5000 ms`，之後循環。設定以 `[2, 1]` 兩個 `15000 ms` slot 表示；兩個 effect 均在前 `500` frames（20 ms/frame）動作，slot 剩餘 `5000 ms` 輸出 STOP。Master 恢復時先停止本機 loop，再交回 Master 控制。
+Master 未連線超過 `10000 ms` 時，Black Slave 進入本機 Dev loop：Mode 2 最快 Close `10000 ms`，保持 `0x80 STOP` `5000 ms`，再最快 Open，之後保持 STOP 至 15 秒 slot 完成並循環。一般 profile 使用 `[2, 1]`；合併原 Slave16／17 motors 的 Black Slave14／15 使用 `[2, 11]`。Mode 11 讓翼／開蓋 motor Open `10000 ms`，但「尖尖」只 Open `4500 ms`，第 `225` frame 起輸出 STOP，避免易損零件被連續推足 10 秒。Close 仍維持 10 秒。Master 恢復時先停止本機 loop，再交回 Master 控制。
 
 > 下方內容是 2026-09-01 首次建立零輸出安全狀態的歷史紀錄。2026-09-02
 > 經現場重新確認，UID `90da7249a6a4` 的實體板是 **Black Slave14**，當日曾被
@@ -119,4 +119,4 @@ python -B test/protocol/night_run/repl_upload.py \
   /config.json
 ```
 
-讀回驗證時必須確認 `cID=000F`、motor UART TX GPIO `12`，以及 `uartMotor.address=["43","57","94","67","104","58","95","68","105","59","96","69","106"]`。
+讀回驗證時必須確認 `cID=010F`、motor UART TX GPIO `12`，以及 `uartMotor.address=["43","57","94","67","104","58","95","68","105","59","96","69","106"]`。

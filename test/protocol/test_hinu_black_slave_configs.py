@@ -85,7 +85,7 @@ class HinuBlackSlaveConfigTests(unittest.TestCase):
 
         for slave_id in ACTIVE_SLAVE_IDS:
             profile = load_profile(slave_id)
-            expected_cid = "{:04X}".format(slave_id)
+            expected_cid = "{:04X}".format(0x100 + slave_id)
             self.assertEqual(expected_cid, profile["System"]["cID"])
             self.assertNotIn(expected_cid, seen_cids)
             seen_cids.add(expected_cid)
@@ -119,12 +119,13 @@ class HinuBlackSlaveConfigTests(unittest.TestCase):
                 self.assertEqual(1, len(profile["UART"]["list"]))
 
             self.assertEqual(1, profile["ProjectMode"]["enable"])
+            expected_open_mode = 11 if slave_id in (14, 15) else 1
             self.assertEqual(
                 {
                     "enable": 1,
                     "master_timeout_ms": 10000,
                     "dev_mode_type": 1,
-                    "dev_mode_ids": [2, 1],
+                    "dev_mode_ids": [2, expected_open_mode],
                     "dev_mode_durations_ms": [15000, 15000],
                 },
                 profile["ProjectMode"],

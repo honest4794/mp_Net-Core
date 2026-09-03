@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": 11,
+  "name": "motor_funnel_safe_open",
+  "index": 11,
+  "play_count": -1,
+  "play_interval": 1,
+  "mapping": "hi_nu_uart_motor_test",
+  "map": [
+    {
+      "group": "hi_nu_uart_motor_test.funnel_lids_and_extra",
+      "effect": "uart_motor_max_open",
+      "write": "w"
+    },
+    {
+      "group": "hi_nu_uart_motor_test.funnel_points",
+      "effect": "uart_motor_funnel_point_safe_open",
+      "write": "w"
+    }
+  ]
+}
