@@ -52,13 +52,17 @@ Address `35` 不存在，右前裙甲使用 Address `38`。Address `41` 保留�
 
 Master 未連線超過 `10000 ms` 時，全部 Black Slave 進入本機 Dev loop：Mode 2 最快 Close `10000 ms`，保持 `0x80 STOP` `5000 ms`，再以 Mode 1 最快 Open `10000 ms`，保持 `0x80 STOP` `5000 ms`，之後循環。設定以 `[2, 1]` 兩個 `15000 ms` slot 表示；兩個 effect 均在前 `500` frames（20 ms/frame）動作，slot 剩餘 `5000 ms` 輸出 STOP。Master 恢復時先停止本機 loop，再交回 Master 控制。
 
-> 下方內容是 2026-09-01 首次建立 Slave15 零輸出安全狀態的歷史紀錄。當時只上載 `config.json`；這不代表目前更新仍只需要該檔案。目前更新應依本節列出的範圍執行。
+> 下方內容是 2026-09-01 首次建立零輸出安全狀態的歷史紀錄。2026-09-02
+> 經現場重新確認，UID `90da7249a6a4` 的實體板是 **Black Slave14**，當日曾被
+> 誤認為 Slave15，並錯誤上載 `cID=000F` 的 Slave15 profile。以下保留當日實際
+> 寫入及讀回值，但不可再把該 UID 標記為 Slave15。目前更新應依本節列出的正式
+> profile 範圍執行。
 
 ## 2026-09-01 安全設定結論
 
-2026-09-01 核對 Figma `Gunpla` wiring 目前版本時，Slave15 的黑色 ESP32-S3 接線無法確認。因此本輪不採用 repository 內其他 Slave 的 GPIO、RS485、UART motor address 或聲音設定，也不由 `hi_nu_motor_project.json` 的 sequence address 反推實體接線。
+2026-09-01 核對 Figma `Gunpla` wiring 當時版本時，這塊實體 Black Slave14 被誤認為 Slave15，且接線無法確認。因此當日沒有採用 repository 內其他 Slave 的 GPIO、RS485、UART motor address或聲音設定，也沒有由 `hi_nu_motor_project.json` 的 sequence address 反推實體接線。
 
-板端只上載 Slave15 的安全設定檔：
+板端當時只上載誤用的 Slave15 安全設定檔：
 
 - `System.cID`：`000F`
 - `System.num_pixels`：`0`
@@ -66,28 +70,32 @@ Master 未連線超過 `10000 ms` 時，全部 Black Slave 進入本機 Dev loop
 - `CircuitDecode`、Network、SPI、I2C、UART、PWM、I2S、SD、PIN、ENC、TFT、HUSB238、WS2812、APA102、PCA9685、`uartMotor`：全部停用
 - 所有輸出及 motor list：空陣列
 
-此設定只建立 Slave15 身份與零輸出安全狀態，不代表 motor／sound 程式已完成部署。
+此設定當時把實體 Slave14 暫時設成邏輯 Slave15 的零輸出安全狀態，不代表
+motor／sound 程式已完成部署，也不再代表該板目前的正確身份。
 
-## 本輪硬體身份
+## 本輪硬體身份（2026-09-02 更正）
 
 | 項目 | 核對值 |
 |---|---|
 | USB port | `/dev/cu.usbmodem1101` |
+| 實體板身份 | **Black Slave14** |
 | ESP32-S3 UID | `90da7249a6a4` |
 | MicroPython | `1.29.0-preview` |
-| 設定來源 | 原始零輸出 legacy profile；完成 canonical migration 後已移除，驗證值保留於本紀錄 |
+| 當日錯誤邏輯身份 | Slave15，`cID=000F` |
+| 設定來源 | 當日誤用的零輸出 Slave15 legacy profile；完成 canonical migration 後已移除，驗證值只保留作歷史證據 |
 
 USB port 只記錄本輪實測結果；下次操作仍須重新列舉，不可直接沿用。
 
 ## 當日上載範圍
 
-為避免把無關 runtime／測試／UI 檔案寫進黑色 Slave15，本輪重新清除並寫入固定 MicroPython image 後，只上載：
+當時為避免把無關 runtime／測試／UI 檔案寫進這塊被誤認為 Slave15 的實體
+Slave14，重新清除並寫入固定 MicroPython image 後，只上載：
 
 ```text
 /config.json
 ```
 
-沒有上載 `boot.py`、`main.py`、motor／sound runtime、pixel modes、mapping、sequence、UI 或測試檔案。待 Figma wiring 可核對後，才建立正式 Slave15 profile 並部署必要 runtime。
+沒有上載 `boot.py`、`main.py`、motor／sound runtime、pixel modes、mapping、sequence、UI 或測試檔案。當日的 Slave15 身份判定其後已撤回；這塊板應部署正式 Slave14 profile。
 
 ## 2026-09-01 實機驗證
 
@@ -97,7 +105,7 @@ USB port 只記錄本輪實測結果；下次操作仍須重新列舉，不可�
 - UID：`90da7249a6a4`
 - `/config.json` SHA-256：`b1ff7121b6d8aeafef4ffbb93f9eb8c4491e1c0242ff081c48a7231806d7ca11`，與本機 profile 完全相同
 - Filesystem root：`boot.py`、`config.json`；其中 `boot.py` 由固定 MicroPython image 內建，本輪唯一另外上載的檔案是 `config.json`
-- 讀回設定：`cID=000F`、`num_pixels=0`、全部 module／Network `enable=0`
+- 當日讀回設定：`cID=000F`、`num_pixels=0`、全部 module／Network `enable=0`；這是誤用 Slave15 profile 的歷史值，不是該實體板的正確身份
 
 ## 上載目前 Slave15 profile
 
