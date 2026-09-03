@@ -59,12 +59,43 @@ class HiNuMotorProjectSequenceTests(unittest.TestCase):
             cls.manifest = json.load(handle)
         cls.stages = cls.manifest["stages"]
 
-    def test_stage_timeline_has_fixed_order_and_global_interval(self):
-        """A dropped/reordered stage or interval change would desync the project."""
-        self.assertEqual(2, self.manifest["version"])
+    def test_stage_timeline_has_fixed_order(self):
+        """A dropped or reordered stage would desync the project."""
+        self.assertEqual(3, self.manifest["version"])
         self.assertEqual("hi_nu_motor_project", self.manifest["name"])
-        self.assertEqual(5000, self.manifest["motor_open_interval_ms"])
+        self.assertNotIn("motor_open_interval_ms", self.manifest)
         self.assertEqual(EXPECTED_ORDER, [stage["sequence"] for stage in self.stages])
+
+    def test_servo_timeline_matches_the_blue_master_schedule(self):
+        """Both boards must interpret the video timecode as the same ms timeline."""
+        self.assertEqual(
+            {
+                "time_unit": "ms",
+                "story_modes": [
+                    {"id": 0, "name": "storyMode_signals", "start_ms": 0,
+                     "end_ms": 15000},
+                    {"id": 1, "name": "storyMode_0_v2", "start_ms": 15000,
+                     "fade_start_ms": 31900, "end_ms": 34000},
+                    {"id": 2, "name": "storyMode_motor", "start_ms": 34000,
+                     "end_ms": 102000},
+                    {"id": 3, "name": "storyMode_motor_reset", "start_ms": 102000,
+                     "end_ms": 113000},
+                ],
+                "sequence_global_start_ms": [35064, 46044, 57054,
+                                             66145, 77739, 86915],
+                "sequence_motor_local_start_ms": [1064, 12044, 23054,
+                                                  32145, 43739, 52915],
+                "default_open_duration_ms": 10000,
+                "funnel_point_open_duration_ms": 4500,
+                "all_close": {
+                    "global_start_ms": 102289,
+                    "reset_local_start_ms": 289,
+                    "duration_ms": 10000,
+                    "global_end_ms": 112289,
+                },
+            },
+            self.manifest["servo_timeline"],
+        )
 
     def test_open_and_close_use_the_confirmed_direction_and_fastest_raw_value(self):
         """Swapping A/B or using a ramp value would reverse or slow the motors."""

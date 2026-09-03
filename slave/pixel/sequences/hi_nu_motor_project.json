@@ -1,7 +1,25 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "hi_nu_motor_project",
-  "motor_open_interval_ms": 5000,
+  "servo_timeline": {
+    "time_unit": "ms",
+    "story_modes": [
+      {"id": 0, "name": "storyMode_signals", "start_ms": 0, "end_ms": 15000},
+      {"id": 1, "name": "storyMode_0_v2", "start_ms": 15000, "fade_start_ms": 31900, "end_ms": 34000},
+      {"id": 2, "name": "storyMode_motor", "start_ms": 34000, "end_ms": 102000},
+      {"id": 3, "name": "storyMode_motor_reset", "start_ms": 102000, "end_ms": 113000}
+    ],
+    "sequence_global_start_ms": [35064, 46044, 57054, 66145, 77739, 86915],
+    "sequence_motor_local_start_ms": [1064, 12044, 23054, 32145, 43739, 52915],
+    "default_open_duration_ms": 10000,
+    "funnel_point_open_duration_ms": 4500,
+    "all_close": {
+      "global_start_ms": 102289,
+      "reset_local_start_ms": 289,
+      "duration_ms": 10000,
+      "global_end_ms": 112289
+    }
+  },
   "directions": {
     "close": {"direction": "A", "raw": 0},
     "open": {"direction": "B", "raw": 255}
